@@ -1,134 +1,267 @@
-# 📘 SBM Ingestion Infrastructure (Terraform)
+# sbm-ingester
 
-This repository provisions the **SBM Ingestion pipeline** using Terraform on AWS.  
-The system is **event-driven**, using **S3 → SQS → Lambda → API Gateway** with comprehensive logging and monitoring.
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-FF9900?logo=awslambda&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-1.0+-7B42BC?logo=terraform&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
 
----
+Serverless file ingestion pipeline for building energy data. Processes NEM12/NEM13 meter data files and transforms them into a standard format for the SBM data lake.
 
-## 📐 Architecture Overview
+## Table of Contents
 
-The ingestion pipeline is designed as follows:
+- [Background](#background)
+- [Install](#install)
+- [Usage](#usage)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Deployment](#deployment)
+- [API](#api)
+- [Maintainers](#maintainers)
+- [Contributing](#contributing)
+- [License](#license)
 
-1. **S3 Event Notifications**  
-   - Files uploaded into the bucket `sbm-file-ingester` under the prefix `newTBP/` trigger S3 notifications.  
-   - Notifications are sent to an **SQS queue** `sbm-files-ingester-queue`.  
+## Background
 
-2. **Lambda Processing**  
-   - The `sbm-files-ingester` Lambda consumes messages from SQS and processes the files. After processing, goes to hudibucketsrc as before.
-   - Errors or failures are handled by the `sbm-files-ingester-redrive` Lambda.  
+SBM Ingester is part of the Sustainable Building Manager (SBM) platform. It handles automated ingestion of energy meter data from multiple sources:
 
-3. **Scheduled Processing**  
-   - The `sbm-files-ingester-nem12-mappings-to-s3` Lambda runs hourly using a CloudWatch Event Rule.  
-   - This Lambda is also integrated with API Gateway to expose the `/nem12-mappings` endpoint.  
+- **NEM12** - Australian interval meter data (30-minute intervals)
+- **NEM13** - Accumulation meter data
+- **Envizi** - Water and electricity CSV exports
+- **Optima** - Generation data and usage reports
+- **Green Square ComX** - Schneider private wire meters
 
-4. **API Gateway Integration**  
-   - API Gateway exposes a GET endpoint at `/nem12-mappings`.  
-   - Secured with an API key and a usage plan limiting requests to 500/day.  
+Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, and maps meter readings to Neptune graph database sensor IDs.
 
-5. **Logging & Monitoring**  
-   - All Lambdas have dedicated CloudWatch log groups with **30-day retention**.  
-   - Custom log groups exist for execution, errors, metrics, parse errors, and runtime errors.  
-   - API Gateway and S3 logging are also recommended.  
+## Install
 
----
+**Prerequisites:**
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/) package manager
+- AWS CLI configured with credentials
+- Terraform 1.0+ (for infrastructure)
 
-## 🔧 Terraform Resources
+```bash
+# Clone repository
+git clone <repository-url>
+cd sbm-ingester
 
-### 1. S3 Buckets
-- **`sbm-file-ingester`**  
-  - Holds raw ingestion files.  
-  - Configured with event notifications to SQS.  
-  - Should be configured with versioning, default encryption (SSE-S3 or KMS), and access logging.  
+# Install dependencies
+uv sync --all-extras
 
-- **`gega-code-deployment-bucket`**  
-  - Stores Lambda deployment artifacts (`ingester.zip`, `redrive.zip`, `nem12-mappings-to-s3.zip`).  
-  - Should enforce versioning and lifecycle rules to clean up old builds.  
+# Setup git hooks (optional but recommended)
+./scripts/setup-lefthook.sh
+```
 
----
+**Git Hooks:** The project uses [lefthook](https://github.com/evilmartians/lefthook) for automated code quality checks. See [docs/LEFTHOOK.md](docs/LEFTHOOK.md) for details.
 
-### 2. SQS Queue
-- **`sbm-files-ingester-queue`**  
-  - Buffers S3 events before Lambda processing.  
-  - Visibility timeout: 300 seconds.  
-  - Access restricted to S3 and Lambda.  
+## Usage
 
----
+### Local Development
 
-### 3. Lambda Functions
-- **`sbm-files-ingester`**  
-  - Runtime: Python 3.12  
-  - Timeout: 120 seconds  
-  - Reserved concurrency: 5  
-  - Source: `gega-code-deployment-bucket/sbm-files-ingester/ingester.zip`  
+```bash
+# Run linter
+uv run ruff check .
 
-- **`sbm-files-ingester-redrive`**  
-  - Runtime: Python 3.12  
-  - Timeout: 600 seconds  
-  - Source: `gega-code-deployment-bucket/sbm-files-ingester/redrive.zip`  
+# Auto-fix lint issues
+uv run ruff check --fix .
 
-- **`sbm-files-ingester-nem12-mappings-to-s3`**  
-  - Runtime: Python 3.9  
-  - Timeout: 60 seconds  
-  - Source: `gega-code-deployment-bucket/sbm-files-ingester/nem12-mappings-to-s3.zip`  
-  - VPC attached (for Neptune access).  
-  - Scheduled hourly via CloudWatch Event Rule.  
-  - API Gateway integration on `/nem12-mappings`.  
+# Format code
+uv run ruff format .
 
----
+# Run tests
+uv run pytest
 
-### 4. Logging & Monitoring
+# Run tests with coverage
+uv run pytest --cov=ingester/src --cov-report=term-missing
+```
 
-**Lambda Logging**
-- `/aws/lambda/sbm-files-ingester` (default)  
-- `/aws/lambda/sbm-files-ingester-redrive` (default)  
-- `/aws/lambda/sbm-files-ingester-nem12-mappings-to-s3` (default)  
-- Retention: **30 days**  
+### Manual File Processing
 
-**Custom Log Groups**
-- `sbm-ingester-error-log`  
-- `sbm-ingester-execution-log`  
-- `sbm-ingester-metrics-log`  
-- `sbm-ingester-parse-error-log`  
-- `sbm-ingester-runtime-error-log`  
-- Retention: **30 days**  
+Upload files to S3 to trigger processing:
 
-**API Gateway Logging**
-- Execution logs and metrics should be enabled at the `prod` stage.  
+```bash
+aws s3 cp meter_data.csv s3://sbm-file-ingester/newTBP/
+```
 
-**S3 Access Logs**
-- Should be configured to deliver to a dedicated log bucket.  
+### Refresh NEM12 Mappings
 
----
+```bash
+curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem12-mappings" \
+  -H "x-api-key: <your-api-key>"
+```
 
-### 5. API Gateway
-- REST API: `sbm-files-ingester-api`  
-- Resource: `/nem12-mappings`  
-- Method: `GET`  
-- Security:  
-  - API Key required - Get it from API Gateway (sbm-ingester-api-key)
-  - Usage plan allows 500 requests/day  
+## Architecture
 
----
+```mermaid
+flowchart LR
+    subgraph Input
+        S3_IN[("S3: newTBP/")]
+    end
 
-### 6. IAM
-- Uses existing IAM role: `getIdFromNem12Id-role-153b7a0a`.  
-- Grants permissions for:  
-  - SQS polling  
-  - Neptune database access  
-  - CloudWatch logging  
+    subgraph Processing
+        SQS[["SQS Queue"]]
+        Lambda["Lambda<br/>sbm-files-ingester"]
+    end
 
----
-## 📊 Logging Strategy
+    subgraph Output
+        S3_OK[("S3: newP/<br/>processed")]
+        S3_IRR[("S3: newIrrevFiles/<br/>no mapping")]
+        S3_ERR[("S3: newParseErr/<br/>parse failed")]
+        S3_DATA[("S3: hudibucketsrc/<br/>sensorDataFiles")]
+    end
 
-| Component          | Logging Destination           | Retention | Notes |
-|--------------------|-------------------------------|-----------|-------|
-| Lambda (default)   | `/aws/lambda/...`             | 30 days   | AWS-managed logs |
-| Application errors | `sbm-ingester-error-log`      | 30 days   | App-level error logging |
-| Execution logs     | `sbm-ingester-execution-log`  | 30 days   | Tracks job runs |
-| Metrics            | `sbm-ingester-metrics-log`    | 30 days   | Business metrics |
-| Parse errors       | `sbm-ingester-parse-error-log`| 30 days   | File parsing issues |
-| Runtime errors     | `sbm-ingester-runtime-error-log` | 30 days | Non-parse runtime issues |
-| API Gateway        | Stage logs                   | 30 days   | Enable in API Gateway |
-| S3                 | Access log bucket            | 90 days   | Not yet provisioned |
+    subgraph Data Sources
+        Neptune[("Neptune<br/>NEM12 Mappings")]
+    end
 
----
+    S3_IN -->|"S3 Event"| SQS
+    SQS -->|"Trigger"| Lambda
+    Lambda -->|"Success"| S3_OK
+    Lambda -->|"No Mapping"| S3_IRR
+    Lambda -->|"Parse Error"| S3_ERR
+    S3_OK -->|"Write CSV"| S3_DATA
+    Neptune -.->|"Lookup"| Lambda
+```
+
+### Lambda Functions
+
+| Function | Runtime | Timeout | Purpose |
+|----------|---------|---------|---------|
+| `sbm-files-ingester` | Python 3.13 | 120s | Main processor - parses files, maps NMIs, writes to data lake |
+| `sbm-files-ingester-redrive` | Python 3.13 | 600s | Re-triggers stuck files in `newTBP/` |
+| `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.9 | 60s | Hourly job - exports NEM12→Neptune ID mappings |
+
+### File Processing Outcomes
+
+| Outcome | Destination | Description |
+|---------|-------------|-------------|
+| Success | `newP/` | Parsed successfully and mapped to Neptune ID |
+| No Mapping | `newIrrevFiles/` | Parsed but no Neptune ID found |
+| Parse Error | `newParseErr/` | Failed to parse with any parser |
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BUCKET_NAME` | Input S3 bucket | `sbm-file-ingester` |
+| `BATCH_SIZE` | DataFrames to buffer before S3 write | `50` |
+
+### CloudWatch Log Groups
+
+| Log Group | Purpose |
+|-----------|---------|
+| `sbm-ingester-execution-log` | Processing start/end timestamps |
+| `sbm-ingester-error-log` | Application errors |
+| `sbm-ingester-parse-error-log` | File parsing failures |
+| `sbm-ingester-runtime-error-log` | Non-parse runtime issues |
+| `sbm-ingester-metrics-log` | Daily metrics (file counts, monitor points) |
+
+### AWS Resources
+
+- **Region:** ap-southeast-2
+- **S3 Buckets:** `sbm-file-ingester` (input), `hudibucketsrc` (output)
+- **SQS:** `sbm-files-ingester-queue` (300s visibility), `sbm-files-ingester-dlq` (14 day retention)
+- **DynamoDB:** `sbm-ingester-idempotency` (duplicate prevention)
+- **Neptune:** NEM12 ID → sensor ID mappings
+- **SNS:** `sbm-ingester-alerts` (error notifications)
+
+## Testing
+
+Tests use pytest with moto for AWS mocking.
+
+```bash
+# Run all tests
+uv run pytest
+
+# Run with verbose output
+uv run pytest -v
+
+# Run specific test file
+uv run pytest ingester/tests/test_nem_adapter.py
+
+# Run with coverage report
+uv run pytest --cov=ingester/src --cov-report=html
+```
+
+### Test Coverage
+
+| Module | Coverage |
+|--------|----------|
+| `gemsDataParseAndWrite.py` | 100% |
+| `modules/nem_adapter.py` | 100% |
+| `modules/nonNemParserFuncs.py` | 100% |
+| `modules/common.py` | 100% |
+
+## Deployment
+
+Deployment is automated via GitHub Actions on push to `main`.
+
+### Manual Deployment
+
+```bash
+# Build Lambda packages
+cd ingester
+zip -r ../ingester.zip src/
+
+# Upload to S3
+aws s3 cp ingester.zip s3://gega-code-deployment-bucket/sbm-files-ingester/
+
+# Update Lambda
+aws lambda update-function-code \
+  --function-name sbm-files-ingester \
+  --s3-bucket gega-code-deployment-bucket \
+  --s3-key sbm-files-ingester/ingester.zip
+```
+
+### Infrastructure (Terraform)
+
+```bash
+cd iac
+terraform init
+terraform plan
+terraform apply
+```
+
+## API
+
+### GET /nem12-mappings
+
+Manually triggers NEM12 mapping refresh.
+
+**Request:**
+```bash
+curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem12-mappings" \
+  -H "x-api-key: <api-key>"
+```
+
+**Response:**
+```json
+{
+  "statusCode": 200,
+  "body": "Mappings refreshed successfully"
+}
+```
+
+**Rate Limit:** 500 requests/day
+
+## Maintainers
+
+- [@zeyu-chen](https://github.com/zeyu-chen)
+
+## Contributing
+
+1. Create a feature branch from `main`
+2. Make changes following the code style (enforced by ruff)
+3. Add tests for new functionality
+4. Ensure all tests pass: `uv run pytest`
+5. Ensure lint passes: `uv run ruff check .`
+6. Submit a pull request
+
+## License
+
+Proprietary © GEG

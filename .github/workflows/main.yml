@@ -16,18 +16,19 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       # --------------------
-      # Build Ingester Lambda (requirements inside src)
+      # Build Ingester Lambda
       # --------------------
       - name: Build Ingester Lambda
         run: |
           mkdir -p build/ingester
-          python -m venv venv
-          source venv/bin/activate
-          pip install --upgrade pip
-          pip install -r ingester/src/requirements.txt -t build/ingester/
+          uv export --no-dev --no-hashes -o requirements.txt
+          pip install -r requirements.txt -t build/ingester/
           cp -r ingester/src/* build/ingester/
           cd build/ingester && zip -r ../../ingester.zip . && cd ../..
 

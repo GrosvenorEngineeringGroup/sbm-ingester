@@ -1,0 +1,57 @@
+# Lefthook configuration for sbm-ingester
+# https://github.com/evilmartians/lefthook
+
+# Pre-commit: Fast checks before each commit
+pre-commit:
+  parallel: true
+  commands:
+    # Ruff linting with auto-fix
+    ruff-check:
+      glob: "*.py"
+      run: uv run ruff check --fix {staged_files}
+      stage_fixed: true  # Auto-stage fixed files
+
+    # Ruff formatting
+    ruff-format:
+      glob: "*.py"
+      run: uv run ruff format {staged_files}
+      stage_fixed: true
+
+    # Check for trailing whitespace
+    trailing-whitespace:
+      glob: "*.{py,md,yml,yaml,json,toml}"
+      run: |
+        if grep -n '[[:space:]]$' {staged_files}; then
+          echo "Error: Trailing whitespace found"
+          exit 1
+        fi
+
+    # Validate YAML files (optional - requires PyYAML)
+    # yaml-check:
+    #   glob: "*.{yml,yaml}"
+    #   run: uv run python -c "import yaml; [yaml.safe_load(open(f)) for f in '{staged_files}'.split()]"
+
+# Pre-push: Run tests before pushing (can be slow)
+pre-push:
+  commands:
+    # Run all tests
+    pytest:
+      run: uv run pytest -v
+
+    # Check test coverage
+    coverage:
+      run: uv run pytest --cov=ingester/src --cov-report=term-missing --cov-fail-under=90
+
+# Commit message validation (optional)
+commit-msg:
+  commands:
+    # Enforce conventional commit format
+    # commitlint:
+    #   run: |
+    #     if ! grep -qE '^(feat|fix|docs|style|refactor|test|chore)(\(.+\))?: .{1,72}' {1}; then
+    #       echo "Commit message must follow Conventional Commits format"
+    #       echo "Example: feat: add new feature"
+    #       exit 1
+    #     fi
+
+# Skip hooks with LEFTHOOK=0 or LEFTHOOK_EXCLUDE=pytest

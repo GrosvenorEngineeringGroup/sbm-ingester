@@ -115,8 +115,8 @@ resource "aws_lambda_function" "sbm_files_ingester" {
   role          = data.aws_iam_role.ingester_role.arn
   handler       = "gemsDataParseAndWrite.lambda_handler"
   runtime       = "python3.12"
-  memory_size   = 512
-  timeout       = 120
+  memory_size   = 1024  # Increased from 512 for better performance
+  timeout       = 300   # Increased from 120 to handle larger files
   reserved_concurrent_executions = 5
   s3_bucket = "gega-code-deployment-bucket"
   s3_key    = "sbm-files-ingester/ingester.zip"

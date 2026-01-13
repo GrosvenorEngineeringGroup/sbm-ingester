@@ -1,14 +1,16 @@
-import boto3
-import traceback
 import sys
-import os
+import traceback
+from typing import Any
+
+import boto3
 
 s3 = boto3.client("s3")
 
-def lambda_handler(event, context):
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
     Lambda to re-trigger S3 event notifications by copying files to themselves.
-    
+
     Event format example:
     {
         "bucket": "my-bucket-name",
@@ -47,7 +49,7 @@ def lambda_handler(event, context):
                     CopySource={"Bucket": bucket, "Key": key},
                     Key=key,
                     Metadata={},
-                    MetadataDirective="REPLACE"
+                    MetadataDirective="REPLACE",
                 )
 
                 print(f"Triggered event for {key}")
@@ -59,10 +61,4 @@ def lambda_handler(event, context):
                 traceback.print_exc()
 
     print(f"Finished. Triggered events for {triggered} objects. Errors: {errors}")
-    return {
-        "status": "done",
-        "bucket": bucket,
-        "prefix": prefix,
-        "triggered": triggered,
-        "errors": errors
-    }
+    return {"status": "done", "bucket": bucket, "prefix": prefix, "triggered": triggered, "errors": errors}
