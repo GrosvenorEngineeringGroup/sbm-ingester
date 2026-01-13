@@ -101,7 +101,10 @@ tracer = Tracer(service="file-processor")
 metrics = Metrics(namespace="SBM/Ingester")
 
 # Idempotency configuration - prevents duplicate processing of same files
-persistence_layer = DynamoDBPersistenceLayer(table_name="sbm-ingester-idempotency")
+persistence_layer = DynamoDBPersistenceLayer(
+    table_name="sbm-ingester-idempotency",
+    key_attr="file_key",  # Match DynamoDB table's primary key
+)
 idempotency_config = IdempotencyConfig(
     expires_after_seconds=86400,  # 24 hours TTL
 )
