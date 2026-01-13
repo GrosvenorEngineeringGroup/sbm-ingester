@@ -40,7 +40,7 @@ pre-push:
 
     # Check test coverage
     coverage:
-      run: uv run pytest --cov=ingester/src --cov-report=term-missing --cov-fail-under=90
+      run: uv run pytest --cov=src --cov-report=term-missing --cov-fail-under=90
 
 # Commit message validation (optional)
 commit-msg:
