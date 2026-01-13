@@ -2,12 +2,19 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 from moto import mock_aws
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+# Import app module early before any Logger patches
+import functions.file_processor.app as file_processor_app
 
 
 class TestLambdaHandler:
@@ -63,19 +70,29 @@ class TestLambdaHandler:
         # Import and call lambda handler
         # Note: This will fail because test file doesn't exist in S3
         # But it tests the event parsing logic
-        with patch("gemsDataParseAndWrite.error_log"):
-            from gemsDataParseAndWrite import lambda_handler
+        # Create mock context for Powertools
+        mock_context = MagicMock()
+        mock_context.function_name = "test-function"
+        mock_context.memory_limit_in_mb = 128
+        mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
+        mock_context.aws_request_id = "test-request-id"
 
-            result = lambda_handler(sqs_event, None)
+        with patch.object(file_processor_app, "parseAndWriteData"):
+            result = file_processor_app.lambda_handler(sqs_event, mock_context)
 
             assert result["statusCode"] == 200
 
     def test_lambda_handler_returns_success_response(self, sample_sqs_event: dict[str, Any]) -> None:
         """Test that lambda_handler returns success response structure."""
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.parseAndWriteData"):
-            from gemsDataParseAndWrite import lambda_handler
+        # Create mock context for Powertools
+        mock_context = MagicMock()
+        mock_context.function_name = "test-function"
+        mock_context.memory_limit_in_mb = 128
+        mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
+        mock_context.aws_request_id = "test-request-id"
 
-            result = lambda_handler(sample_sqs_event, None)
+        with patch.object(file_processor_app, "parseAndWriteData"):
+            result = file_processor_app.lambda_handler(sample_sqs_event, mock_context)
 
             assert "statusCode" in result
             assert "body" in result
@@ -101,8 +118,8 @@ class TestFileMovement:
         bucket = s3_resource.Bucket("sbm-file-ingester")
         bucket.put_object(Key="newTBP/test_file.csv", Body=b"test content")
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import move_s3_file
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import move_s3_file
 
             move_s3_file("sbm-file-ingester", "newTBP/test_file.csv", "newP/")
 
@@ -129,8 +146,8 @@ class TestFileMovement:
         bucket = s3_resource.Bucket("sbm-file-ingester")
         bucket.put_object(Key="newTBP/bad_file.csv", Body=b"invalid content")
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import move_s3_file
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import move_s3_file
 
             move_s3_file("sbm-file-ingester", "newTBP/bad_file.csv", "newParseErr/")
 
@@ -153,8 +170,8 @@ class TestFileMovement:
         bucket = s3_resource.Bucket("sbm-file-ingester")
         bucket.put_object(Key="newTBP/unmapped_file.csv", Body=b"content")
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import move_s3_file
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import move_s3_file
 
             move_s3_file("sbm-file-ingester", "newTBP/unmapped_file.csv", "newIrrevFiles/")
 
@@ -185,8 +202,8 @@ class TestNem12MappingsRead:
         }
         s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps(mappings))
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import read_nem12_mappings
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import read_nem12_mappings
 
             result = read_nem12_mappings("sbm-file-ingester")
 
@@ -205,8 +222,8 @@ class TestNem12MappingsRead:
             Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
         )
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import read_nem12_mappings
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import read_nem12_mappings
 
             result = read_nem12_mappings("sbm-file-ingester")
 
@@ -214,44 +231,8 @@ class TestNem12MappingsRead:
             assert result is None
 
 
-class TestMetricsPopulation:
-    """Tests for metrics population functions."""
-
-    def test_daily_initialize_metrics_dict(self) -> None:
-        """Test that metrics dict is initialized correctly."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import dailyInitializeMetricsDict
-
-            metrics = {}
-            dailyInitializeMetricsDict(metrics, "2024-01-15D")
-
-            assert "2024-01-15D" in metrics
-            assert metrics["2024-01-15D"]["calculatedTotalFilesCount"] == 0
-            assert metrics["2024-01-15D"]["validProcessedFilesCount"] == 0
-            assert metrics["2024-01-15D"]["parseErrFilesCount"] == 0
-
-    def test_metrics_dict_populate_values(self) -> None:
-        """Test that metrics values are populated correctly."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import metricsDictPopulateValues
-
-            metrics = {}
-            metricsDictPopulateValues(
-                metrics,
-                "2024-01-15D",
-                ftpFilesCount=5,
-                validProcessedFilesCount=3,
-                parseErrFilesCount=1,
-                irrevFilesCount=1,
-                totalMonitorPointsCount=10,
-                processedMonitorPointsCount=8,
-                errorExecutionCount=0,
-            )
-
-            assert metrics["2024-01-15D"]["ftpFilesCount"] == 5
-            assert metrics["2024-01-15D"]["validProcessedFilesCount"] == 3
-            assert metrics["2024-01-15D"]["parseErrFilesCount"] == 1
-            assert metrics["2024-01-15D"]["calculatedTotalFilesCount"] == 5  # 3+1+1
+# TestMetricsPopulation removed - these functions (dailyInitializeMetricsDict, metricsDictPopulateValues)
+# have been replaced by Powertools Metrics and no longer exist
 
 
 class TestDownloadFilesToTmp:
@@ -272,8 +253,8 @@ class TestDownloadFilesToTmp:
         # Upload test file
         s3_resource.Object("sbm-file-ingester", "newTBP/test.csv").put(Body=b"test,data\n1,2")
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import download_files_to_tmp
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import download_files_to_tmp
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/test.csv"}]
             result = download_files_to_tmp(files, temp_directory)
@@ -296,8 +277,8 @@ class TestDownloadFilesToTmp:
         # Upload file with space in name
         s3_resource.Object("sbm-file-ingester", "newTBP/test file.csv").put(Body=b"test,data\n1,2")
 
-        with patch("modules.common.CloudWatchLogger"), patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import download_files_to_tmp
+        with patch("aws_lambda_powertools.Logger"), patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import download_files_to_tmp
 
             # URL-encoded filename (+ represents space)
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/test+file.csv"}]
@@ -345,11 +326,11 @@ class TestFullPipeline:
         s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({}))
 
         # Run the pipeline
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/nem12_test.csv"}]
-            result = parseAndWriteData(files)
+            result = parseAndWriteData(tbp_files=files)
 
             # Should complete without error
             # File should be moved to irrelevant (no mappings)

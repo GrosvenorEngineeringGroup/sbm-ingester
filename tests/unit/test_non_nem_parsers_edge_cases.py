@@ -1,4 +1,4 @@
-"""Edge case tests for nonNemParserFuncs.py to improve coverage."""
+"""Edge case tests for non_nem_parsers.py to improve coverage."""
 
 import os
 import sys
@@ -9,16 +9,16 @@ import pandas as pd
 import pytest
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / ".." / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 
 class TestEnviziVerticalParserWaterBulk:
-    """Tests for enviziVerticalParserWaterBulk function."""
+    """Tests for envizi_vertical_parser_water_bulk function."""
 
     def test_parses_bulk_water_data_correctly(self, temp_directory: str) -> None:
         """Test that bulk water data with Date_Time column is parsed correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWaterBulk
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water_bulk
 
             # Create CSV with Date_Time column (bulk format)
             filepath = str(Path(temp_directory) / "water_bulk.csv")
@@ -31,7 +31,7 @@ class TestEnviziVerticalParserWaterBulk:
             )
             df.to_csv(filepath, index=False)
 
-            result = enviziVerticalParserWaterBulk(filepath, "error_log")
+            result = envizi_vertical_parser_water_bulk(filepath, "error_log")
 
             assert isinstance(result, list)
             assert len(result) == 2  # Two unique serial numbers
@@ -46,8 +46,8 @@ class TestEnviziVerticalParserWaterBulk:
 
     def test_bulk_water_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected by bulk water parser."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWaterBulk
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water_bulk
 
             # Create file with OptimaGenerationData in name
             filepath = str(Path(temp_directory) / "OptimaGenerationData_water.csv")
@@ -61,12 +61,12 @@ class TestEnviziVerticalParserWaterBulk:
             df.to_csv(filepath, index=False)
 
             with pytest.raises(Exception, match="Not Relevant Parser"):
-                enviziVerticalParserWaterBulk(filepath, "error_log")
+                envizi_vertical_parser_water_bulk(filepath, "error_log")
 
     def test_bulk_water_handles_multiple_meters(self, temp_directory: str) -> None:
         """Test that bulk water parser handles multiple meters correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWaterBulk
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water_bulk
 
             filepath = str(Path(temp_directory) / "multi_meter_bulk.csv")
             df = pd.DataFrame(
@@ -84,7 +84,7 @@ class TestEnviziVerticalParserWaterBulk:
             )
             df.to_csv(filepath, index=False)
 
-            result = enviziVerticalParserWaterBulk(filepath, "error_log")
+            result = envizi_vertical_parser_water_bulk(filepath, "error_log")
 
             assert len(result) == 3
             nmis = sorted([nmi for nmi, _ in result])
@@ -92,31 +92,31 @@ class TestEnviziVerticalParserWaterBulk:
 
 
 class TestOptimaUsageAndSpendToS3:
-    """Tests for optimaUsageAndSpendToS3 function."""
+    """Tests for optima_usage_and_spend_to_s3 function."""
 
     def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import optimaUsageAndSpendToS3
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_usage_and_spend_to_s3
 
             # File with OptimaGenerationData in name
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             Path(filepath).write_text("dummy content")
 
             with pytest.raises(Exception, match="Not Relevant Parser"):
-                optimaUsageAndSpendToS3(filepath, "error_log")
+                optima_usage_and_spend_to_s3(filepath, "error_log")
 
     def test_rejects_non_racv_usage_file(self, temp_directory: str) -> None:
         """Test that non-RACV Usage and Spend files are rejected."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import optimaUsageAndSpendToS3
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_usage_and_spend_to_s3
 
             # File without "RACV-Usage and Spend Report" in name
             filepath = str(Path(temp_directory) / "other_report.csv")
             Path(filepath).write_text("dummy content")
 
             with pytest.raises(Exception, match="Not Valid Optima Usage And Spend File"):
-                optimaUsageAndSpendToS3(filepath, "error_log")
+                optima_usage_and_spend_to_s3(filepath, "error_log")
 
     @pytest.fixture
     def aws_env(self) -> None:
@@ -137,14 +137,14 @@ class TestOptimaUsageAndSpendToS3:
                 Bucket="gegoptimareports", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
             )
 
-            with patch("modules.nonNemParserFuncs.parse_error_log"):
-                from modules.nonNemParserFuncs import optimaUsageAndSpendToS3
+            with patch("shared.non_nem_parsers.logger"):
+                from shared.non_nem_parsers import optima_usage_and_spend_to_s3
 
                 # Create file with correct name pattern
                 filepath = str(Path(temp_directory) / "RACV-Usage and Spend Report.csv")
                 Path(filepath).write_text("date,usage,spend\n2024-01-01,100,50.00")
 
-                result = optimaUsageAndSpendToS3(filepath, "error_log")
+                result = optima_usage_and_spend_to_s3(filepath, "error_log")
 
                 # Should return empty list
                 assert result == []
@@ -156,12 +156,12 @@ class TestOptimaUsageAndSpendToS3:
 
 
 class TestRacvElecParserEdgeCases:
-    """Edge case tests for racvElecParser function."""
+    """Edge case tests for racv_elec_parser function."""
 
     def test_raises_exception_when_all_zeros(self, temp_directory: str) -> None:
-        """Test that racvElecParser raises exception when all data is zero."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import racvElecParser
+        """Test that racv_elec_parser raises exception when all data is zero."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import racv_elec_parser
 
             # Create file with all zeros - no valid data
             filepath = str(Path(temp_directory) / "all_zeros.csv")
@@ -177,12 +177,12 @@ Date,Start Time,Meter1 kWh
                 f.write(content)
 
             with pytest.raises(Exception, match="No Valid Data"):
-                racvElecParser(filepath, "error_log")
+                racv_elec_parser(filepath, "error_log")
 
     def test_handles_mixed_zero_nonzero_meters(self, temp_directory: str) -> None:
-        """Test that racvElecParser handles files with some zero and some non-zero meters."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import racvElecParser
+        """Test that racv_elec_parser handles files with some zero and some non-zero meters."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import racv_elec_parser
 
             filepath = str(Path(temp_directory) / "mixed_meters.csv")
             content = """Header Row 1
@@ -196,7 +196,7 @@ Date,Start Time,ZeroMeter kWh,NonZeroMeter kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racvElecParser(filepath, "error_log")
+            result = racv_elec_parser(filepath, "error_log")
 
             # Should only have nonzero meter
             assert len(result) == 1
@@ -205,12 +205,12 @@ Date,Start Time,ZeroMeter kWh,NonZeroMeter kWh
 
 
 class TestGreenSquareComXParserEdgeCases:
-    """Edge case tests for greenSquarePrivateWireSchneiderComXParser function."""
+    """Edge case tests for green_square_private_wire_schneider_comx_parser function."""
 
     def test_handles_kwh_column_directly(self, temp_directory: str) -> None:
         """Test that ComX parser handles Active energy (kWh) column without conversion."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import greenSquarePrivateWireSchneiderComXParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_kwh.csv")
             content = """Row1,col2,col3,col4,TestSite
@@ -226,7 +226,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = greenSquarePrivateWireSchneiderComXParser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
             assert len(result) == 1
             _, df = result[0]
@@ -238,8 +238,8 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
     def test_raises_exception_missing_energy_column(self, temp_directory: str) -> None:
         """Test that ComX parser raises exception when energy column is missing."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import greenSquarePrivateWireSchneiderComXParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_no_energy.csv")
             content = """Row1,col2,col3,col4,TestSite
@@ -255,12 +255,12 @@ Local Time Stamp,Other Column,col3,col4,col5
                 f.write(content)
 
             with pytest.raises(Exception, match="Missing Active energy column"):
-                greenSquarePrivateWireSchneiderComXParser(filepath, "error_log")
+                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
     def test_extracts_site_name_correctly(self, temp_directory: str) -> None:
         """Test that ComX parser extracts site name correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import greenSquarePrivateWireSchneiderComXParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_site.csv")
             content = """Row1,col2,col3,col4,Test Site Name
@@ -275,21 +275,21 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = greenSquarePrivateWireSchneiderComXParser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
             nmi, _ = result[0]
             # Site name should have spaces removed
             assert nmi == "GPWComX_TestSiteName"
 
 
-class TestNonNemParsersGetDfEdgeCases:
-    """Edge case tests for nonNemParsersGetDf dispatcher function."""
+class TestGetNonNemDfEdgeCases:
+    """Edge case tests for get_non_nem_df dispatcher function."""
 
     def test_stops_at_first_successful_parser(self, temp_directory: str) -> None:
         """Test that dispatcher stops after first successful parser."""
         mock_log = MagicMock()
-        with patch("modules.nonNemParserFuncs.parse_error_log", mock_log):
-            from modules.nonNemParserFuncs import nonNemParsersGetDf
+        with patch("shared.non_nem_parsers.logger", mock_log):
+            from shared.non_nem_parsers import get_non_nem_df
 
             # Create valid Envizi water file
             filepath = str(Path(temp_directory) / "water.csv")
@@ -304,7 +304,7 @@ class TestNonNemParsersGetDfEdgeCases:
             )
             df.to_csv(filepath, index=False)
 
-            result = nonNemParsersGetDf(filepath, "error_log")
+            result = get_non_nem_df(filepath, "error_log")
 
             # Should successfully parse with first valid parser
             assert len(result) == 1
@@ -313,8 +313,8 @@ class TestNonNemParsersGetDfEdgeCases:
     def test_bulk_water_parser_is_tried(self, temp_directory: str) -> None:
         """Test that bulk water parser is tried in the dispatcher."""
         mock_log = MagicMock()
-        with patch("modules.nonNemParserFuncs.parse_error_log", mock_log):
-            from modules.nonNemParserFuncs import nonNemParsersGetDf
+        with patch("shared.non_nem_parsers.logger", mock_log):
+            from shared.non_nem_parsers import get_non_nem_df
 
             # Create valid bulk water file
             filepath = str(Path(temp_directory) / "bulk_water.csv")
@@ -327,7 +327,7 @@ class TestNonNemParsersGetDfEdgeCases:
             )
             df.to_csv(filepath, index=False)
 
-            result = nonNemParsersGetDf(filepath, "error_log")
+            result = get_non_nem_df(filepath, "error_log")
 
             # Should successfully parse with bulk water parser
             assert len(result) == 1
@@ -339,8 +339,8 @@ class TestParserOutputConsistency:
 
     def test_bulk_water_parser_returns_dataframe_with_t_start_index(self, temp_directory: str) -> None:
         """Test that bulk water parser returns DataFrame with t_start as index."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWaterBulk
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water_bulk
 
             filepath = str(Path(temp_directory) / "bulk.csv")
             df = pd.DataFrame(
@@ -352,15 +352,15 @@ class TestParserOutputConsistency:
             )
             df.to_csv(filepath, index=False)
 
-            result = enviziVerticalParserWaterBulk(filepath, "error_log")
+            result = envizi_vertical_parser_water_bulk(filepath, "error_log")
 
             _, result_df = result[0]
             assert result_df.index.name == "t_start"
 
     def test_comx_parser_returns_dataframe_with_t_start_index(self, temp_directory: str) -> None:
         """Test that ComX parser returns DataFrame with t_start as index."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import greenSquarePrivateWireSchneiderComXParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx.csv")
             content = """Row1,col2,col3,col4,Site
@@ -375,7 +375,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = greenSquarePrivateWireSchneiderComXParser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
             _, result_df = result[0]
             assert result_df.index.name == "t_start"

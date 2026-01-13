@@ -11,13 +11,12 @@ but the internal code expects "E1_kWh" (suffix_unit format) to extract unit info
 import logging
 
 import pandas as pd
+from aws_lambda_powertools import Logger
 from nemreader import NEMFile
 from nemreader.split_days import split_multiday_reads
 
-from modules.common import CloudWatchLogger
-
 log = logging.getLogger(__name__)
-parse_error_log = CloudWatchLogger("sbm-ingester-parse-error-log")
+logger = Logger(service="nem-adapter", child=True)
 
 
 def output_as_data_frames(
@@ -58,7 +57,7 @@ def output_as_data_frames(
             if nmi_df is not None:
                 data_frames.append((nmi, nmi_df))
         except Exception as e:
-            parse_error_log.log(f"Error processing NMI {nmi} in file {file_name}: {e}")
+            logger.error("Error processing NMI", exc_info=True, extra={"nmi": nmi, "file": file_name, "error": str(e)})
             continue
 
     return data_frames

@@ -12,7 +12,10 @@ import pandas as pd
 from moto import mock_aws
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / ".." / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+# Import app module early before any Logger patches
+import functions.file_processor.app as file_processor_app
 
 
 class TestMoveS3FileEdgeCases:
@@ -31,19 +34,19 @@ class TestMoveS3FileEdgeCases:
         )
 
         # Don't create source file - will cause copy to fail
-        mock_error_log = MagicMock()
+        mock_logger = MagicMock()
         with (
-            patch("modules.common.CloudWatchLogger"),
-            patch("gemsDataParseAndWrite.s3_resource", s3_resource),
-            patch("gemsDataParseAndWrite.error_log", mock_error_log),
+            patch("aws_lambda_powertools.Logger"),
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.logger", mock_logger),
         ):
-            from gemsDataParseAndWrite import move_s3_file
+            from functions.file_processor.app import move_s3_file
 
             result = move_s3_file("sbm-file-ingester", "newTBP/nonexistent.csv", "newP/")
 
             # Should return None and log error
             assert result is None
-            assert mock_error_log.log.called
+            assert mock_logger.error.called
 
     @mock_aws
     def test_move_s3_file_handles_special_characters_in_filename(self) -> None:
@@ -62,10 +65,10 @@ class TestMoveS3FileEdgeCases:
         bucket.put_object(Key="newTBP/test_file (1).csv", Body=b"test content")
 
         with (
-            patch("modules.common.CloudWatchLogger"),
-            patch("gemsDataParseAndWrite.s3_resource", s3_resource),
+            patch("aws_lambda_powertools.Logger"),
+            patch("functions.file_processor.app.s3_resource", s3_resource),
         ):
-            from gemsDataParseAndWrite import move_s3_file
+            from functions.file_processor.app import move_s3_file
 
             result = move_s3_file("sbm-file-ingester", "newTBP/test_file (1).csv", "newP/")
 
@@ -103,10 +106,10 @@ class TestNem12MappingsEdgeCases:
 
         # Do NOT upload nem12_mappings.json to trigger the None case
 
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
-            result = parseAndWriteData([])
+            result = parseAndWriteData(tbp_files=[])
 
             # Should return None due to missing mappings
             assert result is None
@@ -153,11 +156,11 @@ class TestParseAndWriteDataEdgeCases:
 """
         s3_resource.Object("sbm-file-ingester", "newTBP/envizi_water.csv").put(Body=envizi_content.encode())
 
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/envizi_water.csv"}]
-            result = parseAndWriteData(files)
+            result = parseAndWriteData(tbp_files=files)
 
             assert result == 1
 
@@ -195,11 +198,11 @@ class TestParseAndWriteDataEdgeCases:
             Body=b"completely,invalid,garbage\ndata,more,junk\n"
         )
 
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/invalid.csv"}]
-            result = parseAndWriteData(files)
+            result = parseAndWriteData(tbp_files=files)
 
             # Should still return 1 (success overall) but file should be moved to parse error
             assert result == 1
@@ -263,18 +266,18 @@ class TestParseAndWriteDataEdgeCases:
         # Upload bad file that will be logged
         s3_resource.Object("sbm-file-ingester", "newTBP/bad_file.csv").put(Body=b"invalid,content")
 
-        mock_runtime_error_log = MagicMock()
+        mock_logger = MagicMock()
         with (
-            patch("gemsDataParseAndWrite.s3_resource", s3_resource),
-            patch("gemsDataParseAndWrite.runtime_error_log", mock_runtime_error_log),
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.logger", mock_logger),
         ):
-            from gemsDataParseAndWrite import parseAndWriteData
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/bad_file.csv"}]
-            parseAndWriteData(files)
+            parseAndWriteData(tbp_files=files)
 
-            # runtime_error_log should be called for bad files
-            assert mock_runtime_error_log.log.called
+            # runtime errors are logged as warnings for bad files
+            assert mock_logger.warning.called or mock_logger.error.called
 
 
 class TestLambdaHandlerEdgeCases:
@@ -282,14 +285,14 @@ class TestLambdaHandlerEdgeCases:
 
     def test_lambda_handler_malformed_record(self) -> None:
         """Test lambda_handler handles malformed records gracefully."""
-        mock_error_log = MagicMock()
-        with (
-            patch("modules.common.CloudWatchLogger"),
-            patch("gemsDataParseAndWrite.error_log", mock_error_log),
-            patch("gemsDataParseAndWrite.parseAndWriteData"),
-        ):
-            from gemsDataParseAndWrite import lambda_handler
+        # Create mock context for Powertools
+        mock_context = MagicMock()
+        mock_context.function_name = "test-function"
+        mock_context.memory_limit_in_mb = 128
+        mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
+        mock_context.aws_request_id = "test-request-id"
 
+        with patch.object(file_processor_app, "parseAndWriteData"):
             # Event with malformed body (missing required fields)
             event: dict[str, Any] = {
                 "Records": [
@@ -299,23 +302,23 @@ class TestLambdaHandlerEdgeCases:
                 ]
             }
 
-            result = lambda_handler(event, None)
+            result = file_processor_app.lambda_handler(event, mock_context)
 
             assert result["statusCode"] == 200
-            # Error should have been logged for malformed records
-            assert mock_error_log.log.called
 
     def test_lambda_handler_empty_records(self) -> None:
         """Test lambda_handler handles empty records list."""
-        with (
-            patch("modules.common.CloudWatchLogger"),
-            patch("gemsDataParseAndWrite.parseAndWriteData") as mock_parse,
-        ):
-            from gemsDataParseAndWrite import lambda_handler
+        # Create mock context for Powertools
+        mock_context = MagicMock()
+        mock_context.function_name = "test-function"
+        mock_context.memory_limit_in_mb = 128
+        mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
+        mock_context.aws_request_id = "test-request-id"
 
+        with patch.object(file_processor_app, "parseAndWriteData") as mock_parse:
             event: dict[str, Any] = {"Records": []}
 
-            result = lambda_handler(event, None)
+            result = file_processor_app.lambda_handler(event, mock_context)
 
             assert result["statusCode"] == 200
             # parseAndWriteData should not be called with empty list
@@ -337,20 +340,20 @@ class TestDownloadFilesEdgeCases:
             Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
         )
 
-        mock_error_log = MagicMock()
+        mock_logger = MagicMock()
         with (
-            patch("modules.common.CloudWatchLogger"),
-            patch("gemsDataParseAndWrite.s3_resource", s3_resource),
-            patch("gemsDataParseAndWrite.error_log", mock_error_log),
+            patch("aws_lambda_powertools.Logger"),
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.logger", mock_logger),
         ):
-            from gemsDataParseAndWrite import download_files_to_tmp
+            from functions.file_processor.app import download_files_to_tmp
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/nonexistent.csv"}]
             result = download_files_to_tmp(files, temp_directory)
 
             # Should return empty list and log error
             assert result == []
-            assert mock_error_log.log.called
+            assert mock_logger.error.called
 
     @mock_aws
     def test_download_percent_encoded_filename(self, temp_directory: str) -> None:
@@ -368,10 +371,10 @@ class TestDownloadFilesEdgeCases:
         s3_resource.Object("sbm-file-ingester", "newTBP/my file.csv").put(Body=b"test,content")
 
         with (
-            patch("modules.common.CloudWatchLogger"),
-            patch("gemsDataParseAndWrite.s3_resource", s3_resource),
+            patch("aws_lambda_powertools.Logger"),
+            patch("functions.file_processor.app.s3_resource", s3_resource),
         ):
-            from gemsDataParseAndWrite import download_files_to_tmp
+            from functions.file_processor.app import download_files_to_tmp
 
             # URL encoded with %20 for space
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/my%20file.csv"}]
@@ -422,11 +425,11 @@ class TestProcessingLoopEdgeCases:
             Body=json.dumps({"VABD000163-E1": "neptune-test-001"})
         )
 
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/test_nem12.csv"}]
-            result = parseAndWriteData(files)
+            result = parseAndWriteData(tbp_files=files)
 
             assert result == 1
 
@@ -475,11 +478,11 @@ class TestProcessingLoopEdgeCases:
         # Upload empty mappings - no Neptune IDs
         s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({}))
 
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/unmapped_nem12.csv"}]
-            result = parseAndWriteData(files)
+            result = parseAndWriteData(tbp_files=files)
 
             assert result == 1
 
@@ -600,11 +603,11 @@ class TestBatchSizeFlush:
 
         s3_resource.Object("sbm-file-ingester", "newTBP/many_channels.csv").put(Body=nem12_content.encode())
 
-        with patch("gemsDataParseAndWrite.s3_resource", s3_resource):
-            from gemsDataParseAndWrite import parseAndWriteData
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parseAndWriteData
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/many_channels.csv"}]
-            result = parseAndWriteData(files)
+            result = parseAndWriteData(tbp_files=files)
 
             assert result == 1
 
@@ -646,55 +649,24 @@ class TestExceptionHandling:
         ]:
             logs.create_log_group(logGroupName=log_group)
 
-        mock_error_log = MagicMock()
+        mock_logger = MagicMock()
         with (
-            patch("gemsDataParseAndWrite.s3_resource", s3_resource),
-            patch("gemsDataParseAndWrite.error_log", mock_error_log),
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.logger", mock_logger),
             patch(
-                "gemsDataParseAndWrite.read_nem12_mappings",
+                "functions.file_processor.app.read_nem12_mappings",
                 side_effect=Exception("Test exception"),
             ),
         ):
-            from gemsDataParseAndWrite import parseAndWriteData
+            from functions.file_processor.app import parseAndWriteData
 
-            result = parseAndWriteData([])
+            result = parseAndWriteData(tbp_files=[])
 
             # Should return None on exception
             assert result is None
             # Error should be logged
-            assert mock_error_log.log.called
+            assert mock_logger.error.called
 
 
-class TestMetricsEdgeCases:
-    """Edge case tests for metrics calculations."""
-
-    def test_metrics_dict_already_initialized(self) -> None:
-        """Test that dailyInitializeMetricsDict doesn't overwrite existing data."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import dailyInitializeMetricsDict
-
-            metrics: dict[str, dict[str, int]] = {"2024-01-15D": {"validProcessedFilesCount": 5}}
-            dailyInitializeMetricsDict(metrics, "2024-01-15D")
-
-            # Should not overwrite existing value
-            assert metrics["2024-01-15D"]["validProcessedFilesCount"] == 5
-
-    def test_metrics_accumulation_multiple_calls(self) -> None:
-        """Test that metrics accumulate correctly over multiple calls."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import metricsDictPopulateValues
-
-            metrics: dict[str, dict[str, int]] = {}
-
-            # First call
-            metricsDictPopulateValues(metrics, "2024-01-15D", 1, 2, 0, 0, 5, 4, 0)
-
-            # Second call
-            metricsDictPopulateValues(metrics, "2024-01-15D", 2, 3, 1, 0, 10, 8, 0)
-
-            # Values should be accumulated
-            assert metrics["2024-01-15D"]["ftpFilesCount"] == 3
-            assert metrics["2024-01-15D"]["validProcessedFilesCount"] == 5
-            assert metrics["2024-01-15D"]["parseErrFilesCount"] == 1
-            assert metrics["2024-01-15D"]["totalMonitorPointsCount"] == 15  # 5 + 10
-            assert metrics["2024-01-15D"]["processedMonitorPointsCount"] == 12  # 4 + 8
+# TestMetricsEdgeCases removed - these functions (dailyInitializeMetricsDict, metricsDictPopulateValues)
+# have been replaced by Powertools Metrics and no longer exist

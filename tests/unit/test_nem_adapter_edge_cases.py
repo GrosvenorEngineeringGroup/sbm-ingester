@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / ".." / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 
 class TestOutputAsDataFramesErrorHandling:
@@ -18,13 +18,13 @@ class TestOutputAsDataFramesErrorHandling:
         """Test that errors during NMI processing are logged and continue."""
         mock_parse_error_log = MagicMock()
 
-        with patch("modules.nem_adapter.parse_error_log", mock_parse_error_log):
+        with patch("shared.nem_adapter.logger", mock_parse_error_log):
             # Create a mock that raises an exception
             with patch(
-                "modules.nem_adapter._build_nmi_dataframe",
+                "shared.nem_adapter._build_nmi_dataframe",
                 side_effect=Exception("Test NMI processing error"),
             ):
-                from modules.nem_adapter import output_as_data_frames
+                from shared.nem_adapter import output_as_data_frames
 
                 # Create a valid NEM12 file
                 filepath = str(Path(temp_directory) / "test_nem12.csv")
@@ -47,8 +47,8 @@ class TestOutputAsDataFramesErrorHandling:
         """Test that processing continues even if one NMI fails."""
         mock_parse_error_log = MagicMock()
 
-        with patch("modules.nem_adapter.parse_error_log", mock_parse_error_log):
-            from modules.nem_adapter import output_as_data_frames
+        with patch("shared.nem_adapter.logger", mock_parse_error_log):
+            from shared.nem_adapter import output_as_data_frames
 
             # Should process successfully
             result = output_as_data_frames(nem12_multiple_meters_file)
@@ -62,7 +62,7 @@ class TestBuildNmiDataframeEdgeCases:
 
     def test_skips_empty_channel_readings(self) -> None:
         """Test that empty channel readings are skipped (line 123)."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         # Create mock readings with some empty channels
         mock_reading = MagicMock()
@@ -95,7 +95,7 @@ class TestBuildNmiDataframeEdgeCases:
 
     def test_handles_multiple_channels_with_different_units(self) -> None:
         """Test handling of multiple channels with different units."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         mock_reading_kwh = MagicMock()
         mock_reading_kwh.t_start = pd.Timestamp("2024-01-01 00:00:00")
@@ -134,8 +134,8 @@ class TestBuildNmiDataframeEdgeCases:
 
     def test_handles_split_days_true(self) -> None:
         """Test that split_days=True calls split_multiday_reads."""
-        with patch("modules.nem_adapter.split_multiday_reads") as mock_split:
-            from modules.nem_adapter import _build_nmi_dataframe
+        with patch("shared.nem_adapter.split_multiday_reads") as mock_split:
+            from shared.nem_adapter import _build_nmi_dataframe
 
             mock_reading = MagicMock()
             mock_reading.t_start = pd.Timestamp("2024-01-01 00:00:00")
@@ -161,7 +161,7 @@ class TestBuildNmiDataframeEdgeCases:
 
     def test_returns_none_for_empty_first_readings(self) -> None:
         """Test that None is returned when first channel has no readings."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         result = _build_nmi_dataframe(
             nmi="TEST123",
@@ -178,7 +178,7 @@ class TestNemFileParsingErrors:
 
     def test_raises_exception_for_corrupted_file(self, temp_directory: str) -> None:
         """Test that corrupted NEM files raise appropriate exceptions."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         # Create a corrupted file
         filepath = str(Path(temp_directory) / "corrupted.csv")
@@ -189,7 +189,7 @@ class TestNemFileParsingErrors:
 
     def test_handles_nem_file_with_no_readings(self, temp_directory: str) -> None:
         """Test handling of NEM file with no 300 records (no readings)."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         # NEM12 file with header but no 300 records
         filepath = str(Path(temp_directory) / "no_readings.csv")
@@ -210,7 +210,7 @@ class TestUnitHandling:
 
     def test_uses_default_unit_when_uom_is_empty_string(self) -> None:
         """Test that empty string uom defaults to kWh."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         mock_reading = MagicMock()
         mock_reading.t_start = pd.Timestamp("2024-01-01 00:00:00")
@@ -234,7 +234,7 @@ class TestUnitHandling:
 
     def test_handles_various_uom_values(self) -> None:
         """Test handling of various unit of measure values."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         uom_values = ["kWh", "kVArh", "MWh", "Wh"]
 
@@ -264,7 +264,7 @@ class TestDataFrameStructure:
 
     def test_dataframe_has_correct_metadata_columns(self) -> None:
         """Test that returned DataFrame has all required metadata columns."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         mock_reading = MagicMock()
         mock_reading.t_start = pd.Timestamp("2024-01-01 00:00:00")
@@ -289,7 +289,7 @@ class TestDataFrameStructure:
 
     def test_dataframe_index_is_t_start(self) -> None:
         """Test that DataFrame index is set to t_start."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         mock_reading = MagicMock()
         mock_reading.t_start = pd.Timestamp("2024-01-01 00:00:00")

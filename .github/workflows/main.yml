@@ -29,7 +29,7 @@ jobs:
           mkdir -p build/ingester
           uv export --no-dev --no-hashes -o requirements.txt
           pip install -r requirements.txt -t build/ingester/
-          cp -r ingester/src/* build/ingester/
+          cp -r src/* build/ingester/
           cd build/ingester && zip -r ../../ingester.zip . && cd ../..
 
       # --------------------
@@ -38,7 +38,7 @@ jobs:
       - name: Build Redrive Lambda
         run: |
           mkdir -p build/redrive
-          cp -r redrive/src/* build/redrive/
+          cp src/functions/redrive_handler/app.py build/redrive/redrive.py
           cd build/redrive && zip -r ../../redrive.zip . && cd ../..
 
       # --------------------
@@ -47,7 +47,7 @@ jobs:
       - name: Build Nem12 Mappings Lambda
         run: |
           mkdir -p build/nem12_mappings_to_s3
-          cp -r nem12_mappings_to_s3/src/* build/nem12_mappings_to_s3/
+          cp src/functions/nem12_exporter/app.py build/nem12_mappings_to_s3/nem12_mappings_to_s3.py
           cd build/nem12_mappings_to_s3 && zip -r ../../nem12-mappings-to-s3.zip . && cd ../..
 
       # --------------------

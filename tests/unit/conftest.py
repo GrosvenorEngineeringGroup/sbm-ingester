@@ -16,7 +16,30 @@ from mypy_boto3_logs import CloudWatchLogsClient
 from mypy_boto3_s3 import S3Client, S3ServiceResource
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / ".." / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+
+# ==================== Mock Idempotency Before Module Import ====================
+# Must be done at module level before any imports of app.py
+
+
+def _passthrough_decorator(*args: Any, **kwargs: Any) -> Any:
+    """Return a decorator that simply returns the original function."""
+
+    def decorator(func: Any) -> Any:
+        return func
+
+    if args and callable(args[0]):
+        return args[0]
+    return decorator
+
+
+# Patch idempotency before importing modules that use it
+_idempotency_patch = patch(
+    "aws_lambda_powertools.utilities.idempotency.idempotent_function",
+    _passthrough_decorator,
+)
+_idempotency_patch.start()
 
 
 # ==================== Paths ====================
@@ -170,13 +193,13 @@ def sample_dataframe() -> pd.DataFrame:
     )
 
 
-# ==================== Mock CloudWatchLogger ====================
+# ==================== Mock Powertools Logger ====================
 
 
 @pytest.fixture
-def mock_cloudwatch_logger() -> Generator[MagicMock]:
-    """Mock CloudWatchLogger to avoid actual AWS calls."""
-    with patch("modules.common.CloudWatchLogger") as MockLogger:
+def mock_logger() -> Generator[MagicMock]:
+    """Mock Powertools Logger to avoid actual logging."""
+    with patch("aws_lambda_powertools.Logger") as MockLogger:
         mock_instance = MagicMock()
         MockLogger.return_value = mock_instance
         yield mock_instance

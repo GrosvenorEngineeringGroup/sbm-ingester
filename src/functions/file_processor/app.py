@@ -9,11 +9,24 @@ from typing import Any
 from urllib.parse import unquote
 
 import boto3
-import modules.common as common
 import pandas as pd
-from modules.common import BUCKET_NAME, CloudWatchLogger
-from modules.nem_adapter import output_as_data_frames
-from modules.nonNemParserFuncs import nonNemParsersGetDf
+from aws_lambda_powertools import Logger, Metrics, Tracer
+from aws_lambda_powertools.metrics import MetricUnit
+from aws_lambda_powertools.utilities.idempotency import (
+    DynamoDBPersistenceLayer,
+    IdempotencyConfig,
+    idempotent_function,
+)
+
+from shared import (
+    BUCKET_NAME,
+    IRREVFILES_DIR,
+    PARSE_ERR_DIR,
+    PARSE_ERROR_LOG_GROUP,
+    PROCESSED_DIR,
+    get_non_nem_df,
+    output_as_data_frames,
+)
 
 # Module-level constants (computed once at import time)
 NMI_DATA_STREAM_SUFFIX = [
@@ -82,24 +95,36 @@ NMI_DATA_STREAM_COMBINED = frozenset(i + j for i in NMI_DATA_STREAM_SUFFIX for j
 # Batch size for S3 writes - merge this many DataFrames before writing
 BATCH_SIZE = 50
 
-execution_log = CloudWatchLogger(common.EXECUTION_LOG_GROUP)
-error_log = CloudWatchLogger(common.ERROR_LOG_GROUP)
-runtime_error_log = CloudWatchLogger(common.RUNTIME_ERROR_LOG_GROUP)
-metrics_log = CloudWatchLogger(common.METRICS_LOG_GROUP)
+# Powertools instances
+logger = Logger(service="file-processor")
+tracer = Tracer(service="file-processor")
+metrics = Metrics(namespace="SBM/Ingester")
+
+# Idempotency configuration - prevents duplicate processing of same files
+persistence_layer = DynamoDBPersistenceLayer(table_name="sbm-ingester-idempotency")
+idempotency_config = IdempotencyConfig(
+    expires_after_seconds=86400,  # 24 hours TTL
+)
 
 s3_resource = boto3.resource("s3")
 
 
+@tracer.capture_method
 def read_nem12_mappings(bucket_name: str, object_key: str = "nem12_mappings.json") -> dict | None:
     try:
         obj = s3_resource.Object(bucket_name, object_key)
         content = obj.get()["Body"].read().decode("utf-8")
         return json.loads(content)
     except Exception as e:
-        error_log.log(f"Failed to read NEM12 mappings from {bucket_name}/{object_key}: {e}")
+        logger.error(
+            "Failed to read NEM12 mappings",
+            exc_info=True,
+            extra={"bucket": bucket_name, "key": object_key, "error": str(e)},
+        )
         return None
 
 
+@tracer.capture_method
 def download_files_to_tmp(file_list: list[dict[str, str]], tmp_files_folder_path: str) -> list[str]:
     local_paths = []
 
@@ -112,14 +137,14 @@ def download_files_to_tmp(file_list: list[dict[str, str]], tmp_files_folder_path
         file_name = Path(key).name
         local_path = str(Path(tmp_files_folder_path) / file_name)
 
-        execution_log.log(f"Downloading s3://{bucket}/{key} -> {local_path}")
+        logger.info("Downloading file", extra={"bucket": bucket, "key": key, "local_path": local_path})
 
         try:
             s3_resource.Bucket(bucket).download_file(key, local_path)
             local_paths.append(local_path)
 
         except Exception as e:
-            error_log.log(f"Downloading {key} Failed. File Potentially already processed. Error: {e}")
+            logger.error("File download failed", exc_info=True, extra={"key": key, "error": str(e)})
             continue
     return local_paths
 
@@ -142,54 +167,11 @@ def move_s3_file(bucket_name: str, source_key: str, dest_prefix: str) -> str | N
         return dest_key
 
     except Exception as e:
-        error_log.log(f"Moving {source_key} -> {dest_key} Failed. File Potentially already processed. Error: {e}")
+        logger.error("File move failed", exc_info=True, extra={"source": source_key, "dest": dest_key, "error": str(e)})
         return None
 
 
-def dailyInitializeMetricsDict(metricsDict: dict[str, dict[str, int]], key: str) -> None:
-    if key not in metricsDict:
-        metricsDict[key] = {
-            "calculatedTotalFilesCount": 0,
-            "ftpFilesCount": 0,
-            "calculatedEmailFilesCount": 0,
-            "validProcessedFilesCount": 0,
-            "parseErrFilesCount": 0,
-            "irrevFilesCount": 0,
-            "totalMonitorPointsCount": 0,
-            "processedMonitorPointsCount": 0,
-            "errorExecutionCount": 0,
-        }
-
-
-def metricsDictPopulateValues(
-    metricsDict: dict[str, dict[str, int]],
-    key: str,
-    ftpFilesCount: int,
-    validProcessedFilesCount: int,
-    parseErrFilesCount: int,
-    irrevFilesCount: int,
-    totalMonitorPointsCount: int,
-    processedMonitorPointsCount: int,
-    errorExecutionCount: int,
-) -> None:
-    dailyInitializeMetricsDict(metricsDict, key)
-    metricsDict[key]["validProcessedFilesCount"] += validProcessedFilesCount
-    metricsDict[key]["ftpFilesCount"] += ftpFilesCount
-    metricsDict[key]["parseErrFilesCount"] += parseErrFilesCount
-    metricsDict[key]["irrevFilesCount"] += irrevFilesCount
-    metricsDict[key]["totalMonitorPointsCount"] += totalMonitorPointsCount
-    metricsDict[key]["processedMonitorPointsCount"] += processedMonitorPointsCount
-    metricsDict[key]["calculatedTotalFilesCount"] = (
-        metricsDict[key]["parseErrFilesCount"]
-        + metricsDict[key]["irrevFilesCount"]
-        + metricsDict[key]["validProcessedFilesCount"]
-    )
-    metricsDict[key]["calculatedEmailFilesCount"] = (
-        metricsDict[key]["calculatedTotalFilesCount"] - metricsDict[key]["ftpFilesCount"]
-    )
-    metricsDict[key]["errorExecutionCount"] += errorExecutionCount
-
-
+@tracer.capture_method
 def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
     """Write buffered DataFrames to S3 as a single merged CSV."""
     if not buffer:
@@ -198,8 +180,11 @@ def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
     merged_df = pd.concat(buffer, ignore_index=True)
     output_key = f"sensorDataFiles/batch_{batch_timestamp}_{random.randint(1, 1000000)}.csv"
     s3_resource.Object("hudibucketsrc", output_key).put(Body=merged_df.to_csv(index=False))
+    logger.debug("Flushed buffer to S3", extra={"output_key": output_key, "rows": len(merged_df)})
 
 
+@idempotent_function(persistence_store=persistence_layer, config=idempotency_config, data_keyword_argument="tbp_files")
+@tracer.capture_method
 def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | None:
     tmp_dir = tempfile.gettempdir()
     tmp_files_folder_name = str(uuid.uuid4())
@@ -209,11 +194,9 @@ def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | No
     # Generate timestamps once at start (not per-write)
     timestampNow = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
     batch_timestamp = pd.Timestamp.now().strftime("%Y_%b_%dT%H_%M_%S_%f")
-    metricsFileKey = timestampNow.split("T")[0] + "D"
-    metricsDict: dict[str, dict[str, int]] = {}
 
     try:
-        execution_log.log(f"Script Started Running at: {timestampNow}")
+        logger.info("Script started", extra={"timestamp": timestampNow, "files_count": len(tbp_files or [])})
 
         logsDict: dict[str, str] = {}
         nem12_mappings = read_nem12_mappings(BUCKET_NAME)
@@ -241,10 +224,10 @@ def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | No
                 dfs = output_as_data_frames(filePath, split_days=True)
             except Exception:
                 try:
-                    dfs = nonNemParsersGetDf(filePath, common.PARSE_ERROR_LOG_GROUP)
+                    dfs = get_non_nem_df(filePath, PARSE_ERROR_LOG_GROUP)
                 except Exception:
                     logsDict[f"Bad File: {filePath}"] = f"[{timestampNow}]"
-                    move_s3_file(BUCKET_NAME, filePath, common.PARSE_ERR_DIR)
+                    move_s3_file(BUCKET_NAME, filePath, PARSE_ERR_DIR)
                     parseErrFilesCount += 1
                     continue
 
@@ -295,46 +278,43 @@ def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | No
             # Move source file based on whether any data was mapped
             if file_neptune_ids:
                 totalMonitorPointsCount += len(file_neptune_ids)
-                move_s3_file(BUCKET_NAME, filePath, common.PROCESSED_DIR)
+                move_s3_file(BUCKET_NAME, filePath, PROCESSED_DIR)
                 validProcessedFilesCount += 1
             else:
-                move_s3_file(BUCKET_NAME, filePath, common.IRREVFILES_DIR)
+                move_s3_file(BUCKET_NAME, filePath, IRREVFILES_DIR)
                 irrevFilesCount += 1
 
         # Flush remaining buffer
         _flush_buffer_to_s3(write_buffer, batch_timestamp)
 
         for key, value in logsDict.items():
-            runtime_error_log.log(f"{key} at {value}")
+            logger.warning("Runtime error", extra={"bad_file": key, "timestamp": value})
 
-        metricsDictPopulateValues(
-            metricsDict,
-            metricsFileKey,
-            ftpFilesCount,
-            validProcessedFilesCount,
-            parseErrFilesCount,
-            irrevFilesCount,
-            totalMonitorPointsCount,
-            processedMonitorPointsCount,
-            0,
-        )
-        metrics_log.log(json.dumps(metricsDict[metricsFileKey]))
+        # Record metrics using Powertools
+        metrics.add_metric(name="ValidProcessedFiles", unit=MetricUnit.Count, value=validProcessedFilesCount)
+        metrics.add_metric(name="ParseErrorFiles", unit=MetricUnit.Count, value=parseErrFilesCount)
+        metrics.add_metric(name="IrrelevantFiles", unit=MetricUnit.Count, value=irrevFilesCount)
+        metrics.add_metric(name="FTPFiles", unit=MetricUnit.Count, value=ftpFilesCount)
+        metrics.add_metric(name="ProcessedMonitorPoints", unit=MetricUnit.Count, value=processedMonitorPointsCount)
+        metrics.add_metric(name="TotalMonitorPoints", unit=MetricUnit.Count, value=totalMonitorPointsCount)
 
         processingEndTime = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
-        execution_log.log(f"Script Finished Running at: {processingEndTime}")
+        logger.info("Script finished", extra={"timestamp": processingEndTime})
         shutil.rmtree(tmp_files_folder_path, ignore_errors=True)
 
         return 1
 
     except Exception as e:
         err = traceback.format_exc()
-        error_log.log(f"Script Failed with Error: {e}\n{err}")
-        metricsDictPopulateValues(metricsDict, metricsFileKey, 0, 0, 0, 0, 0, 0, 1)
-        metrics_log.log(json.dumps(metricsDict[metricsFileKey]))
+        logger.error("Script failed", exc_info=True, extra={"error": str(e), "traceback": err})
+        metrics.add_metric(name="ErrorExecutionCount", unit=MetricUnit.Count, value=1)
         shutil.rmtree(tmp_files_folder_path, ignore_errors=True)
         return None
 
 
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
+@logger.inject_lambda_context
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     tbp_files: list[dict[str, str]] = []
     for record in event["Records"]:
@@ -352,10 +332,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
 
         except Exception as e:
-            error_log.log(f"Error processing record: {e}")
+            logger.error("Error processing SQS record", exc_info=True, extra={"error": str(e)})
             continue
 
     if tbp_files:
-        parseAndWriteData(tbp_files)
+        parseAndWriteData(tbp_files=tbp_files)
 
     return {"statusCode": 200, "body": "Successfully processed files."}

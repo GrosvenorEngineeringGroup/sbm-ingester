@@ -12,7 +12,7 @@ class TestOutputAsDataFrames:
 
     def test_nem12_file_parsing(self, nem12_sample_file: str) -> None:
         """Test that NEM12 file is parsed correctly."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file)
 
@@ -27,7 +27,7 @@ class TestOutputAsDataFrames:
 
     def test_nem13_file_parsing(self, nem13_sample_file: str) -> None:
         """Test that NEM13 file is parsed correctly."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem13_sample_file)
 
@@ -40,7 +40,7 @@ class TestOutputAsDataFrames:
 
     def test_column_naming_suffix_unit_format(self, nem12_sample_file: str) -> None:
         """Test that column names follow suffix_unit format (e.g., E1_kWh)."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file)
         assert len(result) > 0
@@ -60,7 +60,7 @@ class TestOutputAsDataFrames:
 
     def test_split_days_enabled(self, nem12_sample_file: str) -> None:
         """Test that split_days=True splits multi-day readings."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file, split_days=True)
         assert len(result) > 0
@@ -71,7 +71,7 @@ class TestOutputAsDataFrames:
 
     def test_split_days_disabled(self, nem12_sample_file: str) -> None:
         """Test that split_days=False keeps original data."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file, split_days=False)
         assert len(result) > 0
@@ -81,7 +81,7 @@ class TestOutputAsDataFrames:
 
     def test_invalid_file_raises_exception(self, temp_directory: str) -> None:
         """Test that invalid file raises exception."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         invalid_file = str(Path(temp_directory) / "invalid.csv")
         with Path(invalid_file).open("w") as f:
@@ -92,14 +92,14 @@ class TestOutputAsDataFrames:
 
     def test_nonexistent_file_raises_exception(self) -> None:
         """Test that nonexistent file raises exception."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         with pytest.raises((FileNotFoundError, OSError)):
             output_as_data_frames("/nonexistent/path/to/file.csv")
 
     def test_multiple_nmis_in_file(self, nem12_multiple_meters_file: str) -> None:
         """Test that file with multiple NMIs returns multiple tuples."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_multiple_meters_file)
 
@@ -112,7 +112,7 @@ class TestOutputAsDataFrames:
 
     def test_dataframe_has_required_columns(self, nem12_sample_file: str) -> None:
         """Test that DataFrame has required metadata columns."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file)
         assert len(result) > 0
@@ -128,7 +128,7 @@ class TestOutputAsDataFrames:
 
     def test_t_start_is_datetime(self, nem12_sample_file: str) -> None:
         """Test that t_start column contains datetime values."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file)
         assert len(result) > 0
@@ -145,7 +145,7 @@ class TestBuildNmiDataframe:
 
     def test_empty_channels_returns_none(self) -> None:
         """Test that empty channels returns None."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         result = _build_nmi_dataframe(nmi="TEST123", nmi_readings={}, nmi_transactions={}, split_days=True)
 
@@ -153,7 +153,7 @@ class TestBuildNmiDataframe:
 
     def test_empty_readings_returns_none(self) -> None:
         """Test that empty readings returns None."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         result = _build_nmi_dataframe(
             nmi="TEST123", nmi_readings={"E1": []}, nmi_transactions={"E1": []}, split_days=True
@@ -167,7 +167,7 @@ class TestUnitExtraction:
 
     def test_kwh_unit_extracted(self, nem12_sample_file: str) -> None:
         """Test that kWh unit is extracted correctly."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         result = output_as_data_frames(nem12_sample_file)
         assert len(result) > 0
@@ -189,10 +189,10 @@ class TestUnitExtraction:
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
-    @patch("modules.nem_adapter.parse_error_log")
+    @patch("shared.nem_adapter.logger")
     def test_nmi_processing_error_logged(self, mock_log: MagicMock, nem12_sample_file: str) -> None:
         """Test that NMI processing errors are logged."""
-        from modules.nem_adapter import output_as_data_frames
+        from shared.nem_adapter import output_as_data_frames
 
         # This should not raise, errors should be logged
         result = output_as_data_frames(nem12_sample_file)
@@ -202,7 +202,7 @@ class TestEdgeCases:
 
     def test_default_unit_when_missing(self) -> None:
         """Test that default unit (kWh) is used when uom is missing."""
-        from modules.nem_adapter import _build_nmi_dataframe
+        from shared.nem_adapter import _build_nmi_dataframe
 
         # Create mock reading without uom
         mock_reading = MagicMock()

@@ -1,6 +1,6 @@
 [project]
 name = "sbm-ingester"
-version = "0.2.0"
+version = "0.3.0"
 description = "SBM file ingestion pipeline for building energy data"
 requires-python = ">=3.13"
 dependencies = [
@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=2.3.5",
     "requests>=2.32.5",
     "pytz>=2025.2",
+    "aws-lambda-powertools>=3.24.0",
 ]
 
 [project.optional-dependencies]
@@ -22,13 +23,17 @@ dev = [
     "freezegun>=1.5.5",
     "ruff>=0.14.11",
     "boto3-stubs[logs,s3]>=1.42.26",
+    "aws-xray-sdk>=2.15.0",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["ingester/tests"]
+testpaths = ["tests/unit"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore:No application metrics to publish:UserWarning:aws_lambda_powertools",
+]
 
 [tool.ruff]
 line-length = 120
@@ -62,7 +67,7 @@ ignore = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["ingester/src"]
+packages = ["src"]
 
 [build-system]
 requires = ["hatchling"]

@@ -113,21 +113,120 @@ data "aws_iam_role" "ingester_role" {
 resource "aws_lambda_function" "sbm_files_ingester" {
   function_name = "sbm-files-ingester"
   role          = data.aws_iam_role.ingester_role.arn
-  handler       = "gemsDataParseAndWrite.lambda_handler"
-  runtime       = "python3.12"
+  handler       = "functions.file_processor.app.lambda_handler"
+  runtime       = "python3.13"
   memory_size   = 1024  # Increased from 512 for better performance
   timeout       = 300   # Increased from 120 to handle larger files
   reserved_concurrent_executions = 5
   s3_bucket = "gega-code-deployment-bucket"
   s3_key    = "sbm-files-ingester/ingester.zip"
+
+  tracing_config {
+    mode = "Active"  # Enable X-Ray tracing for Powertools
+  }
 }
 
 # -----------------------------
-# SQS Queue
+# DynamoDB Idempotency Table
 # -----------------------------
+resource "aws_dynamodb_table" "idempotency" {
+  name           = "sbm-ingester-idempotency"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "id"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expiration"
+    enabled        = true
+  }
+
+  tags = {
+    Name        = "sbm-ingester-idempotency"
+    Environment = "production"
+  }
+}
+
+# Add DynamoDB permissions to Lambda role
+resource "aws_iam_role_policy" "lambda_dynamodb" {
+  name = "sbm-ingester-dynamodb-policy"
+  role = data.aws_iam_role.ingester_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem"
+        ]
+        Resource = aws_dynamodb_table.idempotency.arn
+      }
+    ]
+  })
+}
+
+# -----------------------------
+# SNS Topic for Alerts
+# -----------------------------
+resource "aws_sns_topic" "sbm_alerts" {
+  name = "sbm-ingester-alerts"
+  tags = {
+    Name        = "sbm-ingester-alerts"
+    Environment = "production"
+  }
+}
+
+# -----------------------------
+# SQS Queues (Main + DLQ)
+# -----------------------------
+resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
+  name                      = "sbm-files-ingester-dlq"
+  message_retention_seconds = 1209600  # 14 days
+
+  tags = {
+    Name        = "sbm-files-ingester-dlq"
+    Environment = "production"
+  }
+}
+
 resource "aws_sqs_queue" "sbm_files_ingester_queue" {
   name                       = "sbm-files-ingester-queue"
   visibility_timeout_seconds = 300
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.sbm_files_ingester_dlq.arn
+    maxReceiveCount     = 3  # Retry 3 times before sending to DLQ
+  })
+
+  tags = {
+    Name        = "sbm-files-ingester-queue"
+    Environment = "production"
+  }
+}
+
+# CloudWatch Alarm for DLQ
+resource "aws_cloudwatch_metric_alarm" "dlq_messages" {
+  alarm_name          = "sbm-ingester-dlq-messages"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 0
+  alarm_description   = "Alert when messages appear in DLQ"
+  alarm_actions       = [aws_sns_topic.sbm_alerts.arn]
+
+  dimensions = {
+    QueueName = aws_sqs_queue.sbm_files_ingester_dlq.name
+  }
 }
 
 # -----------------------------
@@ -355,4 +454,19 @@ output "sbm_api_key_value" {
   value       = aws_api_gateway_api_key.sbm_api_key.value
   description = "API key to access the API."
   sensitive   = true
+}
+
+output "sbm_dlq_url" {
+  value       = aws_sqs_queue.sbm_files_ingester_dlq.url
+  description = "Dead Letter Queue URL for monitoring failed messages."
+}
+
+output "sbm_alerts_topic_arn" {
+  value       = aws_sns_topic.sbm_alerts.arn
+  description = "SNS topic ARN for subscribing to ingester alerts."
+}
+
+output "sbm_idempotency_table" {
+  value       = aws_dynamodb_table.idempotency.name
+  description = "DynamoDB table name for idempotency tracking."
 }

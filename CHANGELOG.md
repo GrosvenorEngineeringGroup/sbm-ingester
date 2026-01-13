@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-01-13
+
+### Added
+- AWS Lambda Powertools integration (Logger, Tracer, Metrics)
+- Structured JSON logging with CloudWatch Logs Insights support
+- X-Ray distributed tracing for performance visibility
+- Powertools Idempotency with DynamoDB persistence layer
+- Package-level exports via `__init__.py` for cleaner imports
+
+### Changed
+- Reorganized project structure to standard Lambda layout:
+  - `src/functions/` for Lambda handlers
+  - `src/shared/` for common modules
+  - `tests/unit/` for test files
+- Renamed main handler from `gemsDataParseAndWrite.py` to `app.py`
+- Unified naming conventions to PEP 8 snake_case:
+  - `nonNemParserFuncs.py` → `non_nem_parsers.py`
+  - All function/variable names converted to snake_case
+- Simplified imports using `from shared import ...` pattern
+- Replaced custom CloudWatchLogger with Powertools Logger
+- Replaced manual metrics dict with Powertools Metrics
+
+### Removed
+- Custom CloudWatchLogger class (replaced by Powertools Logger)
+- Manual metrics management functions
+- Unnecessary empty `__init__.py` files in function directories
+
 ## [0.2.0] - 2025-01-13
 
 ### Added

@@ -11,10 +11,10 @@ class TestFlushBufferToS3:
 
     def test_empty_buffer_no_write(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that empty buffer does not write to S3."""
-        with patch("modules.common.CloudWatchLogger"):
+        with patch("aws_lambda_powertools.Logger"):
             # Need to patch s3_resource in the module
-            with patch("gemsDataParseAndWrite.s3_resource", mock_s3_resource):
-                from gemsDataParseAndWrite import _flush_buffer_to_s3
+            with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
+                from functions.file_processor.app import _flush_buffer_to_s3
 
                 # Empty buffer should not raise and not write
                 _flush_buffer_to_s3([], "2024_Jan_01T00_00_00_000000")
@@ -26,9 +26,9 @@ class TestFlushBufferToS3:
 
     def test_single_dataframe_write(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that single DataFrame is written correctly."""
-        with patch("modules.common.CloudWatchLogger"):
-            with patch("gemsDataParseAndWrite.s3_resource", mock_s3_resource):
-                from gemsDataParseAndWrite import _flush_buffer_to_s3
+        with patch("aws_lambda_powertools.Logger"):
+            with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
+                from functions.file_processor.app import _flush_buffer_to_s3
 
                 df = pd.DataFrame(
                     {
@@ -52,9 +52,9 @@ class TestFlushBufferToS3:
 
     def test_multiple_dataframes_merged(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that multiple DataFrames are merged into single CSV."""
-        with patch("modules.common.CloudWatchLogger"):
-            with patch("gemsDataParseAndWrite.s3_resource", mock_s3_resource):
-                from gemsDataParseAndWrite import _flush_buffer_to_s3
+        with patch("aws_lambda_powertools.Logger"):
+            with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
+                from functions.file_processor.app import _flush_buffer_to_s3
 
                 df1 = pd.DataFrame(
                     {
@@ -93,9 +93,9 @@ class TestFlushBufferToS3:
 
     def test_csv_output_format(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that CSV output has correct format."""
-        with patch("modules.common.CloudWatchLogger"):
-            with patch("gemsDataParseAndWrite.s3_resource", mock_s3_resource):
-                from gemsDataParseAndWrite import _flush_buffer_to_s3
+        with patch("aws_lambda_powertools.Logger"):
+            with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
+                from functions.file_processor.app import _flush_buffer_to_s3
 
                 df = pd.DataFrame(
                     {
@@ -128,8 +128,8 @@ class TestNmiDataStreamFiltering:
 
     def test_valid_suffix_in_combined_set(self) -> None:
         """Test that valid suffixes are in NMI_DATA_STREAM_COMBINED."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import NMI_DATA_STREAM_COMBINED
+        with patch("aws_lambda_powertools.Logger"):
+            from functions.file_processor.app import NMI_DATA_STREAM_COMBINED
 
             # Valid suffixes should be in the set
             valid_suffixes = ["E1", "B1", "Q1", "K1", "E2", "B2"]
@@ -138,8 +138,8 @@ class TestNmiDataStreamFiltering:
 
     def test_invalid_suffix_not_in_combined_set(self) -> None:
         """Test that invalid suffixes are not in NMI_DATA_STREAM_COMBINED."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import NMI_DATA_STREAM_COMBINED
+        with patch("aws_lambda_powertools.Logger"):
+            from functions.file_processor.app import NMI_DATA_STREAM_COMBINED
 
             # Invalid suffixes should not be in the set
             # Note: ZZ is valid (Z suffix + Z channel), so we use truly invalid ones
@@ -149,8 +149,8 @@ class TestNmiDataStreamFiltering:
 
     def test_combined_set_is_frozenset(self) -> None:
         """Test that NMI_DATA_STREAM_COMBINED is a frozenset for O(1) lookup."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import NMI_DATA_STREAM_COMBINED
+        with patch("aws_lambda_powertools.Logger"):
+            from functions.file_processor.app import NMI_DATA_STREAM_COMBINED
 
             assert isinstance(NMI_DATA_STREAM_COMBINED, frozenset)
 
@@ -160,8 +160,8 @@ class TestBatchSize:
 
     def test_batch_size_constant_exists(self) -> None:
         """Test that BATCH_SIZE constant exists and is reasonable."""
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import BATCH_SIZE
+        with patch("aws_lambda_powertools.Logger"):
+            from functions.file_processor.app import BATCH_SIZE
 
             assert isinstance(BATCH_SIZE, int)
             assert BATCH_SIZE > 0
@@ -173,9 +173,9 @@ class TestTimestampFormat:
 
     def test_timestamp_format_yyyy_mm_dd_hh_mm_ss(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that timestamps are formatted as YYYY-MM-DD HH:MM:SS."""
-        with patch("modules.common.CloudWatchLogger"):
-            with patch("gemsDataParseAndWrite.s3_resource", mock_s3_resource):
-                from gemsDataParseAndWrite import _flush_buffer_to_s3
+        with patch("aws_lambda_powertools.Logger"):
+            with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
+                from functions.file_processor.app import _flush_buffer_to_s3
 
                 df = pd.DataFrame(
                     {
@@ -208,8 +208,8 @@ class TestBatchWriteIntegration:
         # This test verifies the batching logic conceptually
         # The actual implementation buffers dataframes and flushes at BATCH_SIZE
 
-        with patch("modules.common.CloudWatchLogger"):
-            from gemsDataParseAndWrite import BATCH_SIZE
+        with patch("aws_lambda_powertools.Logger"):
+            from functions.file_processor.app import BATCH_SIZE
 
             # Simulate buffer accumulation
             buffer = []
@@ -230,9 +230,9 @@ class TestBatchWriteIntegration:
 
     def test_final_flush_clears_remaining(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that remaining buffer items are flushed at the end."""
-        with patch("modules.common.CloudWatchLogger"):
-            with patch("gemsDataParseAndWrite.s3_resource", mock_s3_resource):
-                from gemsDataParseAndWrite import _flush_buffer_to_s3
+        with patch("aws_lambda_powertools.Logger"):
+            with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
+                from functions.file_processor.app import _flush_buffer_to_s3
 
                 # Simulate partial batch (less than BATCH_SIZE)
                 buffer = []

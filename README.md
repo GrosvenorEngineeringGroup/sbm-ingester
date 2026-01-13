@@ -1,11 +1,11 @@
 # sbm-ingester
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-FF9900?logo=awslambda&logoColor=white)
+![AWS Lambda Powertools](https://img.shields.io/badge/Powertools-3.24-FF9900?logo=amazonaws&logoColor=white)
 ![Terraform](https://img.shields.io/badge/Terraform-1.0+-7B42BC?logo=terraform&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-115%20passed-brightgreen)
-![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)
+
 
 Serverless file ingestion pipeline for building energy data. Processes NEM12/NEM13 meter data files and transforms them into a standard format for the SBM data lake.
 
@@ -15,6 +15,7 @@ Serverless file ingestion pipeline for building energy data. Processes NEM12/NEM
 - [Install](#install)
 - [Usage](#usage)
 - [Architecture](#architecture)
+- [Project Structure](#project-structure)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Deployment](#deployment)
@@ -34,6 +35,12 @@ SBM Ingester is part of the Sustainable Building Manager (SBM) platform. It hand
 - **Green Square ComX** - Schneider private wire meters
 
 Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, and maps meter readings to Neptune graph database sensor IDs.
+
+### Key Features (v0.3.0)
+
+- **AWS Lambda Powertools** - Structured JSON logging, X-Ray tracing, CloudWatch metrics
+- **Idempotency** - DynamoDB-backed duplicate processing prevention
+- **Batch Processing** - Configurable buffer size for optimized S3 writes
 
 ## Install
 
@@ -75,7 +82,7 @@ uv run ruff format .
 uv run pytest
 
 # Run tests with coverage
-uv run pytest --cov=ingester/src --cov-report=term-missing
+uv run pytest --cov=src --cov-report=term-missing
 ```
 
 ### Manual File Processing
@@ -104,6 +111,7 @@ flowchart LR
     subgraph Processing
         SQS[["SQS Queue"]]
         Lambda["Lambda<br/>sbm-files-ingester"]
+        DDB[("DynamoDB<br/>Idempotency")]
     end
 
     subgraph Output
@@ -117,13 +125,21 @@ flowchart LR
         Neptune[("Neptune<br/>NEM12 Mappings")]
     end
 
+    subgraph Observability
+        XRay["X-Ray Traces"]
+        CW["CloudWatch<br/>Logs & Metrics"]
+    end
+
     S3_IN -->|"S3 Event"| SQS
     SQS -->|"Trigger"| Lambda
+    Lambda <-->|"Check/Store"| DDB
     Lambda -->|"Success"| S3_OK
     Lambda -->|"No Mapping"| S3_IRR
     Lambda -->|"Parse Error"| S3_ERR
     S3_OK -->|"Write CSV"| S3_DATA
     Neptune -.->|"Lookup"| Lambda
+    Lambda -.->|"Trace"| XRay
+    Lambda -.->|"Log/Metrics"| CW
 ```
 
 ### Lambda Functions
@@ -141,6 +157,36 @@ flowchart LR
 | Success | `newP/` | Parsed successfully and mapped to Neptune ID |
 | No Mapping | `newIrrevFiles/` | Parsed but no Neptune ID found |
 | Parse Error | `newParseErr/` | Failed to parse with any parser |
+
+## Project Structure
+
+```
+sbm-ingester/
+├── src/
+│   ├── __init__.py              # Package metadata (version, author)
+│   ├── functions/
+│   │   ├── file_processor/      # Main ingester Lambda
+│   │   │   └── app.py
+│   │   ├── nem12_exporter/      # NEM12 mappings Lambda
+│   │   │   └── app.py
+│   │   └── redrive_handler/     # Redrive Lambda
+│   │       └── app.py
+│   └── shared/
+│       ├── __init__.py          # Public API exports
+│       ├── common.py            # Constants (S3 paths, log groups)
+│       ├── nem_adapter.py       # NEM12/NEM13 parser adapter
+│       └── non_nem_parsers.py   # Envizi, Optima, RACV parsers
+├── tests/
+│   └── unit/
+│       ├── conftest.py          # Shared fixtures
+│       ├── fixtures/            # Test data files
+│       └── test_*.py            # Test modules
+├── iac/
+│   └── sbm-ingester.tf          # Terraform infrastructure
+├── docs/                        # Documentation
+├── pyproject.toml               # Project config (uv, ruff, pytest)
+└── CHANGELOG.md                 # Version history
+```
 
 ## Configuration
 
@@ -166,7 +212,7 @@ flowchart LR
 - **Region:** ap-southeast-2
 - **S3 Buckets:** `sbm-file-ingester` (input), `hudibucketsrc` (output)
 - **SQS:** `sbm-files-ingester-queue` (300s visibility), `sbm-files-ingester-dlq` (14 day retention)
-- **DynamoDB:** `sbm-ingester-idempotency` (duplicate prevention)
+- **DynamoDB:** `sbm-ingester-idempotency` (duplicate prevention, 24h TTL)
 - **Neptune:** NEM12 ID → sensor ID mappings
 - **SNS:** `sbm-ingester-alerts` (error notifications)
 
@@ -182,20 +228,20 @@ uv run pytest
 uv run pytest -v
 
 # Run specific test file
-uv run pytest ingester/tests/test_nem_adapter.py
+uv run pytest tests/unit/test_nem_adapter.py
 
 # Run with coverage report
-uv run pytest --cov=ingester/src --cov-report=html
+uv run pytest --cov=src --cov-report=html
 ```
 
 ### Test Coverage
 
 | Module | Coverage |
 |--------|----------|
-| `gemsDataParseAndWrite.py` | 100% |
-| `modules/nem_adapter.py` | 100% |
-| `modules/nonNemParserFuncs.py` | 100% |
-| `modules/common.py` | 100% |
+| `functions/file_processor/app.py` | 100% |
+| `shared/nem_adapter.py` | 100% |
+| `shared/non_nem_parsers.py` | 100% |
+| `shared/common.py` | 100% |
 
 ## Deployment
 
@@ -205,8 +251,8 @@ Deployment is automated via GitHub Actions on push to `main`.
 
 ```bash
 # Build Lambda packages
-cd ingester
-zip -r ../ingester.zip src/
+cd src
+zip -r ../ingester.zip functions/file_processor/ shared/
 
 # Upload to S3
 aws s3 cp ingester.zip s3://gega-code-deployment-bucket/sbm-files-ingester/
@@ -264,4 +310,4 @@ curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem1
 
 ## License
 
-Proprietary © GEG
+Proprietary © VerdeOS

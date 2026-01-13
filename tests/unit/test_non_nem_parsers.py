@@ -1,4 +1,4 @@
-"""Unit tests for nonNemParserFuncs.py module."""
+"""Unit tests for non_nem_parsers.py module."""
 
 import sys
 from pathlib import Path
@@ -17,17 +17,17 @@ from conftest import (
 
 
 class TestEnviziVerticalParserWater:
-    """Tests for enviziVerticalParserWater function."""
+    """Tests for envizi_vertical_parser_water function."""
 
     def test_parses_water_data_correctly(self, temp_directory: str) -> None:
         """Test that water data is parsed correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWater
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water
 
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"], rows_per_meter=5)
 
-            result = enviziVerticalParserWater(filepath, "error_log")
+            result = envizi_vertical_parser_water(filepath, "error_log")
 
             assert isinstance(result, list)
             assert len(result) == 1
@@ -39,13 +39,13 @@ class TestEnviziVerticalParserWater:
 
     def test_handles_multiple_meters(self, temp_directory: str) -> None:
         """Test that multiple meters are handled correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWater
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water
 
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["111", "222", "333"], rows_per_meter=3)
 
-            result = enviziVerticalParserWater(filepath, "error_log")
+            result = envizi_vertical_parser_water(filepath, "error_log")
 
             assert len(result) == 3
             nmis = [nmi for nmi, df in result]
@@ -55,20 +55,20 @@ class TestEnviziVerticalParserWater:
 
     def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserWater
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_water
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"])
 
             with pytest.raises(Exception, match="Not Relevant Parser"):
-                enviziVerticalParserWater(filepath, "error_log")
+                envizi_vertical_parser_water(filepath, "error_log")
 
     def test_logs_warning_for_multiple_units(self, temp_directory: str) -> None:
         """Test that multiple units per meter triggers warning."""
         mock_log = MagicMock()
-        with patch("modules.nonNemParserFuncs.parse_error_log", mock_log):
-            from modules.nonNemParserFuncs import enviziVerticalParserWater
+        with patch("shared.non_nem_parsers.logger", mock_log):
+            from shared.non_nem_parsers import envizi_vertical_parser_water
 
             # Create CSV with multiple units for same meter
             filepath = str(Path(temp_directory) / "multi_unit.csv")
@@ -83,24 +83,24 @@ class TestEnviziVerticalParserWater:
             )
             df.to_csv(filepath, index=False)
 
-            enviziVerticalParserWater(filepath, "error_log")
+            envizi_vertical_parser_water(filepath, "error_log")
 
             # Should log warning about multiple units
-            assert mock_log.log.called
+            assert mock_log.error.called
 
 
 class TestEnviziVerticalParserElectricity:
-    """Tests for enviziVerticalParserElectricity function."""
+    """Tests for envizi_vertical_parser_electricity function."""
 
     def test_parses_electricity_data_correctly(self, temp_directory: str) -> None:
         """Test that electricity data is parsed correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserElectricity
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_electricity
 
             filepath = str(Path(temp_directory) / "elec_data.csv")
             create_envizi_electricity_csv(filepath, serial_numbers=["E001"], rows_per_meter=5)
 
-            result = enviziVerticalParserElectricity(filepath, "error_log")
+            result = envizi_vertical_parser_electricity(filepath, "error_log")
 
             assert isinstance(result, list)
             assert len(result) == 1
@@ -111,28 +111,28 @@ class TestEnviziVerticalParserElectricity:
 
     def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import enviziVerticalParserElectricity
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import envizi_vertical_parser_electricity
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_envizi_electricity_csv(filepath, serial_numbers=["E001"])
 
             with pytest.raises(Exception, match="Not Relevant Parser"):
-                enviziVerticalParserElectricity(filepath, "error_log")
+                envizi_vertical_parser_electricity(filepath, "error_log")
 
 
 class TestOptimaGenerationDataParser:
-    """Tests for optimaGenerationDataParser function."""
+    """Tests for optima_generation_data_parser function."""
 
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
         """Test that generation data is parsed correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import optimaGenerationDataParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_generation_data_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_optima_generation_csv(filepath, identifiers=["SOLAR001"], rows_per_id=5)
 
-            result = optimaGenerationDataParser(filepath, "error_log")
+            result = optima_generation_data_parser(filepath, "error_log")
 
             assert isinstance(result, list)
             assert len(result) == 1
@@ -143,13 +143,13 @@ class TestOptimaGenerationDataParser:
 
     def test_handles_multiple_identifiers(self, temp_directory: str) -> None:
         """Test that multiple identifiers are handled correctly."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import optimaGenerationDataParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_generation_data_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_optima_generation_csv(filepath, identifiers=["SOLAR001", "SOLAR002"], rows_per_id=3)
 
-            result = optimaGenerationDataParser(filepath, "error_log")
+            result = optima_generation_data_parser(filepath, "error_log")
 
             assert len(result) == 2
             nmis = [nmi for nmi, df in result]
@@ -157,27 +157,27 @@ class TestOptimaGenerationDataParser:
             assert "Optima_SOLAR002" in nmis
 
 
-class TestNonNemParsersGetDf:
-    """Tests for nonNemParsersGetDf dispatcher function."""
+class TestGetNonNemDf:
+    """Tests for get_non_nem_df dispatcher function."""
 
     def test_tries_parsers_in_order(self, temp_directory: str) -> None:
         """Test that parsers are tried in order until one succeeds."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import nonNemParsersGetDf
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import get_non_nem_df
 
             # Create valid Envizi water file
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"])
 
-            result = nonNemParsersGetDf(filepath, "error_log")
+            result = get_non_nem_df(filepath, "error_log")
 
             assert isinstance(result, list)
             assert len(result) > 0
 
     def test_raises_exception_when_all_parsers_fail(self, temp_directory: str) -> None:
         """Test that exception is raised when no parser succeeds."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import nonNemParsersGetDf
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import get_non_nem_df
 
             # Create invalid file that no parser can handle
             filepath = str(Path(temp_directory) / "invalid.csv")
@@ -185,31 +185,31 @@ class TestNonNemParsersGetDf:
                 f.write("completely,invalid,format\n1,2,3\n")
 
             with pytest.raises(Exception, match="No Valid Parser Found"):
-                nonNemParsersGetDf(filepath, "error_log")
+                get_non_nem_df(filepath, "error_log")
 
     def test_logs_errors_for_failed_parsers(self, temp_directory: str) -> None:
         """Test that errors are logged for each failed parser."""
         mock_log = MagicMock()
-        with patch("modules.nonNemParserFuncs.parse_error_log", mock_log):
-            from modules.nonNemParserFuncs import nonNemParsersGetDf
+        with patch("shared.non_nem_parsers.logger", mock_log):
+            from shared.non_nem_parsers import get_non_nem_df
 
             # Create valid file for later parser
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_optima_generation_csv(filepath, identifiers=["ID1"])
 
-            nonNemParsersGetDf(filepath, "error_log")
+            get_non_nem_df(filepath, "error_log")
 
             # Earlier parsers should have logged failures
-            assert mock_log.log.called
+            assert mock_log.debug.called
 
 
 class TestRacvElecParser:
-    """Tests for racvElecParser function."""
+    """Tests for racv_elec_parser function."""
 
     def test_skips_header_rows(self, temp_directory: str) -> None:
         """Test that first two rows are skipped."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import racvElecParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import racv_elec_parser
 
             # Create RACV format file with header rows
             filepath = str(Path(temp_directory) / "racv_data.csv")
@@ -224,7 +224,7 @@ Date,Start Time,Meter1 kWh,Meter2 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racvElecParser(filepath, "error_log")
+            result = racv_elec_parser(filepath, "error_log")
 
             assert isinstance(result, list)
             # Should have parsed meter columns
@@ -232,8 +232,8 @@ Date,Start Time,Meter1 kWh,Meter2 kWh
 
     def test_filters_zero_days(self, temp_directory: str) -> None:
         """Test that days with all zero values are filtered out."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import racvElecParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import racv_elec_parser
 
             # Create file with some zero days
             filepath = str(Path(temp_directory) / "racv_data.csv")
@@ -248,7 +248,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racvElecParser(filepath, "error_log")
+            result = racv_elec_parser(filepath, "error_log")
 
             # Result should only have non-zero day data
             if len(result) > 0:
@@ -258,8 +258,8 @@ Date,Start Time,Meter1 kWh
 
     def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import racvElecParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import racv_elec_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             content = """Header Row 1
@@ -271,16 +271,16 @@ Date,Start Time,Meter1 kWh
                 f.write(content)
 
             with pytest.raises(Exception, match="Not Relevant Parser"):
-                racvElecParser(filepath, "error_log")
+                racv_elec_parser(filepath, "error_log")
 
 
 class TestGreenSquarePrivateWireSchneiderComXParser:
-    """Tests for greenSquarePrivateWireSchneiderComXParser function."""
+    """Tests for green_square_private_wire_schneider_comx_parser function."""
 
     def test_validates_comx_header(self, temp_directory: str) -> None:
         """Test that ComX header is validated."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import greenSquarePrivateWireSchneiderComXParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
 
             # Create file without ComX header - match expected CSV structure
             filepath = str(Path(temp_directory) / "not_comx.csv")
@@ -291,12 +291,12 @@ NotComX510_Green_Square,data,data,data,SiteName
                 f.write(content)
 
             with pytest.raises(Exception, match="Not Relevant Parser"):
-                greenSquarePrivateWireSchneiderComXParser(filepath, "error_log")
+                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
     def test_converts_wh_to_kwh(self, temp_directory: str) -> None:
         """Test that Wh values are converted to kWh."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import greenSquarePrivateWireSchneiderComXParser
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
 
             # Create valid ComX file with Wh column - must have consistent columns
             filepath = str(Path(temp_directory) / "comx_data.csv")
@@ -313,7 +313,7 @@ Local Time Stamp,Active energy (Wh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = greenSquarePrivateWireSchneiderComXParser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
             assert len(result) == 1
             _nmi, df = result[0]
@@ -329,30 +329,30 @@ class TestDataFrameOutputFormat:
 
     def test_all_parsers_return_t_start_column(self, temp_directory: str) -> None:
         """Test that all parsers return DataFrames with t_start."""
-        with patch("modules.nonNemParserFuncs.parse_error_log"):
-            from modules.nonNemParserFuncs import (
-                enviziVerticalParserElectricity,
-                enviziVerticalParserWater,
-                optimaGenerationDataParser,
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import (
+                envizi_vertical_parser_electricity,
+                envizi_vertical_parser_water,
+                optima_generation_data_parser,
             )
 
             # Test Envizi water
             water_file = str(Path(temp_directory) / "water.csv")
             create_envizi_water_csv(water_file, serial_numbers=["1"])
-            result = enviziVerticalParserWater(water_file, "error")
+            result = envizi_vertical_parser_water(water_file, "error")
             _, df = result[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
             # Test Envizi electricity
             elec_file = str(Path(temp_directory) / "elec.csv")
             create_envizi_electricity_csv(elec_file, serial_numbers=["1"])
-            result = enviziVerticalParserElectricity(elec_file, "error")
+            result = envizi_vertical_parser_electricity(elec_file, "error")
             _, df = result[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
             # Test Optima generation
             gen_file = str(Path(temp_directory) / "OptimaGenerationData_test.csv")
             create_optima_generation_csv(gen_file, identifiers=["1"])
-            result = optimaGenerationDataParser(gen_file, "error")
+            result = optima_generation_data_parser(gen_file, "error")
             _, df = result[0]
             assert df.index.name == "t_start" or "t_start" in df.columns

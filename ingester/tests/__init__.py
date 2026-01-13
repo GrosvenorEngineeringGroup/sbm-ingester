@@ -1,1 +1,0 @@
-# SBM Ingester Tests
