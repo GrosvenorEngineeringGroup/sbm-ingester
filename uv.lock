@@ -832,6 +832,7 @@ version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "aws-lambda-powertools" },
+    { name = "aws-xray-sdk" },
     { name = "boto3" },
     { name = "botocore" },
     { name = "nemreader" },
@@ -843,7 +844,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "aws-xray-sdk" },
     { name = "boto3-stubs", extra = ["logs", "s3"] },
     { name = "freezegun" },
     { name = "moto" },
@@ -856,7 +856,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aws-lambda-powertools", specifier = ">=3.24.0" },
-    { name = "aws-xray-sdk", marker = "extra == 'dev'", specifier = ">=2.15.0" },
+    { name = "aws-xray-sdk", specifier = ">=2.15.0" },
     { name = "boto3", specifier = ">=1.42.10" },
     { name = "boto3-stubs", extras = ["logs", "s3"], marker = "extra == 'dev'", specifier = ">=1.42.26" },
     { name = "botocore", specifier = ">=1.42.10" },

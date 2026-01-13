@@ -12,6 +12,7 @@ dependencies = [
     "requests>=2.32.5",
     "pytz>=2025.2",
     "aws-lambda-powertools>=3.24.0",
+    "aws-xray-sdk>=2.15.0",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,6 @@ dev = [
     "freezegun>=1.5.5",
     "ruff>=0.14.11",
     "boto3-stubs[logs,s3]>=1.42.26",
-    "aws-xray-sdk>=2.15.0",
 ]
 
 [tool.pytest.ini_options]
