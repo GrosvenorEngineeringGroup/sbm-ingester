@@ -1,7 +1,9 @@
 import json
+import os
 import random
 import shutil
 import tempfile
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -26,6 +28,19 @@ from shared import (
     PROCESSED_DIR,
     get_non_nem_df,
     output_as_data_frames,
+)
+
+# File stability check configuration
+FILE_STABILITY_CHECK_INTERVAL = 5  # seconds between checks
+FILE_STABILITY_MAX_WAIT = 30  # max seconds to wait for file to stabilize
+FILE_STABILITY_REQUIRED_CHECKS = 2  # consecutive stable checks required
+MAX_REQUEUE_RETRIES = 5  # max times to requeue a message
+REQUEUE_DELAY_SECONDS = 60  # delay before requeued message becomes visible
+
+# SQS Queue URL - will be set from environment or constructed
+SQS_QUEUE_URL = os.environ.get(
+    "SQS_QUEUE_URL",
+    "https://sqs.ap-southeast-2.amazonaws.com/318396632821/sbm-files-ingester-queue",
 )
 
 # Module-level constants (computed once at import time)
@@ -110,6 +125,113 @@ idempotency_config = IdempotencyConfig(
 )
 
 s3_resource = boto3.resource("s3")
+s3_client = boto3.client("s3")
+sqs_client = boto3.client("sqs")
+
+
+@tracer.capture_method
+def check_file_stability(bucket: str, key: str) -> tuple[bool, int]:
+    """
+    Check if a file has finished uploading by verifying size stability.
+
+    For streaming uploads, files may initially be empty or partially uploaded.
+    This function waits for the file size to stabilize before processing.
+
+    Args:
+        bucket: S3 bucket name
+        key: S3 object key
+
+    Returns:
+        tuple: (is_stable, file_size)
+            - is_stable: True if file is ready for processing
+            - file_size: Final file size in bytes (0 if not stable)
+    """
+    last_size = -1
+    stable_count = 0
+    total_wait = 0
+
+    while total_wait < FILE_STABILITY_MAX_WAIT:
+        try:
+            response = s3_client.head_object(Bucket=bucket, Key=key)
+            current_size = response["ContentLength"]
+
+            # File must have content
+            if current_size == 0:
+                logger.debug(
+                    "File is empty, waiting",
+                    extra={"bucket": bucket, "key": key, "waited": total_wait},
+                )
+                time.sleep(FILE_STABILITY_CHECK_INTERVAL)
+                total_wait += FILE_STABILITY_CHECK_INTERVAL
+                continue
+
+            # Check if size is stable
+            if current_size == last_size:
+                stable_count += 1
+                if stable_count >= FILE_STABILITY_REQUIRED_CHECKS:
+                    logger.info(
+                        "File is stable",
+                        extra={"bucket": bucket, "key": key, "size": current_size},
+                    )
+                    return True, current_size
+            else:
+                stable_count = 0
+
+            last_size = current_size
+            time.sleep(FILE_STABILITY_CHECK_INTERVAL)
+            total_wait += FILE_STABILITY_CHECK_INTERVAL
+
+        except Exception as e:
+            # Check if it's a NoSuchKey error
+            if hasattr(e, "response") and e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                logger.warning("File not found", extra={"bucket": bucket, "key": key})
+                return False, 0
+            logger.error(
+                "Error checking file stability",
+                exc_info=True,
+                extra={"bucket": bucket, "key": key, "error": str(e)},
+            )
+            return False, 0
+
+    # Timeout - file may still be uploading
+    logger.warning(
+        "File stability check timed out",
+        extra={"bucket": bucket, "key": key, "last_size": last_size, "waited": total_wait},
+    )
+    return False, 0
+
+
+def requeue_message(original_body: dict, retry_count: int) -> bool:
+    """
+    Requeue a message to SQS with delay for later processing.
+
+    Args:
+        original_body: Original SQS message body
+        retry_count: Current retry count (will be incremented)
+
+    Returns:
+        True if message was successfully requeued
+    """
+    try:
+        # Add retry metadata to message
+        new_body = original_body.copy()
+        new_body["_retry_count"] = retry_count + 1
+
+        sqs_client.send_message(
+            QueueUrl=SQS_QUEUE_URL,
+            MessageBody=json.dumps(new_body),
+            DelaySeconds=REQUEUE_DELAY_SECONDS,
+        )
+
+        logger.info(
+            "Message requeued for later processing",
+            extra={"retry_count": retry_count + 1, "delay_seconds": REQUEUE_DELAY_SECONDS},
+        )
+        return True
+
+    except Exception as e:
+        logger.error("Failed to requeue message", exc_info=True, extra={"error": str(e)})
+        return False
 
 
 @tracer.capture_method
@@ -188,20 +310,20 @@ def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
 
 @idempotent_function(persistence_store=persistence_layer, config=idempotency_config, data_keyword_argument="tbp_files")
 @tracer.capture_method
-def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | None:
+def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int | None:
     tmp_dir = tempfile.gettempdir()
     tmp_files_folder_name = str(uuid.uuid4())
     tmp_files_folder_path = Path(tmp_dir) / tmp_files_folder_name
     tmp_files_folder_path.mkdir(parents=True, exist_ok=True)
 
     # Generate timestamps once at start (not per-write)
-    timestampNow = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
+    timestamp_now = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
     batch_timestamp = pd.Timestamp.now().strftime("%Y_%b_%dT%H_%M_%S_%f")
 
     try:
-        logger.info("Script started", extra={"timestamp": timestampNow, "files_count": len(tbp_files or [])})
+        logger.info("Script started", extra={"timestamp": timestamp_now, "files_count": len(tbp_files or [])})
 
-        logsDict: dict[str, str] = {}
+        logs_dict: dict[str, str] = {}
         nem12_mappings = read_nem12_mappings(BUCKET_NAME)
 
         if nem12_mappings is None:
@@ -209,69 +331,69 @@ def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | No
 
         download_files_to_tmp(tbp_files or [], str(tmp_files_folder_path))
 
-        validProcessedFilesCount = 0
-        irrevFilesCount = 0
-        parseErrFilesCount = 0
-        processedMonitorPointsCount = 0
-        totalMonitorPointsCount = 0
-        ftpFilesCount = 0
+        valid_processed_files_count = 0
+        irrev_files_count = 0
+        parse_err_files_count = 0
+        processed_monitor_points_count = 0
+        total_monitor_points_count = 0
+        ftp_files_count = 0
 
         # Buffer for batch S3 writes
         write_buffer: list[pd.DataFrame] = []
 
         for file_path in tmp_files_folder_path.iterdir():
-            filePath = str(file_path)
+            local_file_path = str(file_path)
             dfs = None
 
             try:
-                dfs = output_as_data_frames(filePath, split_days=True)
+                dfs = output_as_data_frames(local_file_path, split_days=True)
             except Exception:
                 try:
-                    dfs = get_non_nem_df(filePath, PARSE_ERROR_LOG_GROUP)
+                    dfs = get_non_nem_df(local_file_path, PARSE_ERROR_LOG_GROUP)
                 except Exception:
-                    logsDict[f"Bad File: {filePath}"] = f"[{timestampNow}]"
-                    move_s3_file(BUCKET_NAME, filePath, PARSE_ERR_DIR)
-                    parseErrFilesCount += 1
+                    logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}]"
+                    move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                    parse_err_files_count += 1
                     continue
 
             file_neptune_ids = []
 
-            for bufferNMI, bufferDF in dfs:
+            for nmi, df in dfs:
                 # Reset index if t_start is the index
-                if "t_start" not in bufferDF.columns and bufferDF.index.name == "t_start":
-                    bufferDF = bufferDF.reset_index()
+                if "t_start" not in df.columns and df.index.name == "t_start":
+                    df = df.reset_index()
 
-                for reqCol in bufferDF.columns:
-                    suffix = reqCol.split("_")[0]
+                for col in df.columns:
+                    suffix = col.split("_")[0]
                     if suffix not in NMI_DATA_STREAM_COMBINED:
                         continue
 
-                    monitorPointName = f"{bufferNMI}-{suffix}"
-                    neptuneId = nem12_mappings.get(monitorPointName)
+                    monitor_point_name = f"{nmi}-{suffix}"
+                    neptune_id = nem12_mappings.get(monitor_point_name)
 
-                    if neptuneId is None:
+                    if neptune_id is None:
                         continue
 
-                    file_neptune_ids.append(neptuneId)
+                    file_neptune_ids.append(neptune_id)
 
                     # Extract unit from column name (e.g., "E1_kWh" -> "kwh")
-                    nem12UnitName = reqCol.split("_")[1].lower() if "_" in reqCol else "kwh"
+                    unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
 
                     # Build output DataFrame
-                    gems2BufferDF = bufferDF[["t_start", reqCol]].copy()
-                    gems2BufferDF["sensorId"] = neptuneId
-                    gems2BufferDF["unit"] = nem12UnitName
-                    gems2BufferDF = gems2BufferDF.rename(columns={"t_start": "ts", reqCol: "val"})
-                    gems2BufferDF["its"] = gems2BufferDF["ts"]
-                    gems2BufferDF = gems2BufferDF[["sensorId", "ts", "val", "unit", "its"]]
+                    output_df = df[["t_start", col]].copy()
+                    output_df["sensorId"] = neptune_id
+                    output_df["unit"] = unit_name
+                    output_df = output_df.rename(columns={"t_start": "ts", col: "val"})
+                    output_df["its"] = output_df["ts"]
+                    output_df = output_df[["sensorId", "ts", "val", "unit", "its"]]
 
                     # Format timestamps
-                    gems2BufferDF["ts"] = gems2BufferDF["ts"].dt.strftime("%Y-%m-%d %H:%M:%S")
-                    gems2BufferDF["its"] = gems2BufferDF["its"].dt.strftime("%Y-%m-%d %H:%M:%S")
+                    output_df["ts"] = output_df["ts"].dt.strftime("%Y-%m-%d %H:%M:%S")
+                    output_df["its"] = output_df["its"].dt.strftime("%Y-%m-%d %H:%M:%S")
 
                     # Add to buffer instead of immediate write
-                    write_buffer.append(gems2BufferDF)
-                    processedMonitorPointsCount += 1
+                    write_buffer.append(output_df)
+                    processed_monitor_points_count += 1
 
                     # Flush buffer when it reaches BATCH_SIZE
                     if len(write_buffer) >= BATCH_SIZE:
@@ -280,29 +402,29 @@ def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | No
 
             # Move source file based on whether any data was mapped
             if file_neptune_ids:
-                totalMonitorPointsCount += len(file_neptune_ids)
-                move_s3_file(BUCKET_NAME, filePath, PROCESSED_DIR)
-                validProcessedFilesCount += 1
+                total_monitor_points_count += len(file_neptune_ids)
+                move_s3_file(BUCKET_NAME, local_file_path, PROCESSED_DIR)
+                valid_processed_files_count += 1
             else:
-                move_s3_file(BUCKET_NAME, filePath, IRREVFILES_DIR)
-                irrevFilesCount += 1
+                move_s3_file(BUCKET_NAME, local_file_path, IRREVFILES_DIR)
+                irrev_files_count += 1
 
         # Flush remaining buffer
         _flush_buffer_to_s3(write_buffer, batch_timestamp)
 
-        for key, value in logsDict.items():
+        for key, value in logs_dict.items():
             logger.warning("Runtime error", extra={"bad_file": key, "timestamp": value})
 
         # Record metrics using Powertools
-        metrics.add_metric(name="ValidProcessedFiles", unit=MetricUnit.Count, value=validProcessedFilesCount)
-        metrics.add_metric(name="ParseErrorFiles", unit=MetricUnit.Count, value=parseErrFilesCount)
-        metrics.add_metric(name="IrrelevantFiles", unit=MetricUnit.Count, value=irrevFilesCount)
-        metrics.add_metric(name="FTPFiles", unit=MetricUnit.Count, value=ftpFilesCount)
-        metrics.add_metric(name="ProcessedMonitorPoints", unit=MetricUnit.Count, value=processedMonitorPointsCount)
-        metrics.add_metric(name="TotalMonitorPoints", unit=MetricUnit.Count, value=totalMonitorPointsCount)
+        metrics.add_metric(name="ValidProcessedFiles", unit=MetricUnit.Count, value=valid_processed_files_count)
+        metrics.add_metric(name="ParseErrorFiles", unit=MetricUnit.Count, value=parse_err_files_count)
+        metrics.add_metric(name="IrrelevantFiles", unit=MetricUnit.Count, value=irrev_files_count)
+        metrics.add_metric(name="FTPFiles", unit=MetricUnit.Count, value=ftp_files_count)
+        metrics.add_metric(name="ProcessedMonitorPoints", unit=MetricUnit.Count, value=processed_monitor_points_count)
+        metrics.add_metric(name="TotalMonitorPoints", unit=MetricUnit.Count, value=total_monitor_points_count)
 
-        processingEndTime = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
-        logger.info("Script finished", extra={"timestamp": processingEndTime})
+        processing_end_time = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
+        logger.info("Script finished", extra={"timestamp": processing_end_time})
         shutil.rmtree(tmp_files_folder_path, ignore_errors=True)
 
         return 1
@@ -320,17 +442,58 @@ def parseAndWriteData(tbp_files: list[dict[str, str]] | None = None) -> int | No
 @logger.inject_lambda_context
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     tbp_files: list[dict[str, str]] = []
+    requeued_count = 0
+    skipped_count = 0
+
     for record in event["Records"]:
         try:
             message_body = json.loads(record["body"])
-            s3_event = message_body["Records"][0]
 
+            # Extract retry count from message (default 0 for new messages)
+            retry_count = message_body.get("_retry_count", 0)
+
+            # Get S3 event info
+            s3_event = message_body["Records"][0]
             bucket_name = s3_event["s3"]["bucket"]["name"]
-            file_name = s3_event["s3"]["object"]["key"]
+            file_key = s3_event["s3"]["object"]["key"]
+
+            # Decode key for logging
+            decoded_key = unquote(file_key.replace("+", "%20"))
+
+            logger.info(
+                "Processing file",
+                extra={"bucket": bucket_name, "key": decoded_key, "retry_count": retry_count},
+            )
+
+            # Check file stability before processing (use decoded key for S3 API)
+            is_stable, _ = check_file_stability(bucket_name, decoded_key)
+
+            if not is_stable:
+                if retry_count >= MAX_REQUEUE_RETRIES:
+                    # Max retries exceeded - log error and skip
+                    logger.error(
+                        "Max retries exceeded for unstable file",
+                        extra={
+                            "bucket": bucket_name,
+                            "key": decoded_key,
+                            "retry_count": retry_count,
+                        },
+                    )
+                    metrics.add_metric(name="MaxRetriesExceeded", unit=MetricUnit.Count, value=1)
+                    skipped_count += 1
+                    continue
+
+                # Requeue for later processing
+                if requeue_message(message_body, retry_count):
+                    requeued_count += 1
+                    metrics.add_metric(name="MessagesRequeued", unit=MetricUnit.Count, value=1)
+                continue
+
+            # File is stable - add to processing list
             tbp_files.append(
                 {
                     "bucket": bucket_name,
-                    "file_name": file_name,
+                    "file_name": file_key,
                 }
             )
 
@@ -339,6 +502,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             continue
 
     if tbp_files:
-        parseAndWriteData(tbp_files=tbp_files)
+        parse_and_write_data(tbp_files=tbp_files)
 
-    return {"statusCode": 200, "body": "Successfully processed files."}
+    return {
+        "statusCode": 200,
+        "body": "Successfully processed files.",
+        "processed": len(tbp_files),
+        "requeued": requeued_count,
+        "skipped": skipped_count,
+    }

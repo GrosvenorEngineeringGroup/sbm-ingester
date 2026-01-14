@@ -80,7 +80,7 @@ class TestNem12MappingsEdgeCases:
 
     @mock_aws
     def test_parse_and_write_fails_when_mappings_none(self, temp_directory: str) -> None:
-        """Test that parseAndWriteData fails gracefully when nem12_mappings is None."""
+        """Test that parse_and_write_data fails gracefully when nem12_mappings is None."""
         os.environ["AWS_ACCESS_KEY_ID"] = "testing"
         os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
         os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-2"
@@ -107,16 +107,16 @@ class TestNem12MappingsEdgeCases:
         # Do NOT upload nem12_mappings.json to trigger the None case
 
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
-            result = parseAndWriteData(tbp_files=[])
+            result = parse_and_write_data(tbp_files=[])
 
             # Should return None due to missing mappings
             assert result is None
 
 
 class TestParseAndWriteDataEdgeCases:
-    """Edge case tests for parseAndWriteData function."""
+    """Edge case tests for parse_and_write_data function."""
 
     @mock_aws
     def test_file_parse_fallback_to_non_nem_parser(self, temp_directory: str) -> None:
@@ -157,10 +157,10 @@ class TestParseAndWriteDataEdgeCases:
         s3_resource.Object("sbm-file-ingester", "newTBP/envizi_water.csv").put(Body=envizi_content.encode())
 
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/envizi_water.csv"}]
-            result = parseAndWriteData(tbp_files=files)
+            result = parse_and_write_data(tbp_files=files)
 
             assert result == 1
 
@@ -199,10 +199,10 @@ class TestParseAndWriteDataEdgeCases:
         )
 
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/invalid.csv"}]
-            result = parseAndWriteData(tbp_files=files)
+            result = parse_and_write_data(tbp_files=files)
 
             # Should still return 1 (success overall) but file should be moved to parse error
             assert result == 1
@@ -271,10 +271,10 @@ class TestParseAndWriteDataEdgeCases:
             patch("functions.file_processor.app.s3_resource", s3_resource),
             patch("functions.file_processor.app.logger", mock_logger),
         ):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/bad_file.csv"}]
-            parseAndWriteData(tbp_files=files)
+            parse_and_write_data(tbp_files=files)
 
             # runtime errors are logged as warnings for bad files
             assert mock_logger.warning.called or mock_logger.error.called
@@ -292,7 +292,7 @@ class TestLambdaHandlerEdgeCases:
         mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
         mock_context.aws_request_id = "test-request-id"
 
-        with patch.object(file_processor_app, "parseAndWriteData"):
+        with patch.object(file_processor_app, "parse_and_write_data"):
             # Event with malformed body (missing required fields)
             event: dict[str, Any] = {
                 "Records": [
@@ -315,13 +315,13 @@ class TestLambdaHandlerEdgeCases:
         mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
         mock_context.aws_request_id = "test-request-id"
 
-        with patch.object(file_processor_app, "parseAndWriteData") as mock_parse:
+        with patch.object(file_processor_app, "parse_and_write_data") as mock_parse:
             event: dict[str, Any] = {"Records": []}
 
             result = file_processor_app.lambda_handler(event, mock_context)
 
             assert result["statusCode"] == 200
-            # parseAndWriteData should not be called with empty list
+            # parse_and_write_data should not be called with empty list
             mock_parse.assert_not_called()
 
 
@@ -426,10 +426,10 @@ class TestProcessingLoopEdgeCases:
         )
 
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/test_nem12.csv"}]
-            result = parseAndWriteData(tbp_files=files)
+            result = parse_and_write_data(tbp_files=files)
 
             assert result == 1
 
@@ -479,10 +479,10 @@ class TestProcessingLoopEdgeCases:
         s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({}))
 
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/unmapped_nem12.csv"}]
-            result = parseAndWriteData(tbp_files=files)
+            result = parse_and_write_data(tbp_files=files)
 
             assert result == 1
 
@@ -604,10 +604,10 @@ class TestBatchSizeFlush:
         s3_resource.Object("sbm-file-ingester", "newTBP/many_channels.csv").put(Body=nem12_content.encode())
 
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/many_channels.csv"}]
-            result = parseAndWriteData(tbp_files=files)
+            result = parse_and_write_data(tbp_files=files)
 
             assert result == 1
 
@@ -625,7 +625,7 @@ class TestExceptionHandling:
 
     @mock_aws
     def test_parseandwritedata_general_exception(self, temp_directory: str) -> None:
-        """Test that general exceptions in parseAndWriteData are handled."""
+        """Test that general exceptions in parse_and_write_data are handled."""
         os.environ["AWS_ACCESS_KEY_ID"] = "testing"
         os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
         os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-2"
@@ -658,9 +658,9 @@ class TestExceptionHandling:
                 side_effect=Exception("Test exception"),
             ),
         ):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
-            result = parseAndWriteData(tbp_files=[])
+            result = parse_and_write_data(tbp_files=[])
 
             # Should return None on exception
             assert result is None

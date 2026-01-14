@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-01-14
+
+### Added
+- Weekly Archiver Lambda (`sbm-weekly-archiver`) for automated S3 file archiving
+  - Archives files to ISO week directories (e.g., `2026-W03/`)
+  - Triggered by EventBridge every Monday at UTC 00:00 (AEST 11:00)
+  - AWS Lambda Powertools integration (Logger, Tracer, Metrics)
+  - Concurrent processing with 50 workers for high throughput
+  - Manual invocation support with `target_week` parameter
+- Migration script (`scripts/migrate_archives_to_weekly.py`) for converting monthly archives to weekly
+  - Multi-threaded processing with configurable workers (default 50)
+  - Progress bar with ETA display
+  - Dry-run mode for preview
+- Local Lambda deployment script (`scripts/deploy-lambda.sh`) for quick iterations
+- File stability check for streaming uploads to prevent partial file processing
+  - Configurable poll interval and max retries
+  - Automatic requeue for unstable files
+
+### Changed
+- S3 archive structure changed from monthly (`2025-08/`) to weekly (`2025-W32/`) format
+- Weekly Archiver Lambda configuration optimized:
+  - Memory increased from 256MB to 1024MB
+  - Timeout increased from 300s to 600s
+- Main ingester Lambda memory reduced from 1024MB to 512MB (sufficient for workload)
+- Improved error handling in Weekly Archiver:
+  - `NoSuchKey` errors treated as SKIPPED (file already moved)
+  - Returns HTTP 207 for partial success (some files errored)
+  - Returns HTTP 400 for invalid `target_week` format
+  - Enhanced logging with full context for debugging
+
+### Fixed
+- URL encoding bug for files with spaces in filename
+- Race condition in archiver when files are moved by concurrent processes
+
 ## [0.3.0] - 2025-01-13
 
 ### Added

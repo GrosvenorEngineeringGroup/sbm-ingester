@@ -51,6 +51,17 @@ jobs:
           cd build/nem12_mappings_to_s3 && zip -r ../../nem12-mappings-to-s3.zip . && cd ../..
 
       # --------------------
+      # Build Weekly Archiver Lambda
+      # --------------------
+      - name: Build Weekly Archiver Lambda
+        run: |
+          mkdir -p build/weekly_archiver
+          uv export --no-dev --no-hashes -o requirements.txt
+          pip install -r requirements.txt -t build/weekly_archiver/
+          cp src/functions/weekly_archiver/app.py build/weekly_archiver/
+          cd build/weekly_archiver && zip -r ../../weekly_archiver.zip . && cd ../..
+
+      # --------------------
       # Configure AWS
       # --------------------
       - name: Configure AWS Credentials
@@ -88,4 +99,13 @@ jobs:
             --function-name sbm-files-ingester-nem12-mappings-to-s3 \
             --s3-bucket gega-code-deployment-bucket \
             --s3-key sbm-files-ingester/nem12-mappings-to-s3.zip \
+            --publish
+
+      - name: Upload Weekly Archiver & Refresh
+        run: |
+          aws s3 cp weekly_archiver.zip s3://gega-code-deployment-bucket/sbm-files-ingester/weekly_archiver.zip
+          aws lambda update-function-code \
+            --function-name sbm-weekly-archiver \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/weekly_archiver.zip \
             --publish

@@ -77,7 +77,7 @@ class TestLambdaHandler:
         mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
         mock_context.aws_request_id = "test-request-id"
 
-        with patch.object(file_processor_app, "parseAndWriteData"):
+        with patch.object(file_processor_app, "parse_and_write_data"):
             result = file_processor_app.lambda_handler(sqs_event, mock_context)
 
             assert result["statusCode"] == 200
@@ -91,7 +91,7 @@ class TestLambdaHandler:
         mock_context.invoked_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-function"
         mock_context.aws_request_id = "test-request-id"
 
-        with patch.object(file_processor_app, "parseAndWriteData"):
+        with patch.object(file_processor_app, "parse_and_write_data"):
             result = file_processor_app.lambda_handler(sample_sqs_event, mock_context)
 
             assert "statusCode" in result
@@ -327,10 +327,10 @@ class TestFullPipeline:
 
         # Run the pipeline
         with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parseAndWriteData
+            from functions.file_processor.app import parse_and_write_data
 
             files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/nem12_test.csv"}]
-            result = parseAndWriteData(tbp_files=files)
+            result = parse_and_write_data(tbp_files=files)
 
             # Should complete without error
             # File should be moved to irrelevant (no mappings)

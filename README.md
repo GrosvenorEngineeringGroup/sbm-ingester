@@ -1,6 +1,6 @@
 # sbm-ingester
 
-![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![Version](https://img.shields.io/badge/version-0.4.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-FF9900?logo=awslambda&logoColor=white)
 ![AWS Lambda Powertools](https://img.shields.io/badge/Powertools-3.24-FF9900?logo=amazonaws&logoColor=white)
@@ -16,6 +16,7 @@ Serverless file ingestion pipeline for building energy data. Processes NEM12/NEM
 - [Usage](#usage)
 - [Architecture](#architecture)
 - [Project Structure](#project-structure)
+- [Scripts](#scripts)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Deployment](#deployment)
@@ -36,11 +37,13 @@ SBM Ingester is part of the Sustainable Building Manager (SBM) platform. It hand
 
 Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, and maps meter readings to Neptune graph database sensor IDs.
 
-### Key Features (v0.3.0)
+### Key Features (v0.4.0)
 
 - **AWS Lambda Powertools** - Structured JSON logging, X-Ray tracing, CloudWatch metrics
 - **Idempotency** - DynamoDB-backed duplicate processing prevention
 - **Batch Processing** - Configurable buffer size for optimized S3 writes
+- **Weekly Archiving** - Automated S3 file archiving with concurrent processing (50 workers)
+- **File Stability Check** - Prevents processing of partially uploaded streaming files
 
 ## Install
 
@@ -144,11 +147,12 @@ flowchart LR
 
 ### Lambda Functions
 
-| Function | Runtime | Timeout | Purpose |
-|----------|---------|---------|---------|
-| `sbm-files-ingester` | Python 3.13 | 120s | Main processor - parses files, maps NMIs, writes to data lake |
-| `sbm-files-ingester-redrive` | Python 3.13 | 600s | Re-triggers stuck files in `newTBP/` |
-| `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.9 | 60s | Hourly job - exports NEM12→Neptune ID mappings |
+| Function | Runtime | Memory | Timeout | Purpose |
+|----------|---------|--------|---------|---------|
+| `sbm-files-ingester` | Python 3.13 | 512 MB | 300s | Main processor - parses files, maps NMIs, writes to data lake |
+| `sbm-files-ingester-redrive` | Python 3.13 | 128 MB | 600s | Re-triggers stuck files in `newTBP/` |
+| `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
+| `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
 
 ### File Processing Outcomes
 
@@ -157,6 +161,26 @@ flowchart LR
 | Success | `newP/` | Parsed successfully and mapped to Neptune ID |
 | No Mapping | `newIrrevFiles/` | Parsed but no Neptune ID found |
 | Parse Error | `newParseErr/` | Failed to parse with any parser |
+
+### S3 Archive Structure
+
+Files are archived weekly using ISO week format:
+
+```
+sbm-file-ingester/
+├── newP/
+│   ├── (active files)
+│   └── archived/
+│       ├── 2026-W01/
+│       ├── 2026-W02/
+│       └── ...
+├── newIrrevFiles/
+│   └── archived/2026-WXX/
+└── newParseErr/
+    └── archived/2026-WXX/
+```
+
+The `sbm-weekly-archiver` Lambda runs every Monday and moves the previous week's files to the corresponding `archived/YYYY-WXX/` directory.
 
 ## Project Structure
 
@@ -169,7 +193,9 @@ sbm-ingester/
 │   │   │   └── app.py
 │   │   ├── nem12_exporter/      # NEM12 mappings Lambda
 │   │   │   └── app.py
-│   │   └── redrive_handler/     # Redrive Lambda
+│   │   ├── redrive_handler/     # Redrive Lambda
+│   │   │   └── app.py
+│   │   └── weekly_archiver/     # Weekly archiver Lambda
 │   │       └── app.py
 │   └── shared/
 │       ├── __init__.py          # Public API exports
@@ -181,12 +207,53 @@ sbm-ingester/
 │       ├── conftest.py          # Shared fixtures
 │       ├── fixtures/            # Test data files
 │       └── test_*.py            # Test modules
+├── scripts/
+│   ├── migrate_archives_to_weekly.py  # One-time migration script
+│   └── deploy-lambda.sh               # Local Lambda deployment
 ├── iac/
 │   └── sbm-ingester.tf          # Terraform infrastructure
 ├── docs/                        # Documentation
 ├── pyproject.toml               # Project config (uv, ruff, pytest)
 └── CHANGELOG.md                 # Version history
 ```
+
+## Scripts
+
+### Deploy Lambda
+
+Local deployment script for quick iterations during development.
+
+```bash
+# Deploy specific Lambda
+./scripts/deploy-lambda.sh ingester
+./scripts/deploy-lambda.sh weekly-archiver
+
+# Deploy all Lambdas
+./scripts/deploy-lambda.sh all
+```
+
+**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `all`
+
+### Migrate Archives to Weekly
+
+One-time migration script to convert existing monthly archives (`2025-08/`) to weekly format (`2025-W32/`).
+
+```bash
+# Preview changes (dry-run)
+uv run scripts/migrate_archives_to_weekly.py --dry-run
+
+# Run migration with default 50 workers
+uv run scripts/migrate_archives_to_weekly.py
+
+# Run with custom worker count
+uv run scripts/migrate_archives_to_weekly.py --workers 100
+```
+
+**Options:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--dry-run` | Preview without executing | `False` |
+| `--workers` | Parallel S3 operations | `50` |
 
 ## Configuration
 

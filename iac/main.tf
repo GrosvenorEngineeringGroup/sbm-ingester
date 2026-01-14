@@ -1,54 +1,20 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.6"
-    }
-  }
-
-  required_version = ">= 1.6.0"
-}
-
-provider "aws" {
-  region = "ap-southeast-2"
-
-  default_tags {
-    tags = {
-      project     = "SBM-Ingestion"
-      managed_by  = "terraform"
-    }
-  }
-}
-
 # ================================
 # Default Lambda Log Groups (Terraform-managed)
 # ================================
 
 resource "aws_cloudwatch_log_group" "sbm_files_ingester_default" {
   name              = "/aws/lambda/sbm-files-ingester"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "sbm_files_ingester_redrive_default" {
   name              = "/aws/lambda/sbm-files-ingester-redrive"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "sbm_files_ingester_nem12_mappings_default" {
   name              = "/aws/lambda/sbm-files-ingester-nem12-mappings-to-s3"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 # ================================
@@ -57,47 +23,27 @@ resource "aws_cloudwatch_log_group" "sbm_files_ingester_nem12_mappings_default" 
 
 resource "aws_cloudwatch_log_group" "sbm_ingester_error_log" {
   name              = "sbm-ingester-error-log"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "sbm_ingester_execution_log" {
   name              = "sbm-ingester-execution-log"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "sbm_ingester_metrics_log" {
   name              = "sbm-ingester-metrics-log"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "sbm_ingester_parse_error_log" {
   name              = "sbm-ingester-parse-error-log"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 resource "aws_cloudwatch_log_group" "sbm_ingester_runtime_error_log" {
   name              = "sbm-ingester-runtime-error-log"
-  retention_in_days = 30
-  tags = {
-    project     = "SBM-Ingestion"
-    managed_by  = "terraform"
-  }
+  retention_in_days = var.log_retention_days
 }
 
 # -----------------------------
@@ -108,51 +54,50 @@ data "aws_iam_role" "ingester_role" {
 }
 
 # -----------------------------
-# Lambda: sbm-files-ingester-2
+# Lambda: sbm-files-ingester
 # -----------------------------
 resource "aws_lambda_function" "sbm_files_ingester" {
-  function_name = "sbm-files-ingester"
-  role          = data.aws_iam_role.ingester_role.arn
-  handler       = "functions.file_processor.app.lambda_handler"
-  runtime       = "python3.13"
-  memory_size   = 1024  # Increased from 512 for better performance
-  timeout       = 300   # Increased from 120 to handle larger files
+  function_name                  = "sbm-files-ingester"
+  role                           = data.aws_iam_role.ingester_role.arn
+  handler                        = "functions.file_processor.app.lambda_handler"
+  runtime                        = "python3.13"
+  memory_size                    = 512
+  timeout                        = 300
   reserved_concurrent_executions = 5
-  s3_bucket = "gega-code-deployment-bucket"
-  s3_key    = "sbm-files-ingester/ingester.zip"
+  s3_bucket                      = var.deployment_bucket
+  s3_key                         = "${local.lambda_s3_prefix}/ingester.zip"
 
   tracing_config {
-    mode = "Active"  # Enable X-Ray tracing for Powertools
+    mode = "Active"
   }
 }
 
 # -----------------------------
 # DynamoDB Idempotency Table
 # -----------------------------
-resource "aws_dynamodb_table" "idempotency" {
-  name           = "sbm-ingester-idempotency"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "id"
+resource "aws_dynamodb_table" "sbm_ingester_idempotency" {
+  name         = "sbm-ingester-idempotency"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "file_key"
 
   attribute {
-    name = "id"
+    name = "file_key"
     type = "S"
   }
 
   ttl {
-    attribute_name = "expiration"
+    attribute_name = "ttl"
     enabled        = true
   }
 
   tags = {
-    Name        = "sbm-ingester-idempotency"
-    Environment = "production"
+    Name = "sbm-ingester-idempotency"
   }
 }
 
 # Add DynamoDB permissions to Lambda role
-resource "aws_iam_role_policy" "lambda_dynamodb" {
-  name = "sbm-ingester-dynamodb-policy"
+resource "aws_iam_role_policy" "idempotency_access" {
+  name = "sbm-ingester-idempotency-access"
   role = data.aws_iam_role.ingester_role.name
 
   policy = jsonencode({
@@ -166,7 +111,7 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
           "dynamodb:UpdateItem",
           "dynamodb:DeleteItem"
         ]
-        Resource = aws_dynamodb_table.idempotency.arn
+        Resource = aws_dynamodb_table.sbm_ingester_idempotency.arn
       }
     ]
   })
@@ -177,9 +122,9 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
 # -----------------------------
 resource "aws_sns_topic" "sbm_alerts" {
   name = "sbm-ingester-alerts"
+
   tags = {
-    Name        = "sbm-ingester-alerts"
-    Environment = "production"
+    Name = "sbm-ingester-alerts"
   }
 }
 
@@ -187,12 +132,12 @@ resource "aws_sns_topic" "sbm_alerts" {
 # SQS Queues (Main + DLQ)
 # -----------------------------
 resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
-  name                      = "sbm-files-ingester-dlq"
-  message_retention_seconds = 1209600  # 14 days
+  name                       = "sbm-files-ingester-dlq"
+  message_retention_seconds  = 1209600 # 14 days
+  visibility_timeout_seconds = 300
 
   tags = {
-    Name        = "sbm-files-ingester-dlq"
-    Environment = "production"
+    Name = "sbm-files-ingester-dlq"
   }
 }
 
@@ -200,15 +145,29 @@ resource "aws_sqs_queue" "sbm_files_ingester_queue" {
   name                       = "sbm-files-ingester-queue"
   visibility_timeout_seconds = 300
 
+  tags = {
+    Name = "sbm-files-ingester-queue"
+  }
+}
+
+# SQS Redrive Policy (Main Queue -> DLQ)
+resource "aws_sqs_queue_redrive_policy" "main_queue_redrive" {
+  queue_url = aws_sqs_queue.sbm_files_ingester_queue.id
+
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.sbm_files_ingester_dlq.arn
-    maxReceiveCount     = 3  # Retry 3 times before sending to DLQ
+    maxReceiveCount     = 3
   })
+}
 
-  tags = {
-    Name        = "sbm-files-ingester-queue"
-    Environment = "production"
-  }
+# SQS Redrive Allow Policy (DLQ accepts from Main Queue)
+resource "aws_sqs_queue_redrive_allow_policy" "dlq_allow" {
+  queue_url = aws_sqs_queue.sbm_files_ingester_dlq.id
+
+  redrive_allow_policy = jsonencode({
+    redrivePermission = "byQueue"
+    sourceQueueArns   = [aws_sqs_queue.sbm_files_ingester_queue.arn]
+  })
 }
 
 # CloudWatch Alarm for DLQ
@@ -229,22 +188,39 @@ resource "aws_cloudwatch_metric_alarm" "dlq_messages" {
   }
 }
 
+# CloudWatch Alarm for Lambda Errors
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  alarm_name          = "sbm-ingester-lambda-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Alert when Lambda function errors occur"
+  alarm_actions       = [aws_sns_topic.sbm_alerts.arn]
+
+  dimensions = {
+    FunctionName = aws_lambda_function.sbm_files_ingester.function_name
+  }
+}
+
 # -----------------------------
 # S3 -> SQS Event Notifications
 # -----------------------------
 resource "aws_s3_bucket_notification" "sbm_file_ingester_notifications" {
-  bucket = "sbm-file-ingester"
+  bucket = var.input_bucket
 
   queue {
     queue_arn     = aws_sqs_queue.sbm_files_ingester_queue.arn
     events        = ["s3:ObjectCreated:*"]
-
     filter_prefix = "newTBP/"
   }
 }
 
 # -----------------------------
-# Update SQS Queue Policy (secure)
+# SQS Queue Policy
 # -----------------------------
 resource "aws_sqs_queue_policy" "queue_policy" {
   queue_url = aws_sqs_queue.sbm_files_ingester_queue.id
@@ -253,26 +229,26 @@ resource "aws_sqs_queue_policy" "queue_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AllowS3Send"
-        Effect    = "Allow"
+        Sid    = "AllowS3Send"
+        Effect = "Allow"
         Principal = {
           Service = "s3.amazonaws.com"
         }
-        Action    = "sqs:SendMessage"
-        Resource  = aws_sqs_queue.sbm_files_ingester_queue.arn
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.sbm_files_ingester_queue.arn
         Condition = {
           ArnEquals = {
-            "aws:SourceArn" = "arn:aws:s3:::sbm-file-ingester"
+            "aws:SourceArn" = "arn:aws:s3:::${var.input_bucket}"
           }
         }
       },
       {
-        Sid       = "AllowLambdaPoll"
-        Effect    = "Allow"
+        Sid    = "AllowLambdaPoll"
+        Effect = "Allow"
         Principal = {
           Service = "lambda.amazonaws.com"
         }
-        Action    = [
+        Action = [
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
           "sqs:GetQueueAttributes"
@@ -288,6 +264,7 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   event_source_arn = aws_sqs_queue.sbm_files_ingester_queue.arn
   function_name    = aws_lambda_function.sbm_files_ingester.arn
   batch_size       = 1
+
   scaling_config {
     maximum_concurrency = 5
   }
@@ -300,11 +277,15 @@ resource "aws_lambda_function" "sbm_files_ingester_redrive" {
   function_name = "sbm-files-ingester-redrive"
   role          = data.aws_iam_role.ingester_role.arn
   handler       = "redrive.lambda_handler"
-  runtime       = "python3.12"
+  runtime       = "python3.13"
   memory_size   = 128
   timeout       = 600
-  s3_bucket = "gega-code-deployment-bucket"
-  s3_key    = "sbm-files-ingester/redrive.zip"
+  s3_bucket     = var.deployment_bucket
+  s3_key        = "${local.lambda_s3_prefix}/redrive.zip"
+
+  tracing_config {
+    mode = "Active"
+  }
 }
 
 # -----------------------------
@@ -314,11 +295,11 @@ resource "aws_lambda_function" "sbm_files_ingester_nem12_mappings" {
   function_name = "sbm-files-ingester-nem12-mappings-to-s3"
   role          = data.aws_iam_role.ingester_role.arn
   handler       = "nem12_mappings_to_s3.lambda_handler"
-  runtime       = "python3.9"
+  runtime       = "python3.13"
   memory_size   = 128
   timeout       = 60
-  s3_bucket = "gega-code-deployment-bucket"
-  s3_key    = "sbm-files-ingester/nem12-mappings-to-s3.zip"
+  s3_bucket     = var.deployment_bucket
+  s3_key        = "${local.lambda_s3_prefix}/nem12-mappings-to-s3.zip"
 
   layers = [
     "arn:aws:lambda:ap-southeast-2:318396632821:layer:aenumLayer:1",
@@ -329,15 +310,19 @@ resource "aws_lambda_function" "sbm_files_ingester_nem12_mappings" {
   ]
 
   vpc_config {
-    subnet_ids         = ["subnet-0b7ffe958514b2615", "subnet-02306ea93a94a2fcf", "subnet-0928e926296546e03"]
-    security_group_ids = ["sg-02ece37ea391fba00"]
+    subnet_ids         = local.neptune_subnet_ids
+    security_group_ids = local.neptune_security_group_ids
   }
 
   environment {
     variables = {
-      neptuneEndpoint = "bw-1-instance-1.cov3fflnpa7n.ap-southeast-2.neptune.amazonaws.com"
-      neptunePort     = "8182"
+      neptuneEndpoint = var.neptune_endpoint
+      neptunePort     = var.neptune_port
     }
+  }
+
+  tracing_config {
+    mode = "Active"
   }
 }
 
@@ -378,10 +363,10 @@ resource "aws_api_gateway_resource" "nem12_resource" {
 }
 
 resource "aws_api_gateway_method" "get_method" {
-  rest_api_id     = aws_api_gateway_rest_api.sbm_api.id
-  resource_id     = aws_api_gateway_resource.nem12_resource.id
-  http_method     = "GET"
-  authorization   = "NONE"
+  rest_api_id      = aws_api_gateway_rest_api.sbm_api.id
+  resource_id      = aws_api_gateway_resource.nem12_resource.id
+  http_method      = "GET"
+  authorization    = "NONE"
   api_key_required = true
 }
 
@@ -404,8 +389,13 @@ resource "aws_lambda_permission" "apigw_lambda" {
 
 resource "aws_api_gateway_deployment" "api_deployment" {
   rest_api_id = aws_api_gateway_rest_api.sbm_api.id
+
   triggers = {
     redeploy = sha1(jsonencode(aws_api_gateway_integration.lambda_integration))
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -442,31 +432,54 @@ resource "aws_api_gateway_usage_plan_key" "sbm_usage_plan_key" {
   usage_plan_id = aws_api_gateway_usage_plan.sbm_usage_plan.id
 }
 
-# -----------------------------
-# Outputs
-# -----------------------------
-output "sbm_api_invoke_url" {
-  value = "${aws_api_gateway_rest_api.sbm_api.execution_arn}/${aws_api_gateway_stage.api_stage.stage_name}"
-  description = "Invoke URL for the API (append /nem12-mappings)."
+# ================================
+# Weekly Archiver Lambda
+# ================================
+resource "aws_cloudwatch_log_group" "weekly_archiver" {
+  name              = "/aws/lambda/sbm-weekly-archiver"
+  retention_in_days = var.log_retention_days
 }
 
-output "sbm_api_key_value" {
-  value       = aws_api_gateway_api_key.sbm_api_key.value
-  description = "API key to access the API."
-  sensitive   = true
+resource "aws_lambda_function" "weekly_archiver" {
+  function_name = "sbm-weekly-archiver"
+  role          = data.aws_iam_role.ingester_role.arn
+  handler       = "app.lambda_handler"
+  runtime       = "python3.13"
+  timeout       = 600
+  memory_size   = 1024
+  s3_bucket     = var.deployment_bucket
+  s3_key        = "${local.lambda_s3_prefix}/weekly_archiver.zip"
+
+  environment {
+    variables = {
+      POWERTOOLS_SERVICE_NAME = "weekly-archiver"
+      LOG_LEVEL               = "INFO"
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [aws_cloudwatch_log_group.weekly_archiver]
 }
 
-output "sbm_dlq_url" {
-  value       = aws_sqs_queue.sbm_files_ingester_dlq.url
-  description = "Dead Letter Queue URL for monitoring failed messages."
+# EventBridge Rule - Every Monday at UTC 00:00 (AEST 11:00)
+resource "aws_cloudwatch_event_rule" "weekly_archive" {
+  name                = "sbm-weekly-archive-schedule"
+  schedule_expression = "cron(0 0 ? * MON *)"
 }
 
-output "sbm_alerts_topic_arn" {
-  value       = aws_sns_topic.sbm_alerts.arn
-  description = "SNS topic ARN for subscribing to ingester alerts."
+resource "aws_cloudwatch_event_target" "weekly_archive_target" {
+  rule      = aws_cloudwatch_event_rule.weekly_archive.name
+  target_id = "weekly-archiver-lambda"
+  arn       = aws_lambda_function.weekly_archiver.arn
 }
 
-output "sbm_idempotency_table" {
-  value       = aws_dynamodb_table.idempotency.name
-  description = "DynamoDB table name for idempotency tracking."
+resource "aws_lambda_permission" "allow_eventbridge_weekly" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.weekly_archiver.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.weekly_archive.arn
 }
