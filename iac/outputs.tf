@@ -26,3 +26,11 @@ output "sbm_idempotency_table_name" {
   value       = aws_dynamodb_table.sbm_ingester_idempotency.name
   description = "DynamoDB table name for idempotency tracking."
 }
+
+output "glue_job_name" {
+  value       = aws_glue_job.hudi_import.name
+  description = "Glue job name for Hudi data import."
+}
+
+# Note: Glue job is triggered by Step Function "MyStateMachine"
+# via EventBridge Scheduler "scanForNewDfs" (rate: 1 hour)

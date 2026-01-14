@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-01-15
+
+### Added
+- Glue ETL job (`DataImportIntoLake`) for Apache Hudi data lake integration
+  - PySpark script for batch CSV import to Hudi table
+  - Record key: `sensorId + ts`, partition by year
+  - Concurrent file archiving with 10 workers
+  - Configurable batch size (400 files) and max runtime (4 hours)
+  - Testing parameters: `MAX_FILES` and `DRY_RUN` for safe testing
+- Glue Trigger Lambda (`sbm-glue-trigger`) for automated job scheduling
+  - Hourly EventBridge trigger
+  - Configurable file count threshold (default 10)
+  - Handles `ConcurrentRunsExceededException` gracefully
+- Local NEM12 processing script (`scripts/process_nem12_locally.py`)
+  - Process NEM12 files locally and upload to S3
+  - Dry-run mode for preview
+- CI/CD pipeline now deploys Glue script to S3
+
+### Changed
+- Terraform infrastructure split into multiple files for better organization:
+  - `ingester.tf` - Main Lambda functions
+  - `glue.tf` - Glue job and trigger
+  - `logs.tf` - CloudWatch Log Groups
+  - `monitoring.tf` - Alarms and SNS
+  - `nem12_mappings.tf` - API Gateway
+  - `weekly_archiver.tf` - Weekly archiver Lambda
+- Test suite expanded to 255 tests (was 157)
+
 ## [0.4.0] - 2026-01-14
 
 ### Added

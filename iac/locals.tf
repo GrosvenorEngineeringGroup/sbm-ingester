@@ -14,4 +14,10 @@ locals {
   ]
 
   neptune_security_group_ids = ["sg-02ece37ea391fba00"]
+
+  # Glue job configuration
+  glue_assets_bucket = "aws-glue-assets-318396632821-ap-southeast-2"
+  glue_script_name   = "hudiImportScript"
+  hudi_output_bucket = "318396632821sydneyhudibucketsrc"
+  hudi_source_bucket = "hudibucketsrc"
 }

@@ -62,6 +62,15 @@ jobs:
           cd build/weekly_archiver && zip -r ../../weekly_archiver.zip . && cd ../..
 
       # --------------------
+      # Build Glue Trigger Lambda
+      # --------------------
+      - name: Build Glue Trigger Lambda
+        run: |
+          mkdir -p build/glue_trigger
+          cp src/functions/glue_trigger/app.py build/glue_trigger/
+          cd build/glue_trigger && zip -r ../../glue-trigger.zip . && cd ../..
+
+      # --------------------
       # Configure AWS
       # --------------------
       - name: Configure AWS Credentials
@@ -109,3 +118,20 @@ jobs:
             --s3-bucket gega-code-deployment-bucket \
             --s3-key sbm-files-ingester/weekly_archiver.zip \
             --publish
+
+      - name: Upload Glue Trigger & Refresh
+        run: |
+          aws s3 cp glue-trigger.zip s3://gega-code-deployment-bucket/sbm-files-ingester/glue-trigger.zip
+          aws lambda update-function-code \
+            --function-name sbm-glue-trigger \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/glue-trigger.zip \
+            --publish
+
+      # --------------------
+      # Upload Glue Script
+      # --------------------
+      - name: Upload Glue Script
+        run: |
+          aws s3 cp src/glue/hudi_import/script.py \
+            s3://aws-glue-assets-318396632821-ap-southeast-2/scripts/hudiImportScript

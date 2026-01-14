@@ -1,8 +1,9 @@
 # sbm-ingester
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue)
+![Version](https://img.shields.io/badge/version-0.5.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-FF9900?logo=awslambda&logoColor=white)
+![AWS Glue](https://img.shields.io/badge/AWS-Glue-FF9900?logo=amazonaws&logoColor=white)
 ![AWS Lambda Powertools](https://img.shields.io/badge/Powertools-3.24-FF9900?logo=amazonaws&logoColor=white)
 ![Terraform](https://img.shields.io/badge/Terraform-1.0+-7B42BC?logo=terraform&logoColor=white)
 
@@ -37,13 +38,14 @@ SBM Ingester is part of the Sustainable Building Manager (SBM) platform. It hand
 
 Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, and maps meter readings to Neptune graph database sensor IDs.
 
-### Key Features (v0.4.0)
+### Key Features (v0.5.0)
 
 - **AWS Lambda Powertools** - Structured JSON logging, X-Ray tracing, CloudWatch metrics
 - **Idempotency** - DynamoDB-backed duplicate processing prevention
 - **Batch Processing** - Configurable buffer size for optimized S3 writes
 - **Weekly Archiving** - Automated S3 file archiving with concurrent processing (50 workers)
 - **File Stability Check** - Prevents processing of partially uploaded streaming files
+- **Glue ETL Pipeline** - Apache Hudi data lake integration with automated batch import
 
 ## Install
 
@@ -153,6 +155,24 @@ flowchart LR
 | `sbm-files-ingester-redrive` | Python 3.13 | 128 MB | 600s | Re-triggers stuck files in `newTBP/` |
 | `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
 | `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
+| `sbm-glue-trigger` | Python 3.13 | 128 MB | 30s | Hourly job - triggers Glue ETL when files ≥ threshold |
+
+### Glue ETL Job
+
+| Job | Workers | Timeout | Purpose |
+|-----|---------|---------|---------|
+| `DataImportIntoLake` | 5 (G.2X) | 24h | Imports CSV files from `sensorDataFiles/` into Apache Hudi data lake |
+
+**Glue Flow:**
+```
+EventBridge (hourly) → Lambda (sbm-glue-trigger) → Glue Job (if files ≥ 10)
+                                                       ↓
+                                              Read CSVs from S3
+                                                       ↓
+                                              Upsert to Hudi table
+                                                       ↓
+                                              Archive to sensorDataFilesArchived/
+```
 
 ### File Processing Outcomes
 
@@ -195,8 +215,13 @@ sbm-ingester/
 │   │   │   └── app.py
 │   │   ├── redrive_handler/     # Redrive Lambda
 │   │   │   └── app.py
-│   │   └── weekly_archiver/     # Weekly archiver Lambda
+│   │   ├── weekly_archiver/     # Weekly archiver Lambda
+│   │   │   └── app.py
+│   │   └── glue_trigger/        # Glue trigger Lambda
 │   │       └── app.py
+│   ├── glue/
+│   │   └── hudi_import/         # Glue ETL job
+│   │       └── script.py
 │   └── shared/
 │       ├── __init__.py          # Public API exports
 │       ├── common.py            # Constants (S3 paths, log groups)
@@ -206,12 +231,18 @@ sbm-ingester/
 │   └── unit/
 │       ├── conftest.py          # Shared fixtures
 │       ├── fixtures/            # Test data files
-│       └── test_*.py            # Test modules
+│       └── test_*.py            # Test modules (255 tests)
 ├── scripts/
 │   ├── migrate_archives_to_weekly.py  # One-time migration script
-│   └── deploy-lambda.sh               # Local Lambda deployment
+│   ├── process_nem12_locally.py       # Local NEM12 processing
+│   ├── deploy-lambda.sh               # Local Lambda deployment
+│   └── deploy.sh                      # Full deployment script
 ├── iac/
-│   └── sbm-ingester.tf          # Terraform infrastructure
+│   ├── ingester.tf              # Lambda functions
+│   ├── glue.tf                  # Glue job and trigger
+│   ├── monitoring.tf            # Alarms and SNS
+│   ├── logs.tf                  # CloudWatch Log Groups
+│   └── ...                      # Other Terraform modules
 ├── docs/                        # Documentation
 ├── pyproject.toml               # Project config (uv, ruff, pytest)
 └── CHANGELOG.md                 # Version history
@@ -227,12 +258,25 @@ Local deployment script for quick iterations during development.
 # Deploy specific Lambda
 ./scripts/deploy-lambda.sh ingester
 ./scripts/deploy-lambda.sh weekly-archiver
+./scripts/deploy-lambda.sh glue-trigger
 
 # Deploy all Lambdas
 ./scripts/deploy-lambda.sh all
 ```
 
-**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `all`
+**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `glue-trigger`, `all`
+
+### Process NEM12 Locally
+
+Process NEM12 files locally and upload to S3 (bypasses SQS queue).
+
+```bash
+# Dry-run (preview without uploading)
+uv run scripts/process_nem12_locally.py /path/to/file.csv --dry-run
+
+# Upload to S3
+uv run scripts/process_nem12_locally.py /path/to/file.csv
+```
 
 ### Migrate Archives to Weekly
 
@@ -312,7 +356,9 @@ uv run pytest --cov=src --cov-report=html
 
 ## Deployment
 
-Deployment is automated via GitHub Actions on push to `main`.
+Deployment is automated via GitHub Actions on push to `main`. The CI/CD pipeline:
+1. Builds and deploys 5 Lambda functions
+2. Uploads Glue ETL script to S3
 
 ### Manual Deployment
 
@@ -329,6 +375,10 @@ aws lambda update-function-code \
   --function-name sbm-files-ingester \
   --s3-bucket gega-code-deployment-bucket \
   --s3-key sbm-files-ingester/ingester.zip
+
+# Upload Glue script
+aws s3 cp src/glue/hudi_import/script.py \
+  s3://aws-glue-assets-318396632821-ap-southeast-2/scripts/hudiImportScript
 ```
 
 ### Infrastructure (Terraform)
