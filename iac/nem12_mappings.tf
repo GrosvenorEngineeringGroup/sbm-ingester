@@ -15,10 +15,6 @@ resource "aws_lambda_function" "sbm_files_ingester_nem12_mappings" {
   s3_bucket     = var.deployment_bucket
   s3_key        = "${local.lambda_s3_prefix}/nem12-mappings-to-s3.zip"
 
-  layers = [
-    "arn:aws:lambda:ap-southeast-2:318396632821:layer:gremlin-python313-unified:2",
-  ]
-
   vpc_config {
     subnet_ids         = local.neptune_subnet_ids
     security_group_ids = local.neptune_security_group_ids
