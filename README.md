@@ -40,12 +40,14 @@ Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, a
 
 ### Key Features (v0.5.0)
 
-- **AWS Lambda Powertools** - Structured JSON logging, X-Ray tracing, CloudWatch metrics
+- **AWS Lambda Powertools** - Structured JSON logging, CloudWatch metrics
+- **X-Ray Tracing** - Optional distributed tracing (enabled per Lambda)
 - **Idempotency** - DynamoDB-backed duplicate processing prevention
 - **Batch Processing** - Configurable buffer size for optimized S3 writes
 - **Weekly Archiving** - Automated S3 file archiving with concurrent processing (50 workers)
 - **File Stability Check** - Prevents processing of partially uploaded streaming files
 - **Glue ETL Pipeline** - Apache Hudi data lake integration with automated batch import
+- **Optima Exporter** - Automated BidEnergy data export with detailed error diagnostics
 
 ## Install
 
@@ -156,6 +158,7 @@ flowchart LR
 | `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
 | `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
 | `sbm-glue-trigger` | Python 3.13 | 128 MB | 30s | Hourly job - triggers Glue ETL when files ≥ threshold |
+| `sbm-optima-exporter` | Python 3.13 | 256 MB | 900s | Scheduled daily export of BidEnergy/Optima interval data via email (X-Ray disabled) |
 
 ### Glue ETL Job
 
@@ -217,7 +220,9 @@ sbm-ingester/
 │   │   │   └── app.py
 │   │   ├── weekly_archiver/     # Weekly archiver Lambda
 │   │   │   └── app.py
-│   │   └── glue_trigger/        # Glue trigger Lambda
+│   │   ├── glue_trigger/        # Glue trigger Lambda
+│   │   │   └── app.py
+│   │   └── optima_exporter/     # Optima/BidEnergy data exporter
 │   │       └── app.py
 │   ├── glue/
 │   │   └── hudi_import/         # Glue ETL job
@@ -233,13 +238,15 @@ sbm-ingester/
 │       ├── fixtures/            # Test data files
 │       └── test_*.py            # Test modules (255 tests)
 ├── scripts/
-│   ├── migrate_archives_to_weekly.py  # One-time migration script
-│   ├── process_nem12_locally.py       # Local NEM12 processing
-│   ├── deploy-lambda.sh               # Local Lambda deployment
-│   └── deploy.sh                      # Full deployment script
-├── iac/
+│   ├── migrate_archives_to_weekly.py       # One-time migration script
+│   ├── process_nem12_locally.py            # Local NEM12 processing
+│   ├── import_optima_config_to_dynamodb.py # Import Optima site config
+│   ├── deploy-lambda.sh                    # Local Lambda deployment
+│   └── deploy.sh                           # Full deployment script
+├── terraform/
 │   ├── ingester.tf              # Lambda functions
 │   ├── glue.tf                  # Glue job and trigger
+│   ├── optima_exporter.tf       # Optima exporter Lambda, DynamoDB, Scheduler
 │   ├── monitoring.tf            # Alarms and SNS
 │   ├── logs.tf                  # CloudWatch Log Groups
 │   └── ...                      # Other Terraform modules
@@ -264,7 +271,7 @@ Local deployment script for quick iterations during development.
 ./scripts/deploy-lambda.sh all
 ```
 
-**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `glue-trigger`, `all`
+**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `glue-trigger`, `optima-exporter`, `all`
 
 ### Process NEM12 Locally
 
@@ -329,7 +336,7 @@ uv run scripts/migrate_archives_to_weekly.py --workers 100
 
 ## Testing
 
-Tests use pytest with moto for AWS mocking.
+Tests use pytest with moto for AWS mocking. **Total: 349 tests.**
 
 ```bash
 # Run all tests
@@ -350,6 +357,7 @@ uv run pytest --cov=src --cov-report=html
 | Module | Coverage |
 |--------|----------|
 | `functions/file_processor/app.py` | 100% |
+| `functions/optima_exporter/app.py` | 100% |
 | `shared/nem_adapter.py` | 100% |
 | `shared/non_nem_parsers.py` | 100% |
 | `shared/common.py` | 100% |
@@ -357,7 +365,7 @@ uv run pytest --cov=src --cov-report=html
 ## Deployment
 
 Deployment is automated via GitHub Actions on push to `main`. The CI/CD pipeline:
-1. Builds and deploys 5 Lambda functions
+1. Builds and deploys 6 Lambda functions
 2. Uploads Glue ETL script to S3
 
 ### Manual Deployment
@@ -384,7 +392,7 @@ aws s3 cp src/glue/hudi_import/script.py \
 ### Infrastructure (Terraform)
 
 ```bash
-cd iac
+cd terraform
 terraform init
 terraform plan
 terraform apply

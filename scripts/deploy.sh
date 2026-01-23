@@ -112,7 +112,7 @@ done
 deploy_terraform() {
     log_section "Terraform Deployment"
 
-    cd "$PROJECT_ROOT/iac"
+    cd "$PROJECT_ROOT/terraform"
 
     log_info "Initializing Terraform..."
     terraform init -upgrade -input=false > /dev/null

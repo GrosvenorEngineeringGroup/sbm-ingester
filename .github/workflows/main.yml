@@ -75,6 +75,17 @@ jobs:
           cd build/glue_trigger && zip -r ../../glue-trigger.zip . && cd ../..
 
       # --------------------
+      # Build Optima Exporter Lambda
+      # --------------------
+      - name: Build Optima Exporter Lambda
+        run: |
+          mkdir -p build/optima_exporter
+          uv export --no-dev --no-hashes -o requirements.txt
+          pip install -r requirements.txt -t build/optima_exporter/
+          cp src/functions/optima_exporter/app.py build/optima_exporter/
+          cd build/optima_exporter && zip -r ../../optima_exporter.zip . && cd ../..
+
+      # --------------------
       # Configure AWS
       # --------------------
       - name: Configure AWS Credentials
@@ -130,6 +141,15 @@ jobs:
             --function-name sbm-glue-trigger \
             --s3-bucket gega-code-deployment-bucket \
             --s3-key sbm-files-ingester/glue-trigger.zip \
+            --publish
+
+      - name: Upload Optima Exporter & Refresh
+        run: |
+          aws s3 cp optima_exporter.zip s3://gega-code-deployment-bucket/sbm-files-ingester/optima_exporter.zip
+          aws lambda update-function-code \
+            --function-name sbm-optima-exporter \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/optima_exporter.zip \
             --publish
 
       # --------------------

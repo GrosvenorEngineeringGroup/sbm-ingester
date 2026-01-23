@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from conftest import (
     create_envizi_electricity_csv,
     create_envizi_water_csv,
-    create_optima_generation_csv,
+    create_optima_csv,
 )
 
 
@@ -121,18 +121,18 @@ class TestEnviziVerticalParserElectricity:
                 envizi_vertical_parser_electricity(filepath, "error_log")
 
 
-class TestOptimaGenerationDataParser:
-    """Tests for optima_generation_data_parser function."""
+class TestOptimaParser:
+    """Tests for optima_parser function."""
 
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
         """Test that generation data is parsed correctly."""
         with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import optima_generation_data_parser
+            from shared.non_nem_parsers import optima_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
-            create_optima_generation_csv(filepath, identifiers=["SOLAR001"], rows_per_id=5)
+            create_optima_csv(filepath, identifiers=["SOLAR001"], rows_per_id=5)
 
-            result = optima_generation_data_parser(filepath, "error_log")
+            result = optima_parser(filepath, "error_log")
 
             assert isinstance(result, list)
             assert len(result) == 1
@@ -140,21 +140,73 @@ class TestOptimaGenerationDataParser:
             nmi, df = result[0]
             assert nmi == "Optima_SOLAR001"
             assert "B1_kWh" in df.columns  # Generation uses B1
+            assert "E1_kWh" in df.columns  # Usage uses E1
 
     def test_handles_multiple_identifiers(self, temp_directory: str) -> None:
         """Test that multiple identifiers are handled correctly."""
         with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import optima_generation_data_parser
+            from shared.non_nem_parsers import optima_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
-            create_optima_generation_csv(filepath, identifiers=["SOLAR001", "SOLAR002"], rows_per_id=3)
+            create_optima_csv(filepath, identifiers=["SOLAR001", "SOLAR002"], rows_per_id=3)
 
-            result = optima_generation_data_parser(filepath, "error_log")
+            result = optima_parser(filepath, "error_log")
 
             assert len(result) == 2
             nmis = [nmi for nmi, df in result]
             assert "Optima_SOLAR001" in nmis
             assert "Optima_SOLAR002" in nmis
+
+    def test_parses_usage_column_as_e1_kwh(self, temp_directory: str) -> None:
+        """Test that Usage column is correctly extracted as E1_kWh."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_parser
+
+            filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
+            create_optima_csv(filepath, identifiers=["METER001"], rows_per_id=5)
+
+            result = optima_parser(filepath, "error_log")
+
+            _nmi, df = result[0]
+            assert "E1_kWh" in df.columns
+            # Verify values are correctly extracted (Usage = i * 0.5)
+            assert df["E1_kWh"].iloc[0] == 0.0  # i=0 -> 0 * 0.5 = 0
+            assert df["E1_kWh"].iloc[1] == 0.5  # i=1 -> 1 * 0.5 = 0.5
+            assert df["E1_kWh"].iloc[2] == 1.0  # i=2 -> 2 * 0.5 = 1.0
+
+    def test_parses_generation_only_file(self, temp_directory: str) -> None:
+        """Test that files with only Generation column work correctly."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_parser
+
+            filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
+            create_optima_csv(
+                filepath, identifiers=["SOLAR001"], rows_per_id=3, include_usage=False, include_generation=True
+            )
+
+            result = optima_parser(filepath, "error_log")
+
+            nmi, df = result[0]
+            assert nmi == "Optima_SOLAR001"
+            assert "B1_kWh" in df.columns
+            assert "E1_kWh" not in df.columns  # No Usage column in source
+
+    def test_parses_usage_only_file(self, temp_directory: str) -> None:
+        """Test that files with only Usage column work correctly."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.non_nem_parsers import optima_parser
+
+            filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
+            create_optima_csv(
+                filepath, identifiers=["METER001"], rows_per_id=3, include_usage=True, include_generation=False
+            )
+
+            result = optima_parser(filepath, "error_log")
+
+            nmi, df = result[0]
+            assert nmi == "Optima_METER001"
+            assert "E1_kWh" in df.columns
+            assert "B1_kWh" not in df.columns  # No Generation column in source
 
 
 class TestGetNonNemDf:
@@ -195,7 +247,7 @@ class TestGetNonNemDf:
 
             # Create valid file for later parser
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
-            create_optima_generation_csv(filepath, identifiers=["ID1"])
+            create_optima_csv(filepath, identifiers=["ID1"])
 
             get_non_nem_df(filepath, "error_log")
 
@@ -333,7 +385,7 @@ class TestDataFrameOutputFormat:
             from shared.non_nem_parsers import (
                 envizi_vertical_parser_electricity,
                 envizi_vertical_parser_water,
-                optima_generation_data_parser,
+                optima_parser,
             )
 
             # Test Envizi water
@@ -352,7 +404,7 @@ class TestDataFrameOutputFormat:
 
             # Test Optima generation
             gen_file = str(Path(temp_directory) / "OptimaGenerationData_test.csv")
-            create_optima_generation_csv(gen_file, identifiers=["1"])
-            result = optima_generation_data_parser(gen_file, "error")
+            create_optima_csv(gen_file, identifiers=["1"])
+            result = optima_parser(gen_file, "error")
             _, df = result[0]
             assert df.index.name == "t_start" or "t_start" in df.columns

@@ -263,8 +263,22 @@ def create_envizi_electricity_csv(
     return filepath
 
 
-def create_optima_generation_csv(filepath: str, identifiers: list[str] | None = None, rows_per_id: int = 10) -> str:
-    """Create a sample Optima generation data CSV file."""
+def create_optima_csv(
+    filepath: str,
+    identifiers: list[str] | None = None,
+    rows_per_id: int = 10,
+    include_usage: bool = True,
+    include_generation: bool = True,
+) -> str:
+    """Create a sample Optima data CSV file.
+
+    Args:
+        filepath: Path to write the CSV file.
+        identifiers: List of meter identifiers.
+        rows_per_id: Number of rows per identifier.
+        include_usage: Whether to include Usage column (E1 data).
+        include_generation: Whether to include Generation column (B1 data).
+    """
     from datetime import datetime, timedelta
 
     if identifiers is None:
@@ -276,14 +290,16 @@ def create_optima_generation_csv(filepath: str, identifiers: list[str] | None = 
     for identifier in identifiers:
         for i in range(rows_per_id):
             t = base_time + timedelta(hours=i)
-            data.append(
-                {
-                    "Identifier": identifier,
-                    "Date": t.strftime("%Y-%m-%d"),
-                    "Start Time": t.strftime("%H:%M"),
-                    "Generation": i * 0.3,
-                }
-            )
+            row: dict = {
+                "Identifier": identifier,
+                "Date": t.strftime("%Y-%m-%d"),
+                "Start Time": t.strftime("%H:%M"),
+            }
+            if include_usage:
+                row["Usage"] = i * 0.5  # Different multiplier than Generation
+            if include_generation:
+                row["Generation"] = i * 0.3
+            data.append(row)
 
     df = pd.DataFrame(data)
     df.to_csv(filepath, index=False)
