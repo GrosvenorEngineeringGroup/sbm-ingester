@@ -71,7 +71,7 @@ BIDENERGY_BASE_URL = os.environ.get("BIDENERGY_BASE_URL", "https://app.bidenergy
 # Default recipients for all exports (comma-separated in env var)
 DEFAULT_RECIPIENTS = [
     r.strip()
-    for r in os.environ.get("OPTIMA_DEFAULT_RECIPIENTS", "zyc@gegroup.com.au,client_ec_data@gegroup.com.au").split(",")
+    for r in os.environ.get("OPTIMA_DEFAULT_RECIPIENTS", "client_ec_data@gegroup.com.au").split(",")
     if r.strip()
 ]
 

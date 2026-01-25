@@ -84,7 +84,7 @@ resource "aws_lambda_function" "optima_exporter" {
       OPTIMA_CONFIG_TABLE       = aws_dynamodb_table.optima_config.name
       OPTIMA_PROJECTS           = "bunnings" # Test with bunnings first, then add racv
       OPTIMA_DAYS_BACK          = "7"        # Export past 7 days of data
-      OPTIMA_DEFAULT_RECIPIENTS = "zyc@gegroup.com.au,client_ec_data@gegroup.com.au"
+      OPTIMA_DEFAULT_RECIPIENTS = "client_ec_data@gegroup.com.au"
       BIDENERGY_BASE_URL        = "https://app.bidenergy.com"
 
       # Bunnings credentials
