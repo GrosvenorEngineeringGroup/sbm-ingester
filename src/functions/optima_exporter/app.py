@@ -24,7 +24,6 @@ Supported projects: bunnings, racv
 """
 
 import os
-import smtplib
 import tempfile
 from datetime import UTC, datetime, timedelta
 from email.mime.application import MIMEApplication
@@ -38,15 +37,13 @@ import requests
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 logger = Logger(service="optima-exporter")
 
-# SMTP configuration from environment variables
-SMTP_RELAY = os.environ.get("SMTP_RELAY", "email-smtp.ap-southeast-2.amazonaws.com")
-SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_RELAY_PORT = int(os.environ.get("SMTP_RELAY_PORT", "587"))
-SMTP_SENDER = os.environ.get("SMTP_SENDER", "noreply@gegroup.com.au")
+# SES configuration
+SES_SENDER = os.environ.get("SES_SENDER", "noreply@gegroup.com.au")
+SES_REGION = os.environ.get("SES_REGION", "ap-southeast-2")
 
 # DynamoDB configuration
 OPTIMA_CONFIG_TABLE = os.environ.get("OPTIMA_CONFIG_TABLE", "sbm-optima-config")
@@ -423,7 +420,7 @@ def send_email_with_attachment(
     body: str,
 ) -> bool:
     """
-    Send email with CSV attachment via SMTP.
+    Send email with CSV attachment via AWS SES.
 
     Args:
         file_path: Path to the file to attach
@@ -434,12 +431,8 @@ def send_email_with_attachment(
     Returns:
         True if email sent successfully, False otherwise
     """
-    if not SMTP_USERNAME or not SMTP_PASSWORD:
-        logger.error("SMTP credentials not configured")
-        return False
-
     msg = MIMEMultipart()
-    msg["From"] = SMTP_SENDER
+    msg["From"] = SES_SENDER
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
 
@@ -453,7 +446,7 @@ def send_email_with_attachment(
         msg.attach(attachment)
 
     logger.info(
-        "Sending email",
+        "Sending email via SES",
         extra={
             "recipients": recipients,
             "subject": subject,
@@ -462,38 +455,35 @@ def send_email_with_attachment(
     )
 
     try:
-        with smtplib.SMTP(SMTP_RELAY, SMTP_RELAY_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_SENDER, recipients, msg.as_string())
-            logger.info("Email sent successfully", extra={"recipients": recipients, "subject": subject})
-            return True
+        ses_client = boto3.client("ses", region_name=SES_REGION)
+        response = ses_client.send_raw_email(
+            Source=SES_SENDER,
+            Destinations=recipients,
+            RawMessage={"Data": msg.as_string()},
+        )
+        logger.info(
+            "Email sent successfully via SES",
+            extra={"recipients": recipients, "subject": subject, "message_id": response["MessageId"]},
+        )
+        return True
 
-    except smtplib.SMTPAuthenticationError as e:
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "Unknown")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
         logger.error(
-            "Email send failed: SMTP authentication error (check SMTP credentials)",
-            extra={"error": str(e), "smtp_relay": SMTP_RELAY},
+            "Email send failed via SES",
+            extra={
+                "error_code": error_code,
+                "error_message": error_message,
+                "recipients": recipients,
+                "subject": subject,
+            },
         )
-    except smtplib.SMTPConnectError as e:
+    except Exception as e:
         logger.error(
-            "Email send failed: unable to connect to SMTP server",
-            extra={"error": str(e), "smtp_relay": SMTP_RELAY, "smtp_port": SMTP_RELAY_PORT},
-        )
-    except smtplib.SMTPRecipientsRefused as e:
-        logger.error(
-            "Email send failed: recipients refused",
-            extra={"error": str(e), "recipients": recipients},
-        )
-    except smtplib.SMTPException as e:
-        logger.error(
-            "Email send failed: SMTP error",
+            "Email send failed: unexpected error",
             exc_info=True,
             extra={"error": str(e), "recipients": recipients, "subject": subject},
-        )
-    except TimeoutError as e:
-        logger.error(
-            "Email send failed: connection timeout",
-            extra={"error": str(e), "smtp_relay": SMTP_RELAY},
         )
 
     return False

@@ -2,6 +2,14 @@
 """
 Import Optima site configuration from CSV to DynamoDB.
 
+Supports two CSV formats:
+1. Sites CSV (from export_optima_sites.py):
+   - SiteIdStr, NmiOrIcp, SiteName, ...
+   - NmiOrIcp will be prefixed with "Optima_"
+
+2. Legacy format:
+   - nmi, siteIdStr, siteName
+
 Usage:
     uv run scripts/import_optima_config_to_dynamodb.py <csv_file> <project> [options]
 
@@ -10,8 +18,8 @@ Options:
     --force     Overwrite records with differences (default: skip)
 
 Examples:
-    uv run scripts/import_optima_config_to_dynamodb.py bunnings-optima.csv bunnings --dry-run
-    uv run scripts/import_optima_config_to_dynamodb.py bunnings-optima.csv bunnings --force
+    uv run scripts/import_optima_config_to_dynamodb.py output/optima-bunnings-sites-2026-01-28.csv bunnings --dry-run
+    uv run scripts/import_optima_config_to_dynamodb.py output/optima-bunnings-sites-2026-01-28.csv bunnings --force
 """
 
 import argparse
@@ -99,6 +107,50 @@ def compare_item(csv_item: dict, existing: dict | None) -> tuple[ImportStatus, d
     return ImportStatus.CONFLICT, diff
 
 
+def normalize_item(row: dict[str, str]) -> dict[str, str] | None:
+    """Normalize a CSV row to standard format.
+
+    Supports two formats:
+    1. Sites CSV: SiteIdStr, NmiOrIcp, SiteName (NmiOrIcp gets Optima_ prefix)
+    2. Legacy: nmi, siteIdStr, siteName
+
+    Args:
+        row: CSV row as dict
+
+    Returns:
+        Normalized dict with nmi, siteIdStr, siteName or None if invalid
+    """
+    # Detect format by checking for SiteIdStr (sites format) or siteIdStr (legacy)
+    if "SiteIdStr" in row:
+        # Sites CSV format
+        nmi_raw = row.get("NmiOrIcp", "").strip()
+        site_id_str = row.get("SiteIdStr", "").strip()
+        site_name = row.get("SiteName", "").strip()
+
+        # Add Optima_ prefix if not already present
+        if nmi_raw and not nmi_raw.startswith("Optima_"):
+            nmi = f"Optima_{nmi_raw}"
+        else:
+            nmi = nmi_raw
+    else:
+        # Legacy format
+        nmi = row.get("nmi", "").strip()
+        site_id_str = row.get("siteIdStr", "").strip()
+        site_name = row.get("siteName", "").strip()
+
+    # Validate required fields are non-empty
+    if not nmi:
+        return None
+    if not site_id_str:
+        return None
+
+    return {
+        "nmi": nmi,
+        "siteIdStr": site_id_str,
+        "siteName": site_name,
+    }
+
+
 def import_csv_to_dynamodb(
     csv_path: str,
     project: str,
@@ -126,30 +178,51 @@ def import_csv_to_dynamodb(
 
     with csv_file.open() as f:
         reader = csv.DictReader(f)
-        items = list(reader)
+        raw_items = list(reader)
 
-    if not items:
+    if not raw_items:
         print("Error: CSV file is empty")
         return 1
 
-    # Validate required columns
-    required_cols = {"nmi", "siteIdStr"}
-    csv_cols = set(items[0].keys())
+    # Detect format and validate columns
+    csv_cols = set(raw_items[0].keys())
+    is_sites_format = "SiteIdStr" in csv_cols
+
+    if is_sites_format:
+        required_cols = {"SiteIdStr", "NmiOrIcp"}
+        format_name = "Sites CSV"
+    else:
+        required_cols = {"nmi", "siteIdStr"}
+        format_name = "Legacy"
+
     missing = required_cols - csv_cols
     if missing:
         print(f"Error: Missing required columns: {', '.join(missing)}")
         return 1
+
+    # Normalize items and filter invalid rows
+    items = []
+    skipped_empty = 0
+    for row in raw_items:
+        normalized = normalize_item(row)
+        if normalized:
+            items.append(normalized)
+        else:
+            skipped_empty += 1
 
     # Print header
     print("=" * 60)
     print("Optima Config Import")
     print("=" * 60)
     print(f"CSV File:    {csv_file.absolute()}")
+    print(f"Format:      {format_name}")
     print(f"Project:     {project}")
     print(f"Mode:        {'DRY RUN' if dry_run else 'LIVE'}")
     if force:
         print("Option:      --force (overwrite conflicts)")
     print("=" * 60)
+    if skipped_empty > 0:
+        print(f"Warning: Skipped {skipped_empty} rows with empty nmi or siteIdStr")
     print()
 
     # Fetch existing items

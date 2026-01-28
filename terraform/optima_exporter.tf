@@ -47,6 +47,28 @@ resource "aws_iam_role_policy" "optima_dynamodb_access" {
 }
 
 # -----------------------------
+# IAM: SES Send Email Policy
+# -----------------------------
+resource "aws_iam_role_policy" "optima_ses_access" {
+  name = "sbm-optima-exporter-ses-access"
+  role = data.aws_iam_role.ingester_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ses:SendRawEmail", "ses:SendEmail"]
+      Resource = "*"
+      Condition = {
+        StringEquals = {
+          "ses:FromAddress" = "noreply@gegroup.com.au"
+        }
+      }
+    }]
+  })
+}
+
+# -----------------------------
 # CloudWatch Log Group
 # -----------------------------
 resource "aws_cloudwatch_log_group" "optima_exporter" {
@@ -74,11 +96,10 @@ resource "aws_lambda_function" "optima_exporter" {
     variables = {
       POWERTOOLS_SERVICE_NAME = "optima-exporter"
       POWERTOOLS_LOG_LEVEL    = "INFO"
-      SMTP_RELAY              = "email-smtp.ap-southeast-2.amazonaws.com"
-      SMTP_USERNAME           = "AKIA56UE5WHAMJFZ6PZF"
-      SMTP_RELAY_PORT         = "587"
-      SMTP_PASSWORD           = "BBIMM004cpKn2qbjUPeLegFHn43O/U5ZAC74rTuUBuO1"
-      SMTP_SENDER             = "noreply@gegroup.com.au"
+
+      # SES configuration (replaces SMTP)
+      SES_SENDER = "noreply@gegroup.com.au"
+      SES_REGION = "ap-southeast-2"
 
       # DynamoDB configuration
       OPTIMA_CONFIG_TABLE       = aws_dynamodb_table.optima_config.name

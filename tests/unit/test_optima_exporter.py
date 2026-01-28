@@ -6,7 +6,6 @@ and sends it via email.
 
 import importlib
 import os
-import smtplib
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import boto3
 import pytest
 import responses
+from botocore.exceptions import ClientError
 from freezegun import freeze_time
 from moto import mock_aws
 
@@ -35,12 +35,9 @@ def reset_env() -> Generator[None]:
     os.environ["POWERTOOLS_TRACE_DISABLED"] = "true"
     os.environ["POWERTOOLS_METRICS_NAMESPACE"] = "test"
 
-    # SMTP config
-    os.environ["SMTP_RELAY"] = "smtp.test.com"
-    os.environ["SMTP_USERNAME"] = "test_user"
-    os.environ["SMTP_PASSWORD"] = "test_pass"
-    os.environ["SMTP_SENDER"] = "test@example.com"
-    os.environ["SMTP_RELAY_PORT"] = "587"
+    # SES config
+    os.environ["SES_SENDER"] = "test@example.com"
+    os.environ["SES_REGION"] = "ap-southeast-2"
 
     # Optima config
     os.environ["OPTIMA_PROJECTS"] = "bunnings,racv"
@@ -761,38 +758,19 @@ class TestDownloadCsv:
 class TestSendEmailWithAttachment:
     """Tests for send_email_with_attachment function."""
 
+    @mock_aws
     def test_sends_email_successfully(self, tmp_path: Path) -> None:
-        """Test that email is sent successfully."""
-        from src.functions.optima_exporter.app import send_email_with_attachment
+        """Test that email is sent successfully via SES."""
+        # Verify and setup SES identity
+        ses_client = boto3.client("ses", region_name="ap-southeast-2")
+        ses_client.verify_email_identity(EmailAddress="test@example.com")
+        ses_client.verify_email_identity(EmailAddress="recipient@test.com")
+
+        app_module = reload_app_module()
 
         # Create test file
         test_file = tmp_path / "test.csv"
         test_file.write_text("Date,Value\n2026-01-01,100")
-
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
-
-            result = send_email_with_attachment(
-                file_path=str(test_file),
-                recipients=["recipient@test.com"],
-                subject="Test Subject",
-                body="Test Body",
-            )
-
-            assert result is True
-            mock_instance.starttls.assert_called_once()
-            mock_instance.login.assert_called_once()
-            mock_instance.sendmail.assert_called_once()
-
-    def test_returns_false_when_credentials_missing(self, tmp_path: Path) -> None:
-        """Test that False is returned when SMTP credentials are missing."""
-        os.environ["SMTP_USERNAME"] = ""
-        os.environ["SMTP_PASSWORD"] = ""
-        app_module = reload_app_module()
-
-        test_file = tmp_path / "test.csv"
-        test_file.write_text("data")
 
         result = app_module.send_email_with_attachment(
             file_path=str(test_file),
@@ -801,21 +779,25 @@ class TestSendEmailWithAttachment:
             body="Test Body",
         )
 
-        assert result is False
+        assert result is True
 
-    def test_returns_false_on_smtp_error(self, tmp_path: Path) -> None:
-        """Test that False is returned on SMTP error."""
-        from src.functions.optima_exporter.app import send_email_with_attachment
+    def test_returns_false_on_ses_error(self, tmp_path: Path) -> None:
+        """Test that False is returned on SES error."""
+        app_module = reload_app_module()
 
         test_file = tmp_path / "test.csv"
         test_file.write_text("data")
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
-            mock_instance.sendmail.side_effect = smtplib.SMTPException("Send failed")
+        # Mock SES client to raise an error
+        with patch("boto3.client") as mock_client:
+            mock_ses = MagicMock()
+            mock_client.return_value = mock_ses
+            mock_ses.send_raw_email.side_effect = ClientError(
+                {"Error": {"Code": "MessageRejected", "Message": "Email rejected"}},
+                "SendRawEmail",
+            )
 
-            result = send_email_with_attachment(
+            result = app_module.send_email_with_attachment(
                 file_path=str(test_file),
                 recipients=["recipient@test.com"],
                 subject="Test Subject",
@@ -824,16 +806,24 @@ class TestSendEmailWithAttachment:
 
             assert result is False
 
+    @mock_aws
     def test_attaches_file_correctly(self, tmp_path: Path) -> None:
         """Test that file is attached correctly."""
+        # Verify SES identities
+        ses_client = boto3.client("ses", region_name="ap-southeast-2")
+        ses_client.verify_email_identity(EmailAddress="test@example.com")
+        ses_client.verify_email_identity(EmailAddress="recipient@test.com")
+
         app_module = reload_app_module()
 
         test_file = tmp_path / "test_file.csv"
         test_file.write_text("Date,Value\n2026-01-01,100")
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
+        # Mock SES client to capture the raw message
+        with patch("boto3.client") as mock_client:
+            mock_ses = MagicMock()
+            mock_client.return_value = mock_ses
+            mock_ses.send_raw_email.return_value = {"MessageId": "test-message-id"}
 
             app_module.send_email_with_attachment(
                 file_path=str(test_file),
@@ -842,23 +832,33 @@ class TestSendEmailWithAttachment:
                 body="Test Body",
             )
 
-            # Verify sendmail was called with correct arguments
-            call_args = mock_instance.sendmail.call_args
-            msg_string = call_args[0][2]
+            # Verify send_raw_email was called
+            mock_ses.send_raw_email.assert_called_once()
+            call_kwargs = mock_ses.send_raw_email.call_args[1]
+            raw_message = call_kwargs["RawMessage"]["Data"]
 
-            assert "test_file.csv" in msg_string
-            assert "Test Subject" in msg_string
+            assert "test_file.csv" in raw_message
+            assert "Test Subject" in raw_message
 
+    @mock_aws
     def test_handles_multiple_recipients(self, tmp_path: Path) -> None:
         """Test that multiple recipients are handled."""
+        # Verify SES identities
+        ses_client = boto3.client("ses", region_name="ap-southeast-2")
+        ses_client.verify_email_identity(EmailAddress="test@example.com")
+        for email in ["user1@test.com", "user2@test.com", "user3@test.com"]:
+            ses_client.verify_email_identity(EmailAddress=email)
+
         app_module = reload_app_module()
 
         test_file = tmp_path / "test.csv"
         test_file.write_text("data")
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
+        # Mock SES client to capture the recipients
+        with patch("boto3.client") as mock_client:
+            mock_ses = MagicMock()
+            mock_client.return_value = mock_ses
+            mock_ses.send_raw_email.return_value = {"MessageId": "test-message-id"}
 
             recipients = ["user1@test.com", "user2@test.com", "user3@test.com"]
             app_module.send_email_with_attachment(
@@ -868,9 +868,9 @@ class TestSendEmailWithAttachment:
                 body="Test Body",
             )
 
-            # Verify sendmail was called with all recipients
-            call_args = mock_instance.sendmail.call_args
-            assert call_args[0][1] == recipients
+            # Verify send_raw_email was called with all recipients
+            call_kwargs = mock_ses.send_raw_email.call_args[1]
+            assert call_kwargs["Destinations"] == recipients
 
 
 # ================================
@@ -1686,19 +1686,19 @@ class TestLambdaHandler:
 class TestConfiguration:
     """Tests for configuration and environment variable handling."""
 
-    def test_default_smtp_relay(self) -> None:
-        """Test default SMTP relay value."""
-        os.environ.pop("SMTP_RELAY", None)
+    def test_default_ses_sender(self) -> None:
+        """Test default SES sender value."""
+        os.environ.pop("SES_SENDER", None)
         app_module = reload_app_module()
 
-        assert app_module.SMTP_RELAY == "email-smtp.ap-southeast-2.amazonaws.com"
+        assert app_module.SES_SENDER == "noreply@gegroup.com.au"
 
-    def test_default_smtp_port(self) -> None:
-        """Test default SMTP port value."""
-        os.environ.pop("SMTP_RELAY_PORT", None)
+    def test_default_ses_region(self) -> None:
+        """Test default SES region value."""
+        os.environ.pop("SES_REGION", None)
         app_module = reload_app_module()
 
-        assert app_module.SMTP_RELAY_PORT == 587
+        assert app_module.SES_REGION == "ap-southeast-2"
 
     def test_default_days_back(self) -> None:
         """Test default OPTIMA_DAYS_BACK value."""
