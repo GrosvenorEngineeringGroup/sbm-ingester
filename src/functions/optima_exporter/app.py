@@ -42,7 +42,7 @@ from botocore.exceptions import ClientError
 logger = Logger(service="optima-exporter")
 
 # SES configuration
-SES_SENDER = os.environ.get("SES_SENDER", "noreply@gegroup.com.au")
+SES_SENDER = os.environ.get("SES_SENDER", "client_ec_data@gegroup.com.au")
 SES_REGION = os.environ.get("SES_REGION", "ap-southeast-2")
 
 # DynamoDB configuration

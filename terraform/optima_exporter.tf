@@ -61,7 +61,7 @@ resource "aws_iam_role_policy" "optima_ses_access" {
       Resource = "*"
       Condition = {
         StringEquals = {
-          "ses:FromAddress" = "noreply@gegroup.com.au"
+          "ses:FromAddress" = "client_ec_data@gegroup.com.au"
         }
       }
     }]
@@ -98,7 +98,7 @@ resource "aws_lambda_function" "optima_exporter" {
       POWERTOOLS_LOG_LEVEL    = "INFO"
 
       # SES configuration (replaces SMTP)
-      SES_SENDER = "noreply@gegroup.com.au"
+      SES_SENDER = "client_ec_data@gegroup.com.au"
       SES_REGION = "ap-southeast-2"
 
       # DynamoDB configuration

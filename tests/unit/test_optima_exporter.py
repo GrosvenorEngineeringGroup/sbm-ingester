@@ -1691,7 +1691,7 @@ class TestConfiguration:
         os.environ.pop("SES_SENDER", None)
         app_module = reload_app_module()
 
-        assert app_module.SES_SENDER == "noreply@gegroup.com.au"
+        assert app_module.SES_SENDER == "client_ec_data@gegroup.com.au"
 
     def test_default_ses_region(self) -> None:
         """Test default SES region value."""
