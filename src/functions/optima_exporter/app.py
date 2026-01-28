@@ -24,6 +24,7 @@ Supported projects: bunnings, racv
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -43,6 +44,9 @@ S3_UPLOAD_PREFIX = os.environ.get("S3_UPLOAD_PREFIX", "newTBP/")
 OPTIMA_CONFIG_TABLE = os.environ.get("OPTIMA_CONFIG_TABLE", "sbm-optima-config")
 OPTIMA_PROJECTS = [p.strip() for p in os.environ.get("OPTIMA_PROJECTS", "").split(",") if p.strip()]
 OPTIMA_DAYS_BACK = int(os.environ.get("OPTIMA_DAYS_BACK", "7"))
+
+# Parallel processing configuration
+MAX_WORKERS = int(os.environ.get("OPTIMA_MAX_WORKERS", "10"))
 
 # DynamoDB resource (lazy initialization)
 _dynamodb = None
@@ -574,22 +578,56 @@ def process_scheduled_export() -> dict[str, Any]:
             continue
 
         projects_processed += 1
-        logger.info("Processing sites for project", extra={"project": project, "site_count": len(sites)})
+        logger.info(
+            "Processing sites for project",
+            extra={"project": project, "site_count": len(sites), "max_workers": MAX_WORKERS},
+        )
 
-        for site in sites:
-            result = process_site(
-                cookies=cookies,
-                nmi=site["nmi"],
-                site_id_str=site["siteIdStr"],
-                start_date=start_date,
-                end_date=end_date,
-                project=project,
-            )
-            result["project"] = project
-            all_results.append(result)
+        # Process sites in parallel using ThreadPoolExecutor
+        project_results: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Submit all site processing tasks
+            future_to_site = {
+                executor.submit(
+                    process_site,
+                    cookies=cookies,
+                    nmi=site["nmi"],
+                    site_id_str=site["siteIdStr"],
+                    start_date=start_date,
+                    end_date=end_date,
+                    project=project,
+                ): site
+                for site in sites
+            }
 
-        project_success = sum(1 for r in all_results if r.get("project") == project and r.get("success"))
-        project_errors = sum(1 for r in all_results if r.get("project") == project and not r.get("success"))
+            # Collect results as they complete
+            for future in as_completed(future_to_site):
+                site = future_to_site[future]
+                try:
+                    result = future.result()
+                    result["project"] = project
+                    project_results.append(result)
+                except Exception as e:
+                    # Handle unexpected errors from thread execution
+                    logger.error(
+                        "Site processing failed with exception",
+                        exc_info=True,
+                        extra={"project": project, "nmi": site["nmi"], "error": str(e)},
+                    )
+                    project_results.append(
+                        {
+                            "nmi": site["nmi"],
+                            "site_id": site["siteIdStr"],
+                            "project": project,
+                            "success": False,
+                            "error": f"Thread execution failed: {e}",
+                        }
+                    )
+
+        all_results.extend(project_results)
+
+        project_success = sum(1 for r in project_results if r.get("success"))
+        project_errors = sum(1 for r in project_results if not r.get("success"))
         logger.info(
             "Project processing complete",
             extra={"project": project, "success_count": project_success, "error_count": project_errors},
@@ -717,27 +755,53 @@ def process_ondemand_export(event: dict[str, Any]) -> dict[str, Any]:
             "body": "Failed to authenticate with BidEnergy",
         }
 
-    # Process each site
+    # Process sites in parallel using ThreadPoolExecutor
     results: list[dict[str, Any]] = []
-    success_count = 0
-    error_count = 0
 
-    for site in sites:
-        site_nmi = site["nmi"]
-        site_id_str = site["siteIdStr"]
-        result = process_site(
-            cookies=cookies,
-            nmi=site_nmi,
-            site_id_str=site_id_str,
-            start_date=start_date,
-            end_date=end_date,
-            project=project,
-        )
-        results.append(result)
-        if result["success"]:
-            success_count += 1
-        else:
-            error_count += 1
+    logger.info(
+        "On-demand export: processing sites in parallel",
+        extra={"project": project, "site_count": len(sites), "max_workers": MAX_WORKERS},
+    )
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # Submit all site processing tasks
+        future_to_site = {
+            executor.submit(
+                process_site,
+                cookies=cookies,
+                nmi=site["nmi"],
+                site_id_str=site["siteIdStr"],
+                start_date=start_date,
+                end_date=end_date,
+                project=project,
+            ): site
+            for site in sites
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_site):
+            site = future_to_site[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                # Handle unexpected errors from thread execution
+                logger.error(
+                    "Site processing failed with exception",
+                    exc_info=True,
+                    extra={"project": project, "nmi": site["nmi"], "error": str(e)},
+                )
+                results.append(
+                    {
+                        "nmi": site["nmi"],
+                        "site_id": site["siteIdStr"],
+                        "success": False,
+                        "error": f"Thread execution failed: {e}",
+                    }
+                )
+
+    success_count = sum(1 for r in results if r.get("success"))
+    error_count = sum(1 for r in results if not r.get("success"))
 
     logger.info(
         "On-demand export completed",

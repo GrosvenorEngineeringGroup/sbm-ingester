@@ -90,6 +90,9 @@ resource "aws_lambda_function" "optima_exporter" {
       OPTIMA_DAYS_BACK    = "7"        # Export past 7 days of data
       BIDENERGY_BASE_URL  = "https://app.bidenergy.com"
 
+      # Parallel processing configuration
+      OPTIMA_MAX_WORKERS = "10" # Number of concurrent site downloads
+
       # Bunnings credentials
       OPTIMA_BUNNINGS_USERNAME  = "optimaBunningsEnergy@verdeos.com"
       OPTIMA_BUNNINGS_PASSWORD  = "3?JSBPKrbFF6rr"

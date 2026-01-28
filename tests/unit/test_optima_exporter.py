@@ -1694,6 +1694,20 @@ class TestConfiguration:
 
         assert app_module.OPTIMA_PROJECTS == ["project1", "project2", "project3"]
 
+    def test_default_max_workers(self) -> None:
+        """Test default OPTIMA_MAX_WORKERS value."""
+        os.environ.pop("OPTIMA_MAX_WORKERS", None)
+        app_module = reload_app_module()
+
+        assert app_module.MAX_WORKERS == 10
+
+    def test_custom_max_workers(self) -> None:
+        """Test custom OPTIMA_MAX_WORKERS value."""
+        os.environ["OPTIMA_MAX_WORKERS"] = "5"
+        app_module = reload_app_module()
+
+        assert app_module.MAX_WORKERS == 5
+
 
 # ================================
 # TestEdgeCases
@@ -1814,3 +1828,189 @@ class TestEdgeCases:
         assert len(sites) == 1
         assert sites[0] == {"nmi": "NMI001", "siteIdStr": "site-guid-001"}
         assert "extra1" not in sites[0]
+
+
+# ================================
+# TestParallelProcessing
+# ================================
+class TestParallelProcessing:
+    """Tests for parallel processing with ThreadPoolExecutor."""
+
+    @freeze_time("2026-01-23 10:00:00")
+    @mock_aws
+    def test_parallel_processes_all_sites(self) -> None:
+        """Test that all sites are processed in parallel."""
+        os.environ["OPTIMA_PROJECTS"] = "bunnings"
+
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        # Add multiple sites
+        for i in range(5):
+            table.put_item(Item={"project": "bunnings", "nmi": f"NMI00{i}", "siteIdStr": f"site-guid-00{i}"})
+
+        app_module = reload_app_module()
+
+        processed_nmis: list[str] = []
+
+        def mock_process(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nmi = kwargs.get("nmi", args[1] if len(args) > 1 else "unknown")
+            processed_nmis.append(nmi)
+            return {"success": True, "nmi": nmi}
+
+        with (
+            patch.object(app_module, "login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(app_module, "process_site", side_effect=mock_process),
+        ):
+            result = app_module.process_scheduled_export()
+
+            # All 5 sites should be processed
+            assert len(processed_nmis) == 5
+            assert result["body"]["success_count"] == 5
+            assert result["body"]["error_count"] == 0
+
+    @freeze_time("2026-01-23 10:00:00")
+    @mock_aws
+    def test_parallel_handles_thread_exception(self) -> None:
+        """Test that thread exception is caught and doesn't crash other threads."""
+        os.environ["OPTIMA_PROJECTS"] = "bunnings"
+
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI002", "siteIdStr": "site-guid-002"})
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI003", "siteIdStr": "site-guid-003"})
+
+        app_module = reload_app_module()
+
+        call_count = [0]
+
+        def mock_process(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            call_count[0] += 1
+            nmi = kwargs.get("nmi", args[1] if len(args) > 1 else "unknown")
+            # Raise exception for NMI002
+            if nmi == "NMI002":
+                raise RuntimeError("Simulated thread failure")
+            return {"success": True, "nmi": nmi}
+
+        with (
+            patch.object(app_module, "login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(app_module, "process_site", side_effect=mock_process),
+        ):
+            result = app_module.process_scheduled_export()
+
+            # All 3 sites should be attempted
+            assert call_count[0] == 3
+            # 2 successes, 1 failure
+            assert result["body"]["success_count"] == 2
+            assert result["body"]["error_count"] == 1
+            # Check that the error result contains thread exception info
+            error_results = [r for r in result["body"]["results"] if not r.get("success")]
+            assert len(error_results) == 1
+            assert "Thread execution failed" in error_results[0]["error"]
+
+    @freeze_time("2026-01-23 10:00:00")
+    @mock_aws
+    def test_ondemand_parallel_processes_all_sites(self) -> None:
+        """Test that on-demand export processes sites in parallel."""
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        # Add multiple sites
+        for i in range(3):
+            table.put_item(Item={"project": "bunnings", "nmi": f"NMI00{i}", "siteIdStr": f"site-guid-00{i}"})
+
+        app_module = reload_app_module()
+
+        processed_nmis: list[str] = []
+
+        def mock_process(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            nmi = kwargs.get("nmi", args[1] if len(args) > 1 else "unknown")
+            processed_nmis.append(nmi)
+            return {"success": True, "nmi": nmi}
+
+        with (
+            patch.object(app_module, "login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(app_module, "process_site", side_effect=mock_process),
+        ):
+            result = app_module.process_ondemand_export({"project": "bunnings"})
+
+            # All 3 sites should be processed
+            assert len(processed_nmis) == 3
+            assert result["body"]["success_count"] == 3
+            assert result["statusCode"] == 200
+
+    @freeze_time("2026-01-23 10:00:00")
+    @mock_aws
+    def test_parallel_respects_max_workers(self) -> None:
+        """Test that parallel processing respects MAX_WORKERS setting."""
+        os.environ["OPTIMA_MAX_WORKERS"] = "2"
+        os.environ["OPTIMA_PROJECTS"] = "bunnings"
+
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        for i in range(4):
+            table.put_item(Item={"project": "bunnings", "nmi": f"NMI00{i}", "siteIdStr": f"site-guid-00{i}"})
+
+        app_module = reload_app_module()
+
+        # Verify MAX_WORKERS was loaded correctly
+        assert app_module.MAX_WORKERS == 2
+
+        with (
+            patch.object(app_module, "login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(app_module, "process_site") as mock_process,
+        ):
+            mock_process.return_value = {"success": True, "nmi": "NMI"}
+
+            result = app_module.process_scheduled_export()
+
+            # All 4 sites should still be processed
+            assert mock_process.call_count == 4
+            assert result["body"]["success_count"] == 4
