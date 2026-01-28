@@ -47,26 +47,9 @@ resource "aws_iam_role_policy" "optima_dynamodb_access" {
 }
 
 # -----------------------------
-# IAM: SES Send Email Policy
+# Note: SMTP uses dedicated IAM user credentials (sbm-ses-smtp-user)
+# No SES permissions needed on Lambda role
 # -----------------------------
-resource "aws_iam_role_policy" "optima_ses_access" {
-  name = "sbm-optima-exporter-ses-access"
-  role = data.aws_iam_role.ingester_role.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["ses:SendRawEmail", "ses:SendEmail"]
-      Resource = "*"
-      Condition = {
-        StringEquals = {
-          "ses:FromAddress" = "client_ec_data@gegroup.com.au"
-        }
-      }
-    }]
-  })
-}
 
 # -----------------------------
 # CloudWatch Log Group
@@ -97,9 +80,12 @@ resource "aws_lambda_function" "optima_exporter" {
       POWERTOOLS_SERVICE_NAME = "optima-exporter"
       POWERTOOLS_LOG_LEVEL    = "INFO"
 
-      # SES configuration (replaces SMTP)
-      SES_SENDER = "client_ec_data@gegroup.com.au"
-      SES_REGION = "ap-southeast-2"
+      # SMTP configuration
+      SMTP_RELAY      = "email-smtp.ap-southeast-2.amazonaws.com"
+      SMTP_RELAY_PORT = "587"
+      SMTP_USERNAME   = "AKIAUUIPLB32X7SES4KR"
+      SMTP_PASSWORD   = "BNtzEgXiHe32w++moHE7xrgwlwdk1UbVEDwiUZZsi3UV"
+      SMTP_SENDER     = "noreply@gegroup.com.au"
 
       # DynamoDB configuration
       OPTIMA_CONFIG_TABLE       = aws_dynamodb_table.optima_config.name
