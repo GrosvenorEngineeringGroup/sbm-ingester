@@ -85,7 +85,7 @@ resource "aws_lambda_function" "optima_exporter" {
       SMTP_RELAY_PORT = "587"
       SMTP_USERNAME   = "AKIAUUIPLB32X7SES4KR"
       SMTP_PASSWORD   = "BNtzEgXiHe32w++moHE7xrgwlwdk1UbVEDwiUZZsi3UV"
-      SMTP_SENDER     = "noreply@gegroup.com.au"
+      SMTP_SENDER     = "client_ec_data@gegroup.com.au"
 
       # DynamoDB configuration
       OPTIMA_CONFIG_TABLE       = aws_dynamodb_table.optima_config.name

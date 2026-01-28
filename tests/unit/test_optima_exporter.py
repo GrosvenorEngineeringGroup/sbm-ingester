@@ -1693,6 +1693,13 @@ class TestConfiguration:
 
         assert app_module.SMTP_RELAY == "email-smtp.ap-southeast-2.amazonaws.com"
 
+    def test_default_smtp_sender(self) -> None:
+        """Test default SMTP sender value."""
+        os.environ.pop("SMTP_SENDER", None)
+        app_module = reload_app_module()
+
+        assert app_module.SMTP_SENDER == "client_ec_data@gegroup.com.au"
+
     def test_default_smtp_port(self) -> None:
         """Test default SMTP port value."""
         os.environ.pop("SMTP_RELAY_PORT", None)

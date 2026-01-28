@@ -46,7 +46,7 @@ SMTP_RELAY = os.environ.get("SMTP_RELAY", "email-smtp.ap-southeast-2.amazonaws.c
 SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_RELAY_PORT = int(os.environ.get("SMTP_RELAY_PORT", "587"))
-SMTP_SENDER = os.environ.get("SMTP_SENDER", "noreply@gegroup.com.au")
+SMTP_SENDER = os.environ.get("SMTP_SENDER", "client_ec_data@gegroup.com.au")
 
 # DynamoDB configuration
 OPTIMA_CONFIG_TABLE = os.environ.get("OPTIMA_CONFIG_TABLE", "sbm-optima-config")
