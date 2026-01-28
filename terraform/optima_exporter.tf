@@ -2,7 +2,7 @@
 # Optima Exporter: BidEnergy Data Export
 # ================================
 # Exports meter data from Optima/BidEnergy via web login
-# and sends CSV reports via email
+# and uploads CSV reports to S3 for ingestion pipeline
 #
 # Supports scheduled daily exports via EventBridge and
 # on-demand invocation with specific parameters.
@@ -47,8 +47,8 @@ resource "aws_iam_role_policy" "optima_dynamodb_access" {
 }
 
 # -----------------------------
-# Note: SMTP uses dedicated IAM user credentials (sbm-ses-smtp-user)
-# No SES permissions needed on Lambda role
+# Note: S3 permissions inherited from getIdFromNem12Id-role-153b7a0a
+# No additional IAM policies needed for S3 upload
 # -----------------------------
 
 # -----------------------------
@@ -66,7 +66,7 @@ resource "aws_cloudwatch_log_group" "optima_exporter" {
 # -----------------------------
 resource "aws_lambda_function" "optima_exporter" {
   function_name = "sbm-optima-exporter"
-  description   = "Exports Optima NMI data for Bunnings and RACV projects"
+  description   = "Exports Optima NMI data to S3 for Bunnings and RACV projects"
   role          = data.aws_iam_role.ingester_role.arn
   handler       = "app.lambda_handler"
   runtime       = "python3.13"
@@ -80,19 +80,15 @@ resource "aws_lambda_function" "optima_exporter" {
       POWERTOOLS_SERVICE_NAME = "optima-exporter"
       POWERTOOLS_LOG_LEVEL    = "INFO"
 
-      # SMTP configuration
-      SMTP_RELAY      = "email-smtp.ap-southeast-2.amazonaws.com"
-      SMTP_RELAY_PORT = "587"
-      SMTP_USERNAME   = "AKIAUUIPLB32X7SES4KR"
-      SMTP_PASSWORD   = "BNtzEgXiHe32w++moHE7xrgwlwdk1UbVEDwiUZZsi3UV"
-      SMTP_SENDER     = "client_ec_data@gegroup.com.au"
+      # S3 upload configuration
+      S3_UPLOAD_BUCKET = "sbm-file-ingester"
+      S3_UPLOAD_PREFIX = "newTBP/"
 
       # DynamoDB configuration
-      OPTIMA_CONFIG_TABLE       = aws_dynamodb_table.optima_config.name
-      OPTIMA_PROJECTS           = "bunnings" # Test with bunnings first, then add racv
-      OPTIMA_DAYS_BACK          = "7"        # Export past 7 days of data
-      OPTIMA_DEFAULT_RECIPIENTS = "client_ec_data@gegroup.com.au"
-      BIDENERGY_BASE_URL        = "https://app.bidenergy.com"
+      OPTIMA_CONFIG_TABLE = aws_dynamodb_table.optima_config.name
+      OPTIMA_PROJECTS     = "bunnings" # Test with bunnings first, then add racv
+      OPTIMA_DAYS_BACK    = "7"        # Export past 7 days of data
+      BIDENERGY_BASE_URL  = "https://app.bidenergy.com"
 
       # Bunnings credentials
       OPTIMA_BUNNINGS_USERNAME  = "optimaBunningsEnergy@verdeos.com"

@@ -2,7 +2,7 @@
 Optima/BidEnergy NMI Data Exporter
 
 This Lambda function exports meter data from Optima (BidEnergy) by simulating web login
-and downloading CSV reports, then emailing them to configured recipients.
+and downloading CSV reports, then uploading them to S3 for ingestion.
 
 Invocation modes:
 1. Scheduled (EventBridge): Empty event triggers export for all configured projects
@@ -17,20 +17,14 @@ On-demand event parameters:
 Workflow:
 1. Login to BidEnergy via form POST to obtain authentication cookie
 2. Download CSV interval usage data for each site
-3. Send email with CSV attachment to recipients
-4. Clean up temporary files
+3. Upload CSV to S3 (sbm-file-ingester/newTBP/) for ingestion pipeline
+4. Continue to next site on errors (no retries)
 
 Supported projects: bunnings, racv
 """
 
 import os
-import smtplib
-import tempfile
 from datetime import UTC, datetime, timedelta
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from pathlib import Path
 from typing import Any
 
 import boto3
@@ -41,12 +35,9 @@ from boto3.dynamodb.conditions import Key
 
 logger = Logger(service="optima-exporter")
 
-# SMTP configuration from environment variables
-SMTP_RELAY = os.environ.get("SMTP_RELAY", "email-smtp.ap-southeast-2.amazonaws.com")
-SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_RELAY_PORT = int(os.environ.get("SMTP_RELAY_PORT", "587"))
-SMTP_SENDER = os.environ.get("SMTP_SENDER", "client_ec_data@gegroup.com.au")
+# S3 upload configuration
+S3_UPLOAD_BUCKET = os.environ.get("S3_UPLOAD_BUCKET", "sbm-file-ingester")
+S3_UPLOAD_PREFIX = os.environ.get("S3_UPLOAD_PREFIX", "newTBP/")
 
 # DynamoDB configuration
 OPTIMA_CONFIG_TABLE = os.environ.get("OPTIMA_CONFIG_TABLE", "sbm-optima-config")
@@ -55,6 +46,9 @@ OPTIMA_DAYS_BACK = int(os.environ.get("OPTIMA_DAYS_BACK", "7"))
 
 # DynamoDB resource (lazy initialization)
 _dynamodb = None
+
+# S3 client (lazy initialization)
+_s3_client = None
 
 
 def get_dynamodb() -> Any:
@@ -65,15 +59,16 @@ def get_dynamodb() -> Any:
     return _dynamodb
 
 
+def get_s3_client() -> Any:
+    """Get S3 client with lazy initialization."""
+    global _s3_client
+    if _s3_client is None:
+        _s3_client = boto3.client("s3", region_name="ap-southeast-2")
+    return _s3_client
+
+
 # BidEnergy base URL
 BIDENERGY_BASE_URL = os.environ.get("BIDENERGY_BASE_URL", "https://app.bidenergy.com")
-
-# Default recipients for all exports (comma-separated in env var)
-DEFAULT_RECIPIENTS = [
-    r.strip()
-    for r in os.environ.get("OPTIMA_DEFAULT_RECIPIENTS", "client_ec_data@gegroup.com.au").split(",")
-    if r.strip()
-]
 
 
 def get_project_config(project: str) -> dict[str, Any] | None:
@@ -84,7 +79,7 @@ def get_project_config(project: str) -> dict[str, Any] | None:
         project: Project name (e.g., "bunnings", "racv")
 
     Returns:
-        Dict with username, password, client_id, recipients, or None if missing
+        Dict with username, password, client_id, or None if missing
     """
     prefix = f"OPTIMA_{project.upper()}_"
     username = os.environ.get(f"{prefix}USERNAME")
@@ -99,7 +94,6 @@ def get_project_config(project: str) -> dict[str, Any] | None:
         "username": username,
         "password": password,
         "client_id": client_id,
-        "recipients": DEFAULT_RECIPIENTS,
     }
 
 
@@ -416,87 +410,64 @@ def download_csv(
     return None
 
 
-def send_email_with_attachment(
-    file_path: str,
-    recipients: list[str],
-    subject: str,
-    body: str,
+def upload_to_s3(
+    file_content: bytes,
+    filename: str,
+    bucket: str | None = None,
+    prefix: str | None = None,
 ) -> bool:
     """
-    Send email with CSV attachment via SMTP.
+    Upload CSV file to S3 for ingestion pipeline.
 
     Args:
-        file_path: Path to the file to attach
-        recipients: List of email addresses
-        subject: Email subject line
-        body: Email body text
+        file_content: CSV file content as bytes
+        filename: Filename for S3 object
+        bucket: S3 bucket name (default: S3_UPLOAD_BUCKET)
+        prefix: S3 prefix/folder (default: S3_UPLOAD_PREFIX)
 
     Returns:
-        True if email sent successfully, False otherwise
+        True if upload successful, False otherwise
     """
-    if not SMTP_USERNAME or not SMTP_PASSWORD:
-        logger.error("SMTP credentials not configured")
-        return False
-
-    msg = MIMEMultipart()
-    msg["From"] = SMTP_SENDER
-    msg["To"] = ", ".join(recipients)
-    msg["Subject"] = subject
-
-    msg.attach(MIMEText(body, "plain"))
-
-    # Attach file
-    file_path_obj = Path(file_path)
-    with file_path_obj.open("rb") as f:
-        attachment = MIMEApplication(f.read(), Name=file_path_obj.name)
-        attachment["Content-Disposition"] = f'attachment; filename="{file_path_obj.name}"'
-        msg.attach(attachment)
+    bucket = bucket or S3_UPLOAD_BUCKET
+    prefix = prefix or S3_UPLOAD_PREFIX
+    s3_key = f"{prefix}{filename}"
 
     logger.info(
-        "Sending email",
+        "Uploading CSV to S3",
         extra={
-            "recipients": recipients,
-            "subject": subject,
-            "attachment": file_path_obj.name,
+            "bucket": bucket,
+            "key": s3_key,
+            "size_bytes": len(file_content),
+            "file_name": filename,
         },
     )
 
     try:
-        with smtplib.SMTP(SMTP_RELAY, SMTP_RELAY_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_SENDER, recipients, msg.as_string())
-            logger.info("Email sent successfully", extra={"recipients": recipients, "subject": subject})
-            return True
+        s3 = get_s3_client()
+        s3.put_object(
+            Bucket=bucket,
+            Key=s3_key,
+            Body=file_content,
+            ContentType="text/csv",
+        )
+        logger.info(
+            "CSV uploaded successfully to S3",
+            extra={"bucket": bucket, "key": s3_key, "file_name": filename},
+        )
+        return True
 
-    except smtplib.SMTPAuthenticationError as e:
+    except Exception as e:
         logger.error(
-            "Email send failed: SMTP authentication error (check SMTP credentials)",
-            extra={"error": str(e), "smtp_relay": SMTP_RELAY},
-        )
-    except smtplib.SMTPConnectError as e:
-        logger.error(
-            "Email send failed: unable to connect to SMTP server",
-            extra={"error": str(e), "smtp_relay": SMTP_RELAY, "smtp_port": SMTP_RELAY_PORT},
-        )
-    except smtplib.SMTPRecipientsRefused as e:
-        logger.error(
-            "Email send failed: recipients refused",
-            extra={"error": str(e), "recipients": recipients},
-        )
-    except smtplib.SMTPException as e:
-        logger.error(
-            "Email send failed: SMTP error",
+            "S3 upload failed",
             exc_info=True,
-            extra={"error": str(e), "recipients": recipients, "subject": subject},
+            extra={
+                "error": str(e),
+                "bucket": bucket,
+                "key": s3_key,
+                "file_name": filename,
+            },
         )
-    except TimeoutError as e:
-        logger.error(
-            "Email send failed: connection timeout",
-            extra={"error": str(e), "smtp_relay": SMTP_RELAY},
-        )
-
-    return False
+        return False
 
 
 def process_site(
@@ -505,11 +476,10 @@ def process_site(
     site_id_str: str,
     start_date: str,
     end_date: str,
-    recipients: list[str],
     project: str,
 ) -> dict[str, Any]:
     """
-    Process a single site: download CSV and send email.
+    Process a single site: download CSV and upload to S3.
 
     Args:
         cookies: Authentication cookie string
@@ -517,8 +487,7 @@ def process_site(
         site_id_str: Site identifier GUID
         start_date: Start date in ISO format
         end_date: End date in ISO format
-        recipients: List of email recipients
-        project: Project name for email subject
+        project: Project name for logging
 
     Returns:
         Dict with processing result
@@ -538,39 +507,13 @@ def process_site(
 
     csv_content, filename = download_result
 
-    # Write to temp file
-    tmp_dir = tempfile.gettempdir()
-    file_path = Path(tmp_dir) / filename
-
-    try:
-        file_path.write_bytes(csv_content)
-
-        # Send email
-        subject = f"[{project.upper()}] Optima NMI#{nmi.upper()} - {start_date} to {end_date}"
-        body = f"""Optima interval usage data export
-
-Project: {project.upper()}
-NMI: {nmi.upper()}
-Site ID: {site_id_str}
-Date Range: {start_date} to {end_date}
-
-This is an automated export from the SBM Optima Exporter.
-"""
-
-        if send_email_with_attachment(str(file_path), recipients, subject, body):
-            result["success"] = True
-            result["filename"] = filename
-        else:
-            result["error"] = "Failed to send email"
-
-    except OSError as e:
-        result["error"] = f"File operation failed: {e}"
-        logger.error("File operation failed", exc_info=True)
-
-    finally:
-        # Clean up temp file
-        if file_path.exists():
-            file_path.unlink()
+    # Upload to S3
+    if upload_to_s3(csv_content, filename):
+        result["success"] = True
+        result["filename"] = filename
+        result["s3_key"] = f"{S3_UPLOAD_PREFIX}{filename}"
+    else:
+        result["error"] = "Failed to upload to S3"
 
     return result
 
@@ -635,13 +578,12 @@ def process_scheduled_export() -> dict[str, Any]:
 
         for site in sites:
             result = process_site(
-                cookies,
-                site["nmi"],
-                site["siteIdStr"],
-                start_date,
-                end_date,
-                config["recipients"],
-                project,
+                cookies=cookies,
+                nmi=site["nmi"],
+                site_id_str=site["siteIdStr"],
+                start_date=start_date,
+                end_date=end_date,
+                project=project,
             )
             result["project"] = project
             all_results.append(result)
@@ -754,7 +696,6 @@ def process_ondemand_export(event: dict[str, Any]) -> dict[str, Any]:
     username = config["username"]
     password = config["password"]
     client_id = config["client_id"]
-    recipients = config["recipients"]
 
     logger.info(
         "On-demand export: authenticating with BidEnergy",
@@ -784,7 +725,14 @@ def process_ondemand_export(event: dict[str, Any]) -> dict[str, Any]:
     for site in sites:
         site_nmi = site["nmi"]
         site_id_str = site["siteIdStr"]
-        result = process_site(cookies, site_nmi, site_id_str, start_date, end_date, recipients, project)
+        result = process_site(
+            cookies=cookies,
+            nmi=site_nmi,
+            site_id_str=site_id_str,
+            start_date=start_date,
+            end_date=end_date,
+            project=project,
+        )
         results.append(result)
         if result["success"]:
             success_count += 1

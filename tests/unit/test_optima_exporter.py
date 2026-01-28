@@ -1,14 +1,12 @@
 """Unit tests for optima_exporter Lambda function.
 
 Tests the Optima/BidEnergy data exporter that downloads CSV interval data
-and sends it via email.
+and uploads it to S3 for ingestion.
 """
 
 import importlib
 import os
-import smtplib
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -35,18 +33,14 @@ def reset_env() -> Generator[None]:
     os.environ["POWERTOOLS_TRACE_DISABLED"] = "true"
     os.environ["POWERTOOLS_METRICS_NAMESPACE"] = "test"
 
-    # SMTP config
-    os.environ["SMTP_RELAY"] = "smtp.test.com"
-    os.environ["SMTP_USERNAME"] = "test_user"
-    os.environ["SMTP_PASSWORD"] = "test_pass"
-    os.environ["SMTP_SENDER"] = "test@example.com"
-    os.environ["SMTP_RELAY_PORT"] = "587"
+    # S3 upload config
+    os.environ["S3_UPLOAD_BUCKET"] = "sbm-file-ingester"
+    os.environ["S3_UPLOAD_PREFIX"] = "newTBP/"
 
     # Optima config
     os.environ["OPTIMA_PROJECTS"] = "bunnings,racv"
     os.environ["OPTIMA_DAYS_BACK"] = "7"
     os.environ["OPTIMA_CONFIG_TABLE"] = "sbm-optima-config"
-    os.environ["OPTIMA_DEFAULT_RECIPIENTS"] = "test@example.com"
     os.environ["BIDENERGY_BASE_URL"] = "https://app.bidenergy.com"
 
     # Project credentials - bunnings
@@ -82,6 +76,7 @@ def reload_app_module() -> Any:
     import src.functions.optima_exporter.app as app_module
 
     app_module._dynamodb = None
+    app_module._s3_client = None
     importlib.reload(app_module)
     return app_module
 
@@ -118,6 +113,37 @@ class TestGetDynamodb:
 
 
 # ================================
+# TestGetS3Client
+# ================================
+class TestGetS3Client:
+    """Tests for get_s3_client function."""
+
+    @mock_aws
+    def test_lazy_initialization(self) -> None:
+        """Test that S3 client is lazily initialized."""
+        app_module = reload_app_module()
+
+        # First call should create the client
+        result1 = app_module.get_s3_client()
+        assert result1 is not None
+
+        # Second call should return the same client
+        result2 = app_module.get_s3_client()
+        assert result1 is result2
+
+    @mock_aws
+    def test_singleton_pattern(self) -> None:
+        """Test that get_s3_client returns the same instance."""
+        app_module = reload_app_module()
+
+        result1 = app_module.get_s3_client()
+        result2 = app_module.get_s3_client()
+        result3 = app_module.get_s3_client()
+
+        assert result1 is result2 is result3
+
+
+# ================================
 # TestGetProjectConfig
 # ================================
 class TestGetProjectConfig:
@@ -133,7 +159,6 @@ class TestGetProjectConfig:
         assert config["username"] == "bunnings@test.com"
         assert config["password"] == "bunnings_pass"
         assert config["client_id"] == "bunnings_client"
-        assert "recipients" in config
 
     def test_returns_none_when_username_missing(self) -> None:
         """Test that None is returned when username is missing."""
@@ -756,121 +781,92 @@ class TestDownloadCsv:
 
 
 # ================================
-# TestSendEmailWithAttachment
+# TestUploadToS3
 # ================================
-class TestSendEmailWithAttachment:
-    """Tests for send_email_with_attachment function."""
+class TestUploadToS3:
+    """Tests for upload_to_s3 function."""
 
-    def test_sends_email_successfully(self, tmp_path: Path) -> None:
-        """Test that email is sent successfully."""
-        from src.functions.optima_exporter.app import send_email_with_attachment
-
-        # Create test file
-        test_file = tmp_path / "test.csv"
-        test_file.write_text("Date,Value\n2026-01-01,100")
-
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
-
-            result = send_email_with_attachment(
-                file_path=str(test_file),
-                recipients=["recipient@test.com"],
-                subject="Test Subject",
-                body="Test Body",
-            )
-
-            assert result is True
-            mock_instance.starttls.assert_called_once()
-            mock_instance.login.assert_called_once()
-            mock_instance.sendmail.assert_called_once()
-
-    def test_returns_false_when_credentials_missing(self, tmp_path: Path) -> None:
-        """Test that False is returned when SMTP credentials are missing."""
-        os.environ["SMTP_USERNAME"] = ""
-        os.environ["SMTP_PASSWORD"] = ""
-        app_module = reload_app_module()
-
-        test_file = tmp_path / "test.csv"
-        test_file.write_text("data")
-
-        result = app_module.send_email_with_attachment(
-            file_path=str(test_file),
-            recipients=["recipient@test.com"],
-            subject="Test Subject",
-            body="Test Body",
+    @mock_aws
+    def test_successful_upload(self) -> None:
+        """Test successful CSV upload to S3."""
+        # Create S3 bucket
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
         )
+
+        app_module = reload_app_module()
+        csv_content = b"header1,header2\nvalue1,value2"
+        filename = "optima_bunnings_NMI#TEST123_2026-01-20_2026-01-26.csv"
+
+        result = app_module.upload_to_s3(csv_content, filename)
+
+        assert result is True
+
+        # Verify file exists in S3
+        response = s3.get_object(Bucket="sbm-file-ingester", Key=f"newTBP/{filename}")
+        assert response["Body"].read() == csv_content
+        assert response["ContentType"] == "text/csv"
+
+    @mock_aws
+    def test_upload_with_custom_bucket_and_prefix(self) -> None:
+        """Test upload with custom bucket and prefix."""
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="custom-bucket",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        app_module = reload_app_module()
+        csv_content = b"data"
+        filename = "test.csv"
+
+        result = app_module.upload_to_s3(csv_content, filename, bucket="custom-bucket", prefix="custom-prefix/")
+
+        assert result is True
+        response = s3.get_object(Bucket="custom-bucket", Key="custom-prefix/test.csv")
+        assert response["Body"].read() == csv_content
+
+    @mock_aws
+    def test_upload_failure_returns_false(self) -> None:
+        """Test that upload failure returns False."""
+        # Don't create bucket to trigger error
+        app_module = reload_app_module()
+        csv_content = b"data"
+        filename = "test.csv"
+
+        result = app_module.upload_to_s3(csv_content, filename)
 
         assert result is False
 
-    def test_returns_false_on_smtp_error(self, tmp_path: Path) -> None:
-        """Test that False is returned on SMTP error."""
-        from src.functions.optima_exporter.app import send_email_with_attachment
+    @mock_aws
+    def test_upload_logs_success(self) -> None:
+        """Test that successful upload logs correctly."""
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
 
-        test_file = tmp_path / "test.csv"
-        test_file.write_text("data")
+        app_module = reload_app_module()
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
-            mock_instance.sendmail.side_effect = smtplib.SMTPException("Send failed")
+        with patch.object(app_module.logger, "info") as mock_info:
+            app_module.upload_to_s3(b"data", "test.csv")
 
-            result = send_email_with_attachment(
-                file_path=str(test_file),
-                recipients=["recipient@test.com"],
-                subject="Test Subject",
-                body="Test Body",
-            )
+            # Verify logging happened
+            assert mock_info.call_count >= 2  # Upload start and success
+
+    @mock_aws
+    def test_upload_logs_error_on_failure(self) -> None:
+        """Test that errors are logged on upload failure."""
+        app_module = reload_app_module()
+
+        with patch.object(app_module.logger, "error") as mock_error:
+            result = app_module.upload_to_s3(b"data", "test.csv")
 
             assert result is False
-
-    def test_attaches_file_correctly(self, tmp_path: Path) -> None:
-        """Test that file is attached correctly."""
-        app_module = reload_app_module()
-
-        test_file = tmp_path / "test_file.csv"
-        test_file.write_text("Date,Value\n2026-01-01,100")
-
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
-
-            app_module.send_email_with_attachment(
-                file_path=str(test_file),
-                recipients=["recipient@test.com"],
-                subject="Test Subject",
-                body="Test Body",
-            )
-
-            # Verify sendmail was called with correct arguments
-            call_args = mock_instance.sendmail.call_args
-            msg_string = call_args[0][2]
-
-            assert "test_file.csv" in msg_string
-            assert "Test Subject" in msg_string
-
-    def test_handles_multiple_recipients(self, tmp_path: Path) -> None:
-        """Test that multiple recipients are handled."""
-        app_module = reload_app_module()
-
-        test_file = tmp_path / "test.csv"
-        test_file.write_text("data")
-
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_instance = MagicMock()
-            mock_smtp.return_value.__enter__.return_value = mock_instance
-
-            recipients = ["user1@test.com", "user2@test.com", "user3@test.com"]
-            app_module.send_email_with_attachment(
-                file_path=str(test_file),
-                recipients=recipients,
-                subject="Test Subject",
-                body="Test Body",
-            )
-
-            # Verify sendmail was called with all recipients
-            call_args = mock_instance.sendmail.call_args
-            assert call_args[0][1] == recipients
+            mock_error.assert_called_once()
 
 
 # ================================
@@ -879,10 +875,18 @@ class TestSendEmailWithAttachment:
 class TestProcessSite:
     """Tests for process_site function."""
 
+    @mock_aws
     @responses.activate
     def test_successful_process_returns_success(self) -> None:
         """Test that successful processing returns success result."""
-        from src.functions.optima_exporter.app import process_site
+        # Create S3 bucket
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        app_module = reload_app_module()
 
         csv_content = b"Date,Value\n2026-01-01,100"
         responses.add(
@@ -893,28 +897,26 @@ class TestProcessSite:
             content_type="text/csv",
         )
 
-        with patch("src.functions.optima_exporter.app.send_email_with_attachment") as mock_send:
-            mock_send.return_value = True
+        result = app_module.process_site(
+            cookies=".ASPXAUTH=token123",
+            nmi="NMI001",
+            site_id_str="site-guid-001",
+            start_date="2026-01-01",
+            end_date="2026-01-07",
+            project="bunnings",
+        )
 
-            result = process_site(
-                cookies=".ASPXAUTH=token123",
-                nmi="NMI001",
-                site_id_str="site-guid-001",
-                start_date="2026-01-01",
-                end_date="2026-01-07",
-                recipients=["test@example.com"],
-                project="bunnings",
-            )
-
-            assert result["success"] is True
-            assert result["nmi"] == "NMI001"
-            assert result["error"] is None
-            assert "filename" in result
+        assert result["success"] is True
+        assert result["nmi"] == "NMI001"
+        assert result["error"] is None
+        assert "filename" in result
+        assert "s3_key" in result
+        assert result["s3_key"].startswith("newTBP/")
 
     @responses.activate
     def test_download_failure_returns_error(self) -> None:
         """Test that download failure returns error result."""
-        from src.functions.optima_exporter.app import process_site
+        app_module = reload_app_module()
 
         responses.add(
             responses.GET,
@@ -922,23 +924,24 @@ class TestProcessSite:
             status=500,
         )
 
-        result = process_site(
+        result = app_module.process_site(
             cookies=".ASPXAUTH=token123",
             nmi="NMI001",
             site_id_str="site-guid-001",
             start_date="2026-01-01",
             end_date="2026-01-07",
-            recipients=["test@example.com"],
             project="bunnings",
         )
 
         assert result["success"] is False
         assert result["error"] == "Failed to download CSV"
 
+    @mock_aws
     @responses.activate
-    def test_email_failure_returns_error(self) -> None:
-        """Test that email failure returns error result."""
-        from src.functions.optima_exporter.app import process_site
+    def test_s3_upload_failure_returns_error(self) -> None:
+        """Test that S3 upload failure returns error result."""
+        # Don't create bucket to trigger error
+        app_module = reload_app_module()
 
         responses.add(
             responses.GET,
@@ -948,83 +951,53 @@ class TestProcessSite:
             content_type="text/csv",
         )
 
-        with patch("src.functions.optima_exporter.app.send_email_with_attachment") as mock_send:
-            mock_send.return_value = False
+        result = app_module.process_site(
+            cookies=".ASPXAUTH=token123",
+            nmi="NMI001",
+            site_id_str="site-guid-001",
+            start_date="2026-01-01",
+            end_date="2026-01-07",
+            project="bunnings",
+        )
 
-            result = process_site(
-                cookies=".ASPXAUTH=token123",
-                nmi="NMI001",
-                site_id_str="site-guid-001",
-                start_date="2026-01-01",
-                end_date="2026-01-07",
-                recipients=["test@example.com"],
-                project="bunnings",
-            )
+        assert result["success"] is False
+        assert result["error"] == "Failed to upload to S3"
 
-            assert result["success"] is False
-            assert result["error"] == "Failed to send email"
-
+    @mock_aws
     @responses.activate
-    def test_cleans_up_temp_file(self) -> None:
-        """Test that temporary file is cleaned up after processing."""
-        from src.functions.optima_exporter.app import process_site
+    def test_uploads_csv_to_correct_s3_location(self) -> None:
+        """Test that CSV is uploaded to the correct S3 location."""
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
 
+        app_module = reload_app_module()
+
+        csv_content = b"Date,Value\n2026-01-01,100"
         responses.add(
             responses.GET,
             "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
             status=200,
-            body=b"data",
+            body=csv_content,
             content_type="text/csv",
         )
 
-        created_file_path = None
-
-        def capture_file_path(file_path: str, *args: Any, **kwargs: Any) -> bool:
-            nonlocal created_file_path
-            created_file_path = file_path
-            return True
-
-        with patch("src.functions.optima_exporter.app.send_email_with_attachment", side_effect=capture_file_path):
-            process_site(
-                cookies=".ASPXAUTH=token123",
-                nmi="NMI001",
-                site_id_str="site-guid-001",
-                start_date="2026-01-01",
-                end_date="2026-01-07",
-                recipients=["test@example.com"],
-                project="bunnings",
-            )
-
-        # Verify file was cleaned up
-        assert created_file_path is not None
-        assert not Path(created_file_path).exists()
-
-    @responses.activate
-    def test_handles_file_write_error(self) -> None:
-        """Test that file write error is handled gracefully."""
-        from src.functions.optima_exporter.app import process_site
-
-        responses.add(
-            responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
-            status=200,
-            body=b"data",
-            content_type="text/csv",
+        result = app_module.process_site(
+            cookies=".ASPXAUTH=token123",
+            nmi="NMI001",
+            site_id_str="site-guid-001",
+            start_date="2026-01-01",
+            end_date="2026-01-07",
+            project="bunnings",
         )
 
-        with patch("pathlib.Path.write_bytes", side_effect=OSError("Disk full")):
-            result = process_site(
-                cookies=".ASPXAUTH=token123",
-                nmi="NMI001",
-                site_id_str="site-guid-001",
-                start_date="2026-01-01",
-                end_date="2026-01-07",
-                recipients=["test@example.com"],
-                project="bunnings",
-            )
+        assert result["success"] is True
 
-            assert result["success"] is False
-            assert "File operation failed" in result["error"]
+        # Verify file in S3
+        response = s3.get_object(Bucket="sbm-file-ingester", Key=result["s3_key"])
+        assert response["Body"].read() == csv_content
 
 
 # ================================
@@ -1396,11 +1369,11 @@ class TestProcessOndemandExport:
 
             assert result["statusCode"] == 200
             assert mock_process.call_count == 1
-            # Verify correct NMI and dates passed to process_site
-            call_args = mock_process.call_args
-            assert call_args[0][1] == "NMI001"  # nmi
-            assert call_args[0][3] == "2026-01-15"  # start_date
-            assert call_args[0][4] == "2026-01-22"  # end_date
+            # Verify correct NMI and dates passed to process_site using kwargs
+            call_kwargs = mock_process.call_args.kwargs
+            assert call_kwargs["nmi"] == "NMI001"
+            assert call_kwargs["start_date"] == "2026-01-15"
+            assert call_kwargs["end_date"] == "2026-01-22"
 
     @mock_aws
     def test_ondemand_nmi_not_found(self) -> None:
@@ -1612,8 +1585,8 @@ class TestProcessOndemandExport:
             )
 
             # Verify process_site was called with lowercase project
-            call_args = mock_process.call_args
-            assert call_args[0][6] == "bunnings"  # project is 7th argument
+            call_kwargs = mock_process.call_args.kwargs
+            assert call_kwargs["project"] == "bunnings"
 
 
 # ================================
@@ -1686,26 +1659,19 @@ class TestLambdaHandler:
 class TestConfiguration:
     """Tests for configuration and environment variable handling."""
 
-    def test_default_smtp_relay(self) -> None:
-        """Test default SMTP relay value."""
-        os.environ.pop("SMTP_RELAY", None)
+    def test_default_s3_upload_bucket(self) -> None:
+        """Test default S3_UPLOAD_BUCKET value."""
+        os.environ.pop("S3_UPLOAD_BUCKET", None)
         app_module = reload_app_module()
 
-        assert app_module.SMTP_RELAY == "email-smtp.ap-southeast-2.amazonaws.com"
+        assert app_module.S3_UPLOAD_BUCKET == "sbm-file-ingester"
 
-    def test_default_smtp_sender(self) -> None:
-        """Test default SMTP sender value."""
-        os.environ.pop("SMTP_SENDER", None)
+    def test_default_s3_upload_prefix(self) -> None:
+        """Test default S3_UPLOAD_PREFIX value."""
+        os.environ.pop("S3_UPLOAD_PREFIX", None)
         app_module = reload_app_module()
 
-        assert app_module.SMTP_SENDER == "client_ec_data@gegroup.com.au"
-
-    def test_default_smtp_port(self) -> None:
-        """Test default SMTP port value."""
-        os.environ.pop("SMTP_RELAY_PORT", None)
-        app_module = reload_app_module()
-
-        assert app_module.SMTP_RELAY_PORT == 587
+        assert app_module.S3_UPLOAD_PREFIX == "newTBP/"
 
     def test_default_days_back(self) -> None:
         """Test default OPTIMA_DAYS_BACK value."""
@@ -1727,13 +1693,6 @@ class TestConfiguration:
         app_module = reload_app_module()
 
         assert app_module.OPTIMA_PROJECTS == ["project1", "project2", "project3"]
-
-    def test_default_recipients_parsing(self) -> None:
-        """Test DEFAULT_RECIPIENTS is parsed correctly."""
-        os.environ["OPTIMA_DEFAULT_RECIPIENTS"] = "user1@test.com, user2@test.com"
-        app_module = reload_app_module()
-
-        assert app_module.DEFAULT_RECIPIENTS == ["user1@test.com", "user2@test.com"]
 
 
 # ================================
