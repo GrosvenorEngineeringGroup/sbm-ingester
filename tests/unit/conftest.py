@@ -1,10 +1,20 @@
 """Shared pytest fixtures for SBM Ingester tests."""
 
-import json
+# IMPORTANT: Path modifications MUST happen before any module imports
+# This ensures Lambda-style imports work correctly in all test scenarios
 import sys
+from pathlib import Path
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+# Add optima_exporter to path for Lambda-style imports (shared, interval_exporter, billing_exporter)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src" / "functions" / "optima_exporter"))
+
+# Now import everything else
+import json
 import tempfile
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -14,10 +24,6 @@ import pytest
 from moto import mock_aws
 from mypy_boto3_logs import CloudWatchLogsClient
 from mypy_boto3_s3 import S3Client, S3ServiceResource
-
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
-
 
 # ==================== Mock Idempotency Before Module Import ====================
 # Must be done at module level before any imports of app.py

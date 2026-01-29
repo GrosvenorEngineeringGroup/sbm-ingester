@@ -38,6 +38,7 @@ addopts = "-v --tb=short"
 filterwarnings = [
     "ignore:No application metrics to publish:UserWarning:aws_lambda_powertools",
 ]
+pythonpath = ["src/functions/optima_exporter"]
 
 [tool.ruff]
 line-length = 120
