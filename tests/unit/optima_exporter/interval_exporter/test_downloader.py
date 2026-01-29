@@ -3,6 +3,8 @@
 Tests date formatting and CSV download from BidEnergy API.
 """
 
+import re
+
 import requests as req_lib
 import responses
 
@@ -62,7 +64,8 @@ class TestDownloadCsv:
         assert result is not None
         content, filename = result
         assert content == csv_content
-        assert filename == "optima_bunnings_NMI#NMI001_2026-01-01_2026-01-07.csv"
+        # Filename includes timestamp suffix
+        assert re.match(r"optima_bunnings_NMI#NMI001_2026-01-01_2026-01-07_\d{14}\.csv$", filename)
 
     @responses.activate
     def test_returns_none_on_http_error(self) -> None:
@@ -136,7 +139,8 @@ class TestDownloadCsv:
 
         assert result is not None
         _, filename = result
-        assert filename == "optima_racv_NMI#NMI123_2026-01-01_2026-01-07.csv"
+        # Filename should have lowercase project, uppercase NMI, and timestamp suffix
+        assert re.match(r"optima_racv_NMI#NMI123_2026-01-01_2026-01-07_\d{14}\.csv$", filename)
 
     @responses.activate
     def test_handles_timeout(self) -> None:

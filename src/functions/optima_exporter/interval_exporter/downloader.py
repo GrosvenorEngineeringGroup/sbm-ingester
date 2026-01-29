@@ -90,8 +90,9 @@ def download_csv(
             is_html = b"<!doctype" in content_start or b"<html" in content_start
 
             if "text/csv" in content_type or "application/csv" in content_type or not is_html:
-                # Generate filename with NMI for traceability
-                filename = f"optima_{project.lower()}_NMI#{nmi.upper()}_{start_date}_{end_date}.csv"
+                # Generate filename with NMI and timestamp for traceability and uniqueness
+                timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                filename = f"optima_{project.lower()}_NMI#{nmi.upper()}_{start_date}_{end_date}_{timestamp}.csv"
                 logger.info(
                     "CSV download successful",
                     extra={
