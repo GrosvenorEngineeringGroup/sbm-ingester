@@ -104,3 +104,6 @@ lefthook-local.yml
 
 # Large test fixtures (real NEM12 files)
 tests/unit/fixtures/nem12_real*.csv
+
+# Local test output
+output/
