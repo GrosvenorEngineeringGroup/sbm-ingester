@@ -2,12 +2,18 @@
 
 This test verifies that the streaming parser produces IDENTICAL final output
 files as the batch parser - same number of files, same content, same order.
+
+These tests are marked as slow and skipped by default.
+Run with: pytest -m slow
 """
 
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+# Mark entire module as slow - skipped by default
+pytestmark = pytest.mark.slow
 
 # Fixture directory
 FIXTURES_DIR = Path(__file__).parent / "fixtures"

@@ -60,7 +60,7 @@ locals {
     # Bunnings credentials
     OPTIMA_BUNNINGS_USERNAME  = "optimaBunningsEnergy@verdeos.com"
     OPTIMA_BUNNINGS_PASSWORD  = "3?JSBPKrbFF6rr"
-    OPTIMA_BUNNINGS_CLIENT_ID = "Visualisation"
+    OPTIMA_BUNNINGS_CLIENT_ID = "BidEnergy"
 
     # RACV credentials
     OPTIMA_RACV_USERNAME  = "kes@gegroup.com.au"

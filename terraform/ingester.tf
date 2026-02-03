@@ -20,7 +20,7 @@ resource "aws_lambda_function" "sbm_files_ingester" {
   runtime                        = "python3.13"
   memory_size                    = 512
   timeout                        = 900 # 15 minutes (max) for large file processing
-  reserved_concurrent_executions = 5
+  reserved_concurrent_executions = 10
   s3_bucket                      = var.deployment_bucket
   s3_key                         = "${local.lambda_s3_prefix}/ingester.zip"
 
@@ -190,6 +190,6 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   batch_size       = 1
 
   scaling_config {
-    maximum_concurrency = 5
+    maximum_concurrency = 10
   }
 }
