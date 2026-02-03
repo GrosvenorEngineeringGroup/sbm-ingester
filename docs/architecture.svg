@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10230.904999999999 1386" width="10230.904999999999" height="1386" style="--bg:#1a1b26;--fg:#a9b1d6;--line:#3d59a1;--accent:#7aa2f7;--muted:#565f89;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 30%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="4.8" refX="8" refY="2.4" orient="auto">
+    <polygon points="0 0, 8 2.4, 0 4.8" fill="var(--_arrow)" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="4.8" refX="0" refY="2.4" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.4, 8 4.8" fill="var(--_arrow)" />
+  </marker>
+</defs>
+<rect x="40" y="386" width="861.2999999999997" height="112" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="40" y="386" width="861.2999999999997" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="52" y="400" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;📥 Data Input Sources&quot;</text>
+<rect x="921.2999999999996" y="40" width="841.839999999999" height="977" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="921.2999999999996" y="40" width="841.839999999999" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="933.2999999999996" y="54" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;⚡ Event Triggers&quot;</text>
+<rect x="6908.25" y="213" width="3282.6549999999997" height="977" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="6908.25" y="213" width="3282.6549999999997" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="6920.25" y="227" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;🔧 Lambda Functions&quot;</text>
+<rect x="2146.8" y="1078" width="1368.9499999999998" height="112" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="2146.8" y="1078" width="1368.9499999999998" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="2158.8" y="1092" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;📄 Parsing Modules&quot;</text>
+<rect x="4411.275000000001" y="905" width="874.1450000000004" height="112" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="4411.275000000001" y="905" width="874.1450000000004" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="4423.275000000001" y="919" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;⚙️ Data Processing&quot;</text>
+<rect x="4430.15" y="1078" width="2458.0999999999995" height="112" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="4430.15" y="1078" width="2458.0999999999995" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="4442.15" y="1092" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;💾 Data Storage&quot;</text>
+<rect x="3535.750000000001" y="1078" width="874.4000000000001" height="112" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="3535.750000000001" y="1078" width="874.4000000000001" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="3547.750000000001" y="1092" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;📂 File Movement After Processing&quot;</text>
+<rect x="843.6499999999995" y="1078" width="1283.1500000000008" height="268" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+<rect x="843.6499999999995" y="1078" width="1283.1500000000008" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+<text x="855.6499999999995" y="1092" dy="0.35em" font-size="12" font-weight="600" fill="var(--_text-sec)">&quot;📊 CloudWatch&quot;</text>
+<polyline points="263.89999999999986,478 263.89999999999986,518 1182.9399999999991,518 1182.9399999999991,615" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1182.9399999999991,651 1182.9399999999991,788" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1182.9399999999991,824 1182.9399999999991,844 1355.5249999999992,844 1355.5249999999992,979 7135.375000000001,979" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1182.9399999999991,824 1182.9399999999991,844 1145.1999999999994,844 1145.1999999999994,961" fill="none" stroke="var(--_line)" stroke-width="0.75" stroke-dasharray="4 4" marker-end="url(#arrowhead)" />
+<polyline points="1145.1999999999994,997 1145.1999999999994,1017 1425.2999999999995,1017 1425.2999999999995,1037 7278.724999999999,1037 7278.724999999999,1134" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 8010.045,1017 8010.045,1152 3493.75,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7990.045,1017 7990.045,1152 2987.3,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="3252.525,1134 3252.525,1114 7318.724999999999,1114 7318.724999999999,979 7135.375000000001,979" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="2578.05,1134 2578.05,1114 7298.724999999999,1114 7298.724999999999,979 7135.375000000001,979" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7920.285,1017 7920.285,1152 6438.450000000001,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7795.045,1017 7795.045,1152 6075,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7684.1050000000005,1017 7684.1050000000005,1152 5582.85,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7590.325,1017 7590.325,1152 4388.150000000001,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7493.685,1017 7493.685,1152 4182,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7397.045,1017 7397.045,1152 3825.7000000000003,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1519.369999999999,651 1519.369999999999,671 1556.2499999999989,671 1556.2499999999989,806 8575.425000000001,806" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1519.369999999999,651 1519.369999999999,671 1436.159999999999,671 1436.159999999999,806 7840.174999999999,806" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="8991.825,824 8991.825,1152 6438.450000000001,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="8195.8,824 8195.8,844 8556.072499999998,844 8556.072499999998,1152 5582.85,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="8195.8,824 8195.8,844 7357.3025,844 7357.3025,979 5193.187500000001,979" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1574.9899999999989,824 1574.9899999999989,979 7838.8425,979" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="8158.7175,997 8158.7175,1017 8379.414999999999,1017 8379.414999999999,1152 4388.150000000001,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="8158.7175,997 8158.7175,1017 8243.35,1017 8243.35,1152 4182,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="8158.7175,997 8158.7175,1017 8074.085,1017 8074.085,1152 3825.7000000000003,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1216.6999999999996,132 1216.6999999999996,287 8793.904999999999,287" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1422.8499999999995,132 1422.8499999999995,287 9493.404999999999,287" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="9131.654999999999,305 9131.654999999999,325 9481.404999999999,325 9481.404999999999,460 879.2999999999997,460" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="9131.654999999999,305 9131.654999999999,325 9430.224999999999,325 9430.224999999999,1152 6866.25,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="9131.654999999999,305 9131.654999999999,325 7677.375,325 7677.375,460 465.79999999999984,460" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="9831.154999999999,305 9831.154999999999,325 10001.029999999999,325 10001.029999999999,460 879.2999999999997,460" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="9831.154999999999,305 9831.154999999999,325 9532.585,325 9532.585,1152 6866.25,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="4826.837500000001,997 4826.837500000001,1017 5265.420000000001,1017 5265.420000000001,1152 5257.700000000001,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="4826.837500000001,997 4826.837500000001,1017 5028.225,1017 5028.225,1134" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="4826.837500000001,997 4826.837500000001,1017 4625.450000000001,1017 4625.450000000001,1134" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="7444.525000000001,997 7444.525000000001,1017 7338.724999999999,1017 7338.724999999999,1152 2104.8,1152" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1053.2499999999995,1170 1053.2499999999995,1290" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<polyline points="1145.1999999999994,997 1145.1999999999994,1017 1053.2499999999995,1017 1053.2499999999995,1134" fill="none" stroke="var(--_line)" stroke-width="0.75" marker-end="url(#arrowhead)" />
+<rect x="1152.059999999999" y="533" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1182.9399999999991" y="546.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Upload&quot;</text>
+<rect x="1085.7199999999993" y="879" width="118.96000000000001" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1145.1999999999994" y="892.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;3 retries failed&quot;</text>
+<rect x="7866.525" y="1052" width="107.52000000000001" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7920.285" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Query Mappings&quot;</text>
+<rect x="7735.5650000000005" y="1052" width="118.96000000000001" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7795.045" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Check Duplicates&quot;</text>
+<rect x="7644.645" y="1052" width="78.92" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7684.1050000000005" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Write CSV&quot;</text>
+<rect x="7548.005" y="1052" width="84.64" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7590.325" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Move Files&quot;</text>
+<rect x="7451.365000000001" y="1052" width="84.64" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7493.685" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Move Files&quot;</text>
+<rect x="7354.725" y="1052" width="84.64" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7397.045" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Move Files&quot;</text>
+<rect x="1525.3699999999988" y="706" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1556.2499999999989" y="719.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Hourly&quot;</text>
+<rect x="1405.2799999999988" y="706" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1436.159999999999" y="719.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Hourly&quot;</text>
+<rect x="8496.592499999999" y="965.5" width="118.96000000000001" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="8556.072499999998" y="979" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Check file count&quot;</text>
+<rect x="7317.8425" y="879" width="78.92" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7357.3025" y="892.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Start job&quot;</text>
+<rect x="1544.1099999999988" y="879" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1574.9899999999989" y="892.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Weekly&quot;</text>
+<rect x="8331.374999999998" y="1052" width="96.08" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="8379.414999999999" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Archive from&quot;</text>
+<rect x="8195.31" y="1052" width="96.08" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="8243.35" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Archive from&quot;</text>
+<rect x="8026.045" y="1052" width="96.08" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="8074.085" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Archive from&quot;</text>
+<rect x="1188.6799999999996" y="187" width="56.04" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1216.6999999999996" y="200.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Daily&quot;</text>
+<rect x="1389.1099999999994" y="187" width="67.48" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="1422.8499999999995" y="200.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Monthly&quot;</text>
+<rect x="9385.044999999998" y="706" width="90.36" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="9430.224999999999" y="719.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Query Sites&quot;</text>
+<rect x="7635.055" y="360" width="84.64" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="7677.375" y="373.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Upload CSV&quot;</text>
+<rect x="9487.404999999999" y="706" width="90.36" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="9532.585" y="719.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Query Sites&quot;</text>
+<rect x="5225.960000000001" y="1052" width="78.92" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="5265.420000000001" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Read CSVs&quot;</text>
+<rect x="4997.345" y="1052" width="61.760000000000005" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="5028.225" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Upsert&quot;</text>
+<rect x="4591.710000000001" y="1052" width="67.48" height="27" rx="4" ry="4" fill="var(--bg)" stroke="var(--_inner-stroke)" stroke-width="0.5" />
+<text x="4625.450000000001" y="1065.5" text-anchor="middle" dy="0.35em" font-size="11" font-weight="400" fill="var(--_text-muted)">&quot;Archive&quot;</text>
+<rect x="61.99999999999986" y="442" width="403.8" height="36" rx="0" ry="0" fill="#e1f5fe" stroke="#01579b" stroke-width="2px" />
+<rect x="489.7999999999997" y="442" width="389.50000000000006" height="36" rx="0" ry="0" fill="#e1f5fe" stroke="#01579b" stroke-width="2px" />
+<rect x="1084.7149999999992" y="615" width="196.45000000000002" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="981.0399999999992" y="788" width="403.8" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="943.2999999999994" y="961" width="403.8" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="1428.294999999999" y="615" width="182.15" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="1408.8399999999988" y="788" width="332.3" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="1129.1999999999996" y="96" width="175" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="1328.1999999999994" y="96" width="189.3" height="36" rx="0" ry="0" fill="#fff3e0" stroke="#e65100" stroke-width="2px" />
+<rect x="7135.375000000001" y="961" width="618.3000000000001" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="6930.249999999999" y="1134" width="696.95" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="8575.425000000001" y="788" width="832.8000000000001" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="7838.8425" y="961" width="639.75" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="7840.174999999999" y="788" width="711.25" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="8793.904999999999" y="269" width="675.5" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="9493.404999999999" y="269" width="675.5" height="36" rx="0" ry="0" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2px" />
+<rect x="3011.3" y="1134" width="482.45000000000005" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<rect x="2168.8" y="1134" width="818.5000000000001" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+<rect x="4460.4875" y="961" width="732.7" height="36" rx="0" ry="0" fill="#fce4ec" stroke="#c2185b" stroke-width="2px" />
+<rect x="5257.700000000001" y="1134" width="325.15000000000003" height="36" rx="0" ry="0" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2px" />
+<rect x="4452.150000000001" y="1134" width="346.6" height="36" rx="0" ry="0" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2px" />
+<rect x="4822.75" y="1134" width="410.95000000000005" height="36" rx="0" ry="0" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2px" />
+<rect x="5606.85" y="1134" width="468.15000000000003" height="36" rx="0" ry="0" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2px" />
+<rect x="6462.450000000001" y="1134" width="403.8" height="36" rx="0" ry="0" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2px" />
+<rect x="6099" y="1134" width="339.45000000000005" height="36" rx="0" ry="0" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2px" />
+<rect x="4206.000000000001" y="1134" width="182.15" height="36" rx="0" ry="0" fill="#fff8e1" stroke="#f57f17" stroke-width="2px" />
+<rect x="3849.7000000000003" y="1134" width="332.3" height="36" rx="0" ry="0" fill="#fff8e1" stroke="#f57f17" stroke-width="2px" />
+<rect x="3557.7500000000005" y="1134" width="267.95000000000005" height="36" rx="0" ry="0" fill="#fff8e1" stroke="#f57f17" stroke-width="2px" />
+<rect x="1264.85" y="1134" width="839.95" height="36" rx="0" ry="0" fill="#e3f2fd" stroke="#1565c0" stroke-width="2px" />
+<rect x="865.6499999999995" y="1134" width="375.20000000000005" height="36" rx="0" ry="0" fill="#e3f2fd" stroke="#1565c0" stroke-width="2px" />
+<rect x="944.2999999999995" y="1290" width="217.9" height="36" rx="0" ry="0" fill="#e3f2fd" stroke="#1565c0" stroke-width="2px" />
+<text x="263.89999999999986" y="460" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;S3: sbm-file-ingester/newTBP/&lt;br/&gt;Meter Data Files&quot;</text>
+<text x="684.5499999999997" y="460" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;BidEnergy/Optima API&lt;br/&gt;Interval &amp; Billing Data&quot;</text>
+<text x="1182.9399999999991" y="633" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;S3 Event Notification&quot;</text>
+<text x="1182.9399999999991" y="806" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;SQS: sbm-files-ingester-queue&lt;br/&gt;Visibility: 300s&quot;</text>
+<text x="1145.1999999999994" y="979" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;SQS: sbm-files-ingester-dlq&lt;br/&gt;Retention: 14 days&quot;</text>
+<text x="1519.369999999999" y="633" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;EventBridge: Hourly&quot;</text>
+<text x="1574.9899999999989" y="806" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;EventBridge: Weekly&lt;br/&gt;Monday UTC 00:00&quot;</text>
+<text x="1216.6999999999996" y="114" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;EventBridge: Daily&quot;</text>
+<text x="1422.8499999999995" y="114" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;EventBridge: Monthly&quot;</text>
+<text x="7444.525000000001" y="979" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;sbm-files-ingester&lt;/b&gt;&lt;br/&gt;Python 3.13 | 512MB | 300s&lt;br/&gt;Main file processor&quot;</text>
+<text x="7278.724999999999" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;sbm-files-ingester-redrive&lt;/b&gt;&lt;br/&gt;Python 3.13 | 128MB | 600s&lt;br/&gt;Re-trigger stuck files&quot;</text>
+<text x="8991.825" y="806" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;sbm-files-ingester-nem12-mappings-to-s3&lt;/b&gt;&lt;br/&gt;Python 3.13 | 128MB | 60s&lt;br/&gt;Export NEM12→Neptune mappings&quot;</text>
+<text x="8158.7175" y="979" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;sbm-weekly-archiver&lt;/b&gt;&lt;br/&gt;Python 3.13 | 1024MB | 600s&lt;br/&gt;Archive to ISO weeks&quot;</text>
+<text x="8195.8" y="806" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;sbm-glue-trigger&lt;/b&gt;&lt;br/&gt;Python 3.13 | 128MB | 30s&lt;br/&gt;Trigger Glue when files ≥ threshold&quot;</text>
+<text x="9131.654999999999" y="287" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;optima-interval-exporter&lt;/b&gt;&lt;br/&gt;Python 3.13 | 256MB | 900s&lt;br/&gt;Download interval CSV&quot;</text>
+<text x="9831.154999999999" y="287" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;optima-billing-exporter&lt;/b&gt;&lt;br/&gt;Python 3.13 | 128MB | 120s&lt;br/&gt;Trigger billing report&quot;</text>
+<text x="3252.525" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;nem_adapter.py&lt;br/&gt;NEM12/NEM13 Parser&lt;br/&gt;(nemreader library)&quot;</text>
+<text x="2578.05" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;non_nem_parsers.py&lt;br/&gt;• Envizi Water/Electricity&lt;br/&gt;• RACV&lt;br/&gt;• Optima Generation&lt;br/&gt;• Green Square ComX&quot;</text>
+<text x="4826.837500000001" y="979" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;&lt;b&gt;Glue ETL: DataImportIntoLake&lt;/b&gt;&lt;br/&gt;5 Workers (G.2X) | 24h timeout&lt;br/&gt;PySpark → Hudi Upsert&quot;</text>
+<text x="5420.275000000001" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;S3: hudibucketsrc/&lt;br/&gt;sensorDataFiles/&quot;</text>
+<text x="4625.450000000001" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;S3: sensorDataFilesArchived/&lt;br/&gt;YYYY-WXX/&quot;</text>
+<text x="5028.225" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;Apache Hudi Data Lake&lt;br/&gt;Record Key: sensorId + ts&quot;</text>
+<text x="5840.925" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;DynamoDB: sbm-ingester-idempotency&lt;br/&gt;Duplicate Prevention&quot;</text>
+<text x="6664.35" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;DynamoDB: sbm-optima-config&lt;br/&gt;Site Configuration&quot;</text>
+<text x="6268.725" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;Neptune Graph DB&lt;br/&gt;NEM12 ID → Sensor ID&quot;</text>
+<text x="4297.075000000001" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;newP/&lt;br/&gt;✅ Success&quot;</text>
+<text x="4015.8500000000004" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;newIrrevFiles/&lt;br/&gt;⚠️ No Neptune Mapping&quot;</text>
+<text x="3691.7250000000004" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;newParseErr/&lt;br/&gt;❌ Parse Failed&quot;</text>
+<text x="1684.8249999999998" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;Log Groups:&lt;br/&gt;• execution-log&lt;br/&gt;• error-log&lt;br/&gt;• parse-error-log&lt;br/&gt;• runtime-error-log&lt;br/&gt;• metrics-log&quot;</text>
+<text x="1053.2499999999995" y="1152" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;Alarms:&lt;br/&gt;• DLQ Messages&lt;br/&gt;• Lambda Errors&quot;</text>
+<text x="1053.2499999999995" y="1308" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">&quot;SNS: sbm-ingester-alerts&quot;</text>
+</svg>

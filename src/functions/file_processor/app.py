@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import random
@@ -6,6 +7,8 @@ import tempfile
 import time
 import traceback
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from itertools import chain
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -28,6 +31,7 @@ from shared import (
     PROCESSED_DIR,
     get_non_nem_df,
     output_as_data_frames,
+    stream_as_data_frames,
 )
 
 # File stability check configuration
@@ -107,8 +111,11 @@ NMI_DATA_STREAM_CHANNEL = [
 ]
 NMI_DATA_STREAM_COMBINED = frozenset(i + j for i in NMI_DATA_STREAM_SUFFIX for j in NMI_DATA_STREAM_CHANNEL)
 
-# Batch size for S3 writes - merge this many DataFrames before writing
-BATCH_SIZE = 50
+# Batch size for S3 writes - number of rows before writing
+BATCH_SIZE = 50000  # ~50K rows per CSV file
+
+# Parallel S3 write configuration
+S3_WRITE_WORKERS = 4  # Number of concurrent S3 upload threads
 
 # Powertools instances
 logger = Logger(service="file-processor")
@@ -296,6 +303,12 @@ def move_s3_file(bucket_name: str, source_key: str, dest_prefix: str) -> str | N
         return None
 
 
+def _upload_csv_to_s3(csv_content: str, output_key: str) -> None:
+    """Upload CSV content to S3. Used by ThreadPoolExecutor."""
+    s3_resource.Object("hudibucketsrc", output_key).put(Body=csv_content)
+    logger.debug("Uploaded CSV to S3", extra={"output_key": output_key})
+
+
 @tracer.capture_method
 def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
     """Write buffered DataFrames to S3 as a single merged CSV."""
@@ -306,6 +319,58 @@ def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
     output_key = f"sensorDataFiles/batch_{batch_timestamp}_{random.randint(1, 1000000)}.csv"
     s3_resource.Object("hudibucketsrc", output_key).put(Body=merged_df.to_csv(index=False))
     logger.debug("Flushed buffer to S3", extra={"output_key": output_key, "rows": len(merged_df)})
+
+
+class DirectCSVWriter:
+    """
+    Memory-efficient CSV writer that bypasses pandas DataFrame.
+
+    Writes rows directly to a string buffer, then uploads to S3 in parallel.
+    Eliminates DataFrame construction, concat, and to_csv overhead.
+    """
+
+    CSV_HEADER = "sensorId,ts,val,unit,its\n"
+    TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+    def __init__(self, batch_timestamp: str, executor: ThreadPoolExecutor) -> None:
+        self.batch_timestamp = batch_timestamp
+        self.executor = executor
+        self.buffer = io.StringIO()
+        self.buffer.write(self.CSV_HEADER)
+        self.row_count = 0
+        self.futures: list = []
+
+    def write_row(self, sensor_id: str, ts: Any, val: float, unit: str) -> None:
+        """Write a single row to the buffer."""
+        ts_str = ts.strftime(self.TS_FORMAT) if hasattr(ts, "strftime") else str(ts)
+        # CSV format: sensorId,ts,val,unit,its (its = ts)
+        self.buffer.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str}\n")
+        self.row_count += 1
+
+    def flush(self) -> None:
+        """Upload current buffer to S3 asynchronously."""
+        if self.row_count == 0:
+            return
+
+        csv_content = self.buffer.getvalue()
+        output_key = f"sensorDataFiles/batch_{self.batch_timestamp}_{random.randint(1, 1000000)}.csv"
+
+        # Submit upload task to thread pool
+        future = self.executor.submit(_upload_csv_to_s3, csv_content, output_key)
+        self.futures.append(future)
+
+        logger.debug("Submitted CSV upload", extra={"output_key": output_key, "rows": self.row_count})
+
+        # Reset buffer for next batch
+        self.buffer = io.StringIO()
+        self.buffer.write(self.CSV_HEADER)
+        self.row_count = 0
+
+    def wait_for_uploads(self) -> None:
+        """Wait for all pending S3 uploads to complete."""
+        for future in self.futures:
+            future.result()  # Raises exception if upload failed
+        self.futures.clear()
 
 
 @idempotent_function(persistence_store=persistence_layer, config=idempotency_config, data_keyword_argument="tbp_files")
@@ -319,6 +384,9 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
     # Generate timestamps once at start (not per-write)
     timestamp_now = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
     batch_timestamp = pd.Timestamp.now().strftime("%Y_%b_%dT%H_%M_%S_%f")
+
+    # Thread pool for parallel S3 uploads
+    executor = ThreadPoolExecutor(max_workers=S3_WRITE_WORKERS)
 
     try:
         logger.info("Script started", extra={"timestamp": timestamp_now, "files_count": len(tbp_files or [])})
@@ -338,67 +406,92 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         total_monitor_points_count = 0
         ftp_files_count = 0
 
-        # Buffer for batch S3 writes
-        write_buffer: list[pd.DataFrame] = []
+        # Direct CSV writer with parallel S3 uploads
+        csv_writer = DirectCSVWriter(batch_timestamp, executor)
 
         for file_path in tmp_files_folder_path.iterdir():
             local_file_path = str(file_path)
             dfs = None
+            parse_failed = False
 
+            # Try streaming parser first (memory efficient for large files)
+            # Use peek pattern: get first item to validate, then chain with rest
             try:
-                dfs = output_as_data_frames(local_file_path, split_days=True)
+                stream = stream_as_data_frames(local_file_path, split_days=True)
+                first_item = next(stream, None)
+                if first_item is None:
+                    raise ValueError("No data parsed from file")
+                # Chain first item back with the rest of the stream
+                dfs = chain([first_item], stream)
             except Exception:
+                # Fall back to batch parser
                 try:
-                    dfs = get_non_nem_df(local_file_path, PARSE_ERROR_LOG_GROUP)
+                    dfs = output_as_data_frames(local_file_path, split_days=True)
+                    if not dfs:
+                        raise ValueError("No data parsed from file")
                 except Exception:
-                    logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}]"
-                    move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
-                    parse_err_files_count += 1
-                    continue
+                    # Try non-NEM parsers as last resort
+                    try:
+                        dfs = get_non_nem_df(local_file_path, PARSE_ERROR_LOG_GROUP)
+                    except Exception:
+                        logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}]"
+                        move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                        parse_err_files_count += 1
+                        parse_failed = True
+
+            if parse_failed:
+                continue
 
             file_neptune_ids = []
 
-            for nmi, df in dfs:
-                # Reset index if t_start is the index
-                if "t_start" not in df.columns and df.index.name == "t_start":
-                    df = df.reset_index()
+            # Process each NMI's data - write directly to CSV, bypass DataFrame
+            try:
+                for nmi, df in dfs:
+                    # Reset index if t_start is the index
+                    if "t_start" not in df.columns and df.index.name == "t_start":
+                        df = df.reset_index()
 
-                for col in df.columns:
-                    suffix = col.split("_")[0]
-                    if suffix not in NMI_DATA_STREAM_COMBINED:
-                        continue
+                    # Get t_start column for iteration
+                    t_start_col = df["t_start"]
 
-                    monitor_point_name = f"{nmi}-{suffix}"
-                    neptune_id = nem12_mappings.get(monitor_point_name)
+                    for col in df.columns:
+                        suffix = col.split("_")[0]
+                        if suffix not in NMI_DATA_STREAM_COMBINED:
+                            continue
 
-                    if neptune_id is None:
-                        continue
+                        monitor_point_name = f"{nmi}-{suffix}"
+                        neptune_id = nem12_mappings.get(monitor_point_name)
 
-                    file_neptune_ids.append(neptune_id)
+                        if neptune_id is None:
+                            continue
 
-                    # Extract unit from column name (e.g., "E1_kWh" -> "kwh")
-                    unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
+                        file_neptune_ids.append(neptune_id)
 
-                    # Build output DataFrame
-                    output_df = df[["t_start", col]].copy()
-                    output_df["sensorId"] = neptune_id
-                    output_df["unit"] = unit_name
-                    output_df = output_df.rename(columns={"t_start": "ts", col: "val"})
-                    output_df["its"] = output_df["ts"]
-                    output_df = output_df[["sensorId", "ts", "val", "unit", "its"]]
+                        # Extract unit from column name (e.g., "E1_kWh" -> "kwh")
+                        unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
 
-                    # Format timestamps
-                    output_df["ts"] = output_df["ts"].dt.strftime("%Y-%m-%d %H:%M:%S")
-                    output_df["its"] = output_df["its"].dt.strftime("%Y-%m-%d %H:%M:%S")
+                        # Write rows directly to CSV buffer (no DataFrame construction)
+                        val_col = df[col]
+                        for ts, val in zip(t_start_col, val_col, strict=False):
+                            csv_writer.write_row(neptune_id, ts, val, unit_name)
 
-                    # Add to buffer instead of immediate write
-                    write_buffer.append(output_df)
-                    processed_monitor_points_count += 1
+                        processed_monitor_points_count += 1
 
-                    # Flush buffer when it reaches BATCH_SIZE
-                    if len(write_buffer) >= BATCH_SIZE:
-                        _flush_buffer_to_s3(write_buffer, batch_timestamp)
-                        write_buffer.clear()
+                        # Flush buffer when it reaches BATCH_SIZE rows
+                        if csv_writer.row_count >= BATCH_SIZE:
+                            csv_writer.flush()
+
+            except Exception as e:
+                # Handle errors during streaming iteration
+                logger.error(
+                    "Error processing NMI data",
+                    exc_info=True,
+                    extra={"file": local_file_path, "error": str(e)},
+                )
+                logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {e}"
+                move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                parse_err_files_count += 1
+                continue
 
             # Move source file based on whether any data was mapped
             if file_neptune_ids:
@@ -409,8 +502,9 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 move_s3_file(BUCKET_NAME, local_file_path, IRREVFILES_DIR)
                 irrev_files_count += 1
 
-        # Flush remaining buffer
-        _flush_buffer_to_s3(write_buffer, batch_timestamp)
+        # Flush remaining buffer and wait for all uploads to complete
+        csv_writer.flush()
+        csv_writer.wait_for_uploads()
 
         for key, value in logs_dict.items():
             logger.warning("Runtime error", extra={"bad_file": key, "timestamp": value})
@@ -435,6 +529,8 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         metrics.add_metric(name="ErrorExecutionCount", unit=MetricUnit.Count, value=1)
         shutil.rmtree(tmp_files_folder_path, ignore_errors=True)
         return None
+    finally:
+        executor.shutdown(wait=False)
 
 
 @tracer.capture_lambda_handler

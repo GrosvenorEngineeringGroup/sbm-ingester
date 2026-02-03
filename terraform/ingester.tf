@@ -19,7 +19,7 @@ resource "aws_lambda_function" "sbm_files_ingester" {
   handler                        = "functions.file_processor.app.lambda_handler"
   runtime                        = "python3.13"
   memory_size                    = 512
-  timeout                        = 300
+  timeout                        = 900 # 15 minutes (max) for large file processing
   reserved_concurrent_executions = 5
   s3_bucket                      = var.deployment_bucket
   s3_key                         = "${local.lambda_s3_prefix}/ingester.zip"
@@ -97,7 +97,7 @@ resource "aws_iam_role_policy" "idempotency_access" {
 resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
   name                       = "sbm-files-ingester-dlq"
   message_retention_seconds  = 1209600 # 14 days
-  visibility_timeout_seconds = 300
+  visibility_timeout_seconds = 900 # Match Lambda timeout
 
   tags = {
     Name = "sbm-files-ingester-dlq"
@@ -106,7 +106,7 @@ resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
 
 resource "aws_sqs_queue" "sbm_files_ingester_queue" {
   name                       = "sbm-files-ingester-queue"
-  visibility_timeout_seconds = 300
+  visibility_timeout_seconds = 900 # Match Lambda timeout (15 min)
 
   tags = {
     Name = "sbm-files-ingester-queue"

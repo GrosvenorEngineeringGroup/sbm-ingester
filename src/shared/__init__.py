@@ -16,7 +16,7 @@ from shared.common import (
     PROCESSED_DIR,
     RUNTIME_ERROR_LOG_GROUP,
 )
-from shared.nem_adapter import output_as_data_frames
+from shared.nem_adapter import output_as_data_frames, stream_as_data_frames
 from shared.non_nem_parsers import get_non_nem_df
 
 __all__ = [
@@ -31,4 +31,5 @@ __all__ = [
     "RUNTIME_ERROR_LOG_GROUP",
     "get_non_nem_df",
     "output_as_data_frames",
+    "stream_as_data_frames",
 ]

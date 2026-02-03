@@ -165,7 +165,8 @@ class TestBatchSize:
 
             assert isinstance(BATCH_SIZE, int)
             assert BATCH_SIZE > 0
-            assert BATCH_SIZE == 50  # Expected value
+            # BATCH_SIZE is now number of rows (50000), not number of DataFrames
+            assert BATCH_SIZE == 50000
 
 
 class TestTimestampFormat:

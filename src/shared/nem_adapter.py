@@ -1,19 +1,24 @@
 """
 Adapter module for nemreader library.
 
-This module provides a compatibility layer between the external nemreader library (v0.9.2+)
-and the internal API expected by gemsDataParseAndWrite.py.
+This module provides a compatibility layer between the internal nemreader library
+and the API expected by file_processor.
 
-Key difference: External nemreader's output_as_data_frames returns column names like "E1",
-but the internal code expects "E1_kWh" (suffix_unit format) to extract unit information.
+Key features:
+- Column names include unit suffix: "E1_kWh", "B1_kWh" etc.
+- Supports both batch (output_as_data_frames) and streaming (stream_as_data_frames) modes
+- Streaming mode is memory-efficient for large files
 """
 
 import logging
+from collections.abc import Generator
 
 import pandas as pd
 from aws_lambda_powertools import Logger
-from nemreader import NEMFile
-from nemreader.split_days import split_multiday_reads
+
+# Use internal nemreader fork for streaming support
+from libs.nemreader import NEMFile, stream_nem12_file
+from libs.nemreader.split_days import split_multiday_reads
 
 log = logging.getLogger(__name__)
 logger = Logger(service="nem-adapter", child=True)
@@ -128,5 +133,139 @@ def _build_nmi_dataframe(
         values = [x.read_value for x in ch_readings]
         ser = pd.Series(data=values, index=index, name=col_name)
         df.loc[:, col_name] = ser
+
+    return df
+
+
+def stream_as_data_frames(
+    file_name: str,
+    split_days: bool = True,
+) -> Generator[tuple[str, pd.DataFrame]]:
+    """
+    Stream NEM12 file yielding (NMI, DataFrame) pairs.
+
+    Memory-efficient alternative to output_as_data_frames().
+    Only holds one NMI's data in memory at a time.
+
+    Args:
+        file_name: Path to NEM12 file (supports .csv and .zip)
+        split_days: If True, split readings that span multiple days
+
+    Yields:
+        Tuples of (nmi_string, pandas_dataframe)
+
+    Example:
+        for nmi, df in stream_as_data_frames("large_file.csv"):
+            # Process each NMI's data
+            process(nmi, df)
+            # Memory is freed after each iteration
+    """
+    # Accumulate channels for the same NMI
+    # Key: nmi, Value: list of (suffix, uom, readings)
+    nmi_channels: dict[str, list[tuple[str, str, list]]] = {}
+    last_nmi: str | None = None
+
+    for nmi, suffix, uom, readings in stream_nem12_file(file_name, split_days=split_days):
+        # If we encounter a new NMI, yield the previous one
+        if last_nmi is not None and nmi != last_nmi and last_nmi in nmi_channels:
+            df = _build_dataframe_from_channels(nmi_channels[last_nmi])
+            if df is not None:
+                yield (last_nmi, df)
+            del nmi_channels[last_nmi]
+
+        # Accumulate channel data for current NMI
+        if nmi not in nmi_channels:
+            nmi_channels[nmi] = []
+        nmi_channels[nmi].append((suffix, uom, readings))
+        last_nmi = nmi
+
+    # Yield remaining NMIs
+    for nmi, channels in nmi_channels.items():
+        df = _build_dataframe_from_channels(channels)
+        if df is not None:
+            yield (nmi, df)
+
+
+def _build_dataframe_from_channels(
+    channels: list[tuple[str, str, list]],
+) -> pd.DataFrame | None:
+    """
+    Build a DataFrame from a list of channel data.
+
+    Optimized: Single-pass iteration over readings for better performance.
+
+    Args:
+        channels: List of (suffix, uom, readings) tuples
+
+    Returns:
+        DataFrame with t_start index and columns for each channel (suffix_unit format)
+    """
+    if not channels:
+        return None
+
+    # Use first channel as base
+    first_suffix, first_uom, first_readings = channels[0]
+
+    if not first_readings:
+        return None
+
+    # Pre-allocate lists for single-pass iteration
+    n = len(first_readings)
+    t_start_list = [None] * n
+    t_end_list = [None] * n
+    quality_list = [None] * n
+    event_code_list = [None] * n
+    event_desc_list = [None] * n
+    first_values = [None] * n
+
+    # Single pass over first channel readings
+    for i, reading in enumerate(first_readings):
+        t_start_list[i] = reading.t_start
+        t_end_list[i] = reading.t_end
+        quality_list[i] = reading.quality_method
+        event_code_list[i] = reading.event_code
+        event_desc_list[i] = reading.event_desc
+        first_values[i] = reading.read_value
+
+    # Build DataFrame data dict
+    first_col_name = f"{first_suffix}_{first_uom or 'kWh'}"
+    d = {
+        "t_start": t_start_list,
+        "t_end": t_end_list,
+        "quality_method": quality_list,
+        "event_code": event_code_list,
+        "event_desc": event_desc_list,
+        first_col_name: first_values,
+    }
+
+    # Add additional channels with single-pass iteration
+    for suffix, uom, readings in channels[1:]:
+        if not readings:
+            continue
+
+        col_name = f"{suffix}_{uom or 'kWh'}"
+        # Single pass: extract both index and values
+        index = [None] * len(readings)
+        values = [None] * len(readings)
+        for i, reading in enumerate(readings):
+            index[i] = reading.t_start
+            values[i] = reading.read_value
+
+        # Store for later DataFrame assignment
+        d[f"_idx_{col_name}"] = index
+        d[col_name] = values
+
+    # Create base DataFrame
+    df = pd.DataFrame(data={k: v for k, v in d.items() if not k.startswith("_idx_")}, index=t_start_list)
+
+    # Assign additional channels using stored indices
+    for suffix, uom, readings in channels[1:]:
+        if not readings:
+            continue
+        col_name = f"{suffix}_{uom or 'kWh'}"
+        idx_key = f"_idx_{col_name}"
+        if idx_key in d:
+            ser = pd.Series(data=d[col_name], index=d[idx_key], name=col_name)
+            df.loc[:, col_name] = ser
 
     return df

@@ -43,6 +43,9 @@ pythonpath = ["src/functions/optima_exporter"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+exclude = [
+    "src/libs",  # External fork (nemreader) - don't lint
+]
 
 [tool.ruff.lint]
 select = [
@@ -69,6 +72,15 @@ ignore = [
     "SIM108", # allow if-else over ternary
     "SIM117", # allow nested with in tests for readability
     "ANN401", # allow Any type for Lambda context and similar
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ANN",    # No type annotations required in tests
+    "RUF059", # Allow unused variables in tuple unpacking (common in tests)
+    "C401",   # Allow generator expressions in tests
+    "C416",   # Allow dict comprehensions in tests
+    "B905",   # Allow zip without strict in tests
 ]
 
 [tool.hatch.build.targets.wheel]

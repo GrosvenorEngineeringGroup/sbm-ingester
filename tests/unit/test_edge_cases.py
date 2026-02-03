@@ -611,13 +611,19 @@ class TestBatchSizeFlush:
 
             assert result == 1
 
-            # Check that multiple batch files were written to hudibucketsrc
+            # Check that batch files were written to hudibucketsrc
             hudi_bucket = s3_resource.Bucket("hudibucketsrc")
             sensor_files = list(hudi_bucket.objects.filter(Prefix="sensorDataFiles/"))
 
-            # Should have at least 2 files (one from mid-flush, one from final flush)
-            # Since we have 60 monitor points and BATCH_SIZE=50
-            assert len(sensor_files) >= 2
+            # With BATCH_SIZE=50000 rows and 60 channels x 48 readings = 2880 rows,
+            # we expect 1 file (all rows fit in one batch)
+            assert len(sensor_files) >= 1
+
+            # Verify the file contains the expected data
+            csv_content = sensor_files[0].get()["Body"].read().decode("utf-8")
+            lines = csv_content.strip().split("\n")
+            # 1 header + 2880 data rows
+            assert len(lines) == 2881
 
 
 class TestExceptionHandling:

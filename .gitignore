@@ -101,3 +101,6 @@ CLAUDE.md
 files/
 # Lefthook
 lefthook-local.yml
+
+# Large test fixtures (real NEM12 files)
+tests/unit/fixtures/nem12_real*.csv

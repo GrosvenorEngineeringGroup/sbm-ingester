@@ -24,6 +24,7 @@ jobs:
             ingester:
               - 'src/functions/file_processor/**'
               - 'src/shared/**'
+              - 'src/libs/**'
               - 'pyproject.toml'
               - 'uv.lock'
             redrive:

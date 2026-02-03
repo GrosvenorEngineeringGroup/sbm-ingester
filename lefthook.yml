@@ -8,12 +8,14 @@ pre-commit:
     # Ruff linting with auto-fix
     ruff-check:
       glob: "*.py"
+      exclude: "src/libs/**"
       run: uv run ruff check --fix {staged_files}
       stage_fixed: true  # Auto-stage fixed files
 
     # Ruff formatting
     ruff-format:
       glob: "*.py"
+      exclude: "src/libs/**"
       run: uv run ruff format {staged_files}
       stage_fixed: true
 

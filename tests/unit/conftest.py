@@ -76,6 +76,60 @@ def nem12_multiple_meters_file(fixtures_dir: str) -> str:
 
 
 @pytest.fixture
+def nem12_empty_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with no data (only 100/900 records)."""
+    return str(Path(fixtures_dir) / "nem12_empty.csv")
+
+
+@pytest.fixture
+def nem12_no_900_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file without 900 end record."""
+    return str(Path(fixtures_dir) / "nem12_no_900.csv")
+
+
+@pytest.fixture
+def nem12_multiple_900_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with multiple 900 records (Powercor style)."""
+    return str(Path(fixtures_dir) / "nem12_multiple_900.csv")
+
+
+@pytest.fixture
+def nem12_with_400_events_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with 400 event records."""
+    return str(Path(fixtures_dir) / "nem12_with_400_events.csv")
+
+
+@pytest.fixture
+def nem12_15min_interval_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with 15-minute intervals."""
+    return str(Path(fixtures_dir) / "nem12_15min_interval.csv")
+
+
+@pytest.fixture
+def nem12_5min_interval_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with 5-minute intervals."""
+    return str(Path(fixtures_dir) / "nem12_5min_interval.csv")
+
+
+@pytest.fixture
+def nem12_missing_values_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with missing interval values."""
+    return str(Path(fixtures_dir) / "nem12_missing_values.csv")
+
+
+@pytest.fixture
+def nem12_multiday_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with multiple days of data."""
+    return str(Path(fixtures_dir) / "nem12_multiday.csv")
+
+
+@pytest.fixture
+def nem12_blank_lines_file(fixtures_dir: str) -> str:
+    """Return path to NEM12 file with blank lines interspersed."""
+    return str(Path(fixtures_dir) / "nem12_blank_lines.csv")
+
+
+@pytest.fixture
 def temp_directory() -> Generator[str]:
     """Create a temporary directory for test files."""
     with tempfile.TemporaryDirectory() as tmpdir:
