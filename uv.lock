@@ -1245,7 +1245,6 @@ source = { editable = "." }
 dependencies = [
     { name = "aws-lambda-powertools" },
     { name = "aws-xray-sdk" },
-    { name = "awswrangler" },
     { name = "boto3" },
     { name = "botocore" },
     { name = "gremlinpython" },
@@ -1260,6 +1259,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "awswrangler" },
     { name = "boto3-stubs", extra = ["logs", "s3"] },
     { name = "freezegun" },
     { name = "moto" },
@@ -1275,7 +1275,7 @@ dev = [
 requires-dist = [
     { name = "aws-lambda-powertools", specifier = ">=3.24.0" },
     { name = "aws-xray-sdk", specifier = ">=2.15.0" },
-    { name = "awswrangler", specifier = ">=3.15.0" },
+    { name = "awswrangler", marker = "extra == 'dev'", specifier = ">=3.15.0" },
     { name = "boto3", specifier = ">=1.42.10" },
     { name = "boto3-stubs", extras = ["logs", "s3"], marker = "extra == 'dev'", specifier = ">=1.42.26" },
     { name = "botocore", specifier = ">=1.42.10" },
