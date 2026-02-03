@@ -16,7 +16,6 @@ dependencies = [
     "openpyxl>=3.1.5",
     "gremlinpython>=3.7.3",
     "tornado>=6.4",
-    "awswrangler>=3.15.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +29,7 @@ dev = [
     "boto3-stubs[logs,s3]>=1.42.26",
     "responses>=0.25.0",
     "tqdm>=4.67.2",
+    "awswrangler>=3.15.0",  # For data_gap_detector local testing
 ]
 
 [tool.pytest.ini_options]
