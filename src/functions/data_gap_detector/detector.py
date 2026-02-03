@@ -68,8 +68,11 @@ def analyze_sensor_gaps(
     Returns:
         Dict with gap info or None if no gaps
     """
+    # Normalize column names to lowercase (Athena returns lowercase)
+    df_normalized = df.rename(columns={col: col.lower() for col in df.columns}) if not df.empty else df
+
     # Filter to this sensor
-    sensor_df = df[df["sensorId"] == sensor_id] if not df.empty else df
+    sensor_df = df_normalized[df_normalized["sensorid"] == sensor_id] if not df_normalized.empty else df_normalized
 
     # No data case
     if sensor_df.empty:
