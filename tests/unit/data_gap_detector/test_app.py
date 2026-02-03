@@ -77,12 +77,15 @@ class TestRunDetection:
             "NMI2-E1": "p:racv:def456",
         }
 
-        mock_query.return_value = pd.DataFrame(
-            {
-                "sensorId": ["p:bunnings:abc123"],
-                "data_date": [date(2024, 1, 1)],
-                "record_count": [48],
-            }
+        mock_query.return_value = (
+            pd.DataFrame(
+                {
+                    "sensorId": ["p:bunnings:abc123"],
+                    "data_date": [date(2024, 1, 1)],
+                    "record_count": [48],
+                }
+            ),
+            [],  # No failed sensors
         )
 
         result = run_detection(
@@ -113,6 +116,48 @@ class TestRunDetection:
 
         assert result["statusCode"] == 200
         assert result["body"]["issues_found"] == 0
+
+    @patch("src.functions.data_gap_detector.app.query_all_sensors")
+    @patch("src.functions.data_gap_detector.app.load_mappings")
+    def test_run_detection_with_failed_sensors(
+        self,
+        mock_load: MagicMock,
+        mock_query: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """run_detection includes failed sensors in report."""
+        from datetime import date
+
+        from src.functions.data_gap_detector.app import run_detection
+
+        mock_load.return_value = {
+            "NMI1-E1": "p:bunnings:abc123",
+            "NMI2-E1": "p:bunnings:def456",
+        }
+
+        # One sensor succeeds, one fails
+        mock_query.return_value = (
+            pd.DataFrame(
+                {
+                    "sensorId": ["p:bunnings:abc123"],
+                    "data_date": [date(2024, 1, 1)],
+                    "record_count": [48],
+                }
+            ),
+            ["p:bunnings:def456"],  # Failed sensor
+        )
+
+        result = run_detection(
+            project="bunnings",
+            start_date="2024-01-01",
+            end_date="2024-01-03",
+            output_dir=str(tmp_path),
+            mappings_path=str(tmp_path / "mappings.json"),
+        )
+
+        assert result["statusCode"] == 200
+        # Should include: 1 missing_dates issue (abc123 missing Jan 2-3) + 1 query_failed (def456)
+        assert result["body"]["issues_found"] >= 1
 
 
 class TestParseArgs:

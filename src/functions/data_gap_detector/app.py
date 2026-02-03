@@ -88,13 +88,44 @@ def run_detection(
     # If no dates specified, query without date filter first to find data range
     if not start_date or not end_date:
         # Query with wide date range to find actual data bounds
-        df = query_all_sensors(sensor_ids, "2020-01-01", "2030-12-31")
+        df, failed_sensors = query_all_sensors(sensor_ids, "2020-01-01", "2030-12-31")
     else:
-        df = query_all_sensors(sensor_ids, start_date, end_date)
+        df, failed_sensors = query_all_sensors(sensor_ids, start_date, end_date)
+
+    # Log failed sensors
+    if failed_sensors:
+        logger.warning(
+            f"Failed to query {len(failed_sensors)} sensors",
+            extra={"failed_count": len(failed_sensors)},
+        )
+
+    # Create reverse lookup for nmi_channel from point_id
+    point_to_nmi = {v: k for k, v in project_mappings.items()}
 
     # Analyze each sensor
     gaps: list[dict[str, Any]] = []
+
+    # Add failed sensors to report
+    for point_id in failed_sensors:
+        nmi_channel = point_to_nmi.get(point_id, "unknown")
+        gaps.append(
+            {
+                "nmi_channel": nmi_channel,
+                "point_id": point_id,
+                "issue_type": "query_failed",
+                "missing_dates": "",
+                "missing_count": 0,
+                "data_start": "",
+                "data_end": "",
+                "total_expected_days": 0,
+            }
+        )
+
+    # Analyze successfully queried sensors
+    successful_sensor_ids = set(sensor_ids) - set(failed_sensors)
     for nmi_channel, point_id in project_mappings.items():
+        if point_id not in successful_sensor_ids:
+            continue
         result = analyze_sensor_gaps(
             sensor_id=point_id,
             nmi_channel=nmi_channel,

@@ -54,6 +54,56 @@ class TestQueryBatch:
 
         assert result.empty
 
+    @patch("src.functions.data_gap_detector.query.time.sleep")
+    @patch("src.functions.data_gap_detector.query.wr")
+    def test_query_batch_retries_on_failure(self, mock_wr: MagicMock, mock_sleep: MagicMock) -> None:
+        """query_batch retries on transient failures."""
+        from src.functions.data_gap_detector.query import query_batch
+
+        mock_df = pd.DataFrame(
+            {
+                "sensorId": ["p:bunnings:abc"],
+                "data_date": [date(2024, 1, 1)],
+                "record_count": [48],
+            }
+        )
+        # Fail twice, then succeed
+        mock_wr.athena.read_sql_query.side_effect = [
+            Exception("Throttled"),
+            Exception("Throttled"),
+            mock_df,
+        ]
+
+        result = query_batch(
+            sensor_ids=["p:bunnings:abc"],
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+        )
+
+        assert mock_wr.athena.read_sql_query.call_count == 3
+        assert mock_sleep.call_count == 2
+        assert isinstance(result, pd.DataFrame)
+
+    @patch("src.functions.data_gap_detector.query.time.sleep")
+    @patch("src.functions.data_gap_detector.query.wr")
+    def test_query_batch_raises_after_max_retries(self, mock_wr: MagicMock, mock_sleep: MagicMock) -> None:
+        """query_batch raises exception after all retries exhausted."""
+        import pytest
+
+        from src.functions.data_gap_detector.query import MAX_RETRIES, query_batch
+
+        mock_wr.athena.read_sql_query.side_effect = Exception("Persistent failure")
+
+        with pytest.raises(Exception, match="Persistent failure"):
+            query_batch(
+                sensor_ids=["p:bunnings:abc"],
+                start_date="2024-01-01",
+                end_date="2024-01-31",
+            )
+
+        assert mock_wr.athena.read_sql_query.call_count == MAX_RETRIES
+        assert mock_sleep.call_count == MAX_RETRIES - 1
+
 
 class TestQueryAllSensors:
     """Tests for query_all_sensors function."""
@@ -106,7 +156,7 @@ class TestQueryAllSensors:
             ),
         ]
 
-        result = query_all_sensors(
+        result, failed = query_all_sensors(
             sensor_ids=["p:bunnings:a", "p:bunnings:b"],
             start_date="2024-01-01",
             end_date="2024-01-31",
@@ -115,3 +165,44 @@ class TestQueryAllSensors:
         assert len(result) == 2
         assert "p:bunnings:a" in result["sensorId"].values
         assert "p:bunnings:b" in result["sensorId"].values
+        assert failed == []
+
+    @patch("src.functions.data_gap_detector.query.BATCH_SIZE", 1)
+    @patch("src.functions.data_gap_detector.query.query_batch")
+    def test_query_all_sensors_returns_failed_sensors(self, mock_query_batch: MagicMock) -> None:
+        """query_all_sensors returns list of failed sensors."""
+        from src.functions.data_gap_detector.query import query_all_sensors
+
+        mock_query_batch.side_effect = [
+            pd.DataFrame(
+                {
+                    "sensorId": ["p:bunnings:a"],
+                    "data_date": [date(2024, 1, 1)],
+                    "record_count": [48],
+                }
+            ),
+            Exception("Athena timeout"),
+        ]
+
+        result, failed = query_all_sensors(
+            sensor_ids=["p:bunnings:a", "p:bunnings:b"],
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+        )
+
+        assert len(result) == 1
+        assert "p:bunnings:a" in result["sensorId"].values
+        assert failed == ["p:bunnings:b"]
+
+    def test_query_all_sensors_empty_list(self) -> None:
+        """query_all_sensors returns empty results for empty sensor list."""
+        from src.functions.data_gap_detector.query import query_all_sensors
+
+        result, failed = query_all_sensors(
+            sensor_ids=[],
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+        )
+
+        assert result.empty
+        assert failed == []
