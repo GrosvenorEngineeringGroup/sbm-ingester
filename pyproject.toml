@@ -88,6 +88,17 @@ ignore = [
     "B905",   # Allow zip without strict in tests
 ]
 
+[tool.coverage.run]
+omit = [
+    "src/libs/*",  # External fork (nemreader) - don't measure coverage
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 

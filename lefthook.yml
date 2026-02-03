@@ -40,7 +40,7 @@ pre-push:
     pytest:
       run: uv run pytest -v
 
-    # Check test coverage
+    # Check test coverage (src/libs excluded via pyproject.toml)
     coverage:
       run: uv run pytest --cov=src --cov-report=term-missing --cov-fail-under=90
 
