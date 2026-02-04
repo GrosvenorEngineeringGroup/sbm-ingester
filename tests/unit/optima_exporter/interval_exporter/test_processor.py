@@ -480,6 +480,84 @@ class TestProcessExport:
             assert call_kwargs["project"] == "bunnings"
 
 
+class TestPartialDateParameters:
+    """Tests for partial date parameter handling."""
+
+    @mock_aws
+    @freeze_time("2026-02-04 10:00:00")
+    def test_process_export_with_only_start_date_uses_yesterday_as_end_date(self) -> None:
+        """When only startDate is provided, endDate should default to yesterday."""
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+
+        processor_module = reload_processor_module()
+
+        with (
+            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(processor_module, "process_site") as mock_process,
+        ):
+            mock_process.return_value = {"success": True, "nmi": "NMI001"}
+
+            result = processor_module.process_export(project="bunnings", start_date="2024-01-01")
+
+            assert result["statusCode"] == 200
+            # start_date should be preserved as provided
+            assert result["body"]["date_range"]["start"] == "2024-01-01"
+            # end_date should be yesterday (2026-02-03)
+            assert result["body"]["date_range"]["end"] == "2026-02-03"
+
+    @mock_aws
+    @freeze_time("2026-02-04 10:00:00")
+    def test_process_export_with_only_end_date_uses_default_start(self) -> None:
+        """When only endDate is provided, startDate should use OPTIMA_DAYS_BACK."""
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+
+        processor_module = reload_processor_module()
+
+        with (
+            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(processor_module, "process_site") as mock_process,
+        ):
+            mock_process.return_value = {"success": True, "nmi": "NMI001"}
+
+            # Use a different end_date to clearly distinguish from the default
+            result = processor_module.process_export(project="bunnings", end_date="2026-01-15")
+
+            assert result["statusCode"] == 200
+            # end_date should be preserved as provided (not the default yesterday)
+            assert result["body"]["date_range"]["end"] == "2026-01-15"
+            # start_date should be OPTIMA_DAYS_BACK (7) days before today (2026-02-04)
+            # today - 7 = 2026-01-28
+            assert result["body"]["date_range"]["start"] == "2026-01-28"
+
+
 class TestParallelProcessing:
     """Tests for parallel processing with ThreadPoolExecutor."""
 

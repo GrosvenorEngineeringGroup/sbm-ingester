@@ -138,8 +138,16 @@ def process_export(
             }
 
     # Determine date range
-    if not start_date or not end_date:
+    if not start_date and not end_date:
+        # Neither provided, use default range
         start_date, end_date = get_date_range()
+    else:
+        # At least one provided, fill in the missing one
+        today = datetime.now(UTC).date()
+        if not end_date:
+            end_date = (today - timedelta(days=1)).isoformat()  # Yesterday
+        if not start_date:
+            start_date = (today - timedelta(days=OPTIMA_DAYS_BACK)).isoformat()
 
     # Login to BidEnergy
     logger.info(
