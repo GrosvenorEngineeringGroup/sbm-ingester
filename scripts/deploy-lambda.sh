@@ -140,8 +140,10 @@ build_optima_exporter() {
 
     download_wheels
 
-    # Copy source
-    cp src/functions/optima_exporter/app.py /tmp/lambda_build/
+    # Copy source (modular structure with shared code)
+    cp -r src/functions/optima_exporter/optima_shared /tmp/lambda_build/
+    cp -r src/functions/optima_exporter/interval_exporter /tmp/lambda_build/
+    cp -r src/functions/optima_exporter/billing_exporter /tmp/lambda_build/
 
     rm -f optima_exporter.zip
     (cd /tmp/lambda_build && zip -rq "$PROJECT_ROOT/optima_exporter.zip" .)
@@ -196,7 +198,23 @@ deploy_weekly_archiver() {
 
 deploy_optima_exporter() {
     build_optima_exporter
-    upload_and_deploy "optima_exporter.zip" "sbm-optima-exporter"
+    # Upload once, deploy to both Lambda functions
+    local s3_key="$S3_PREFIX/optima_exporter.zip"
+    log_info "Uploading optima_exporter.zip to s3://$S3_BUCKET/$s3_key..."
+    aws s3 cp "optima_exporter.zip" "s3://$S3_BUCKET/$s3_key"
+
+    for func in optima-interval-exporter optima-billing-exporter; do
+        log_info "Updating Lambda function: $func..."
+        local result=$(aws lambda update-function-code \
+            --function-name "$func" \
+            --s3-bucket "$S3_BUCKET" \
+            --s3-key "$s3_key" \
+            --publish \
+            --output json)
+        local version=$(echo "$result" | jq -r '.Version')
+        local state=$(echo "$result" | jq -r '.State')
+        log_info "Deployed $func (Version: $version, State: $state)"
+    done
 }
 
 deploy_all() {
