@@ -241,6 +241,32 @@ resource "aws_scheduler_schedule" "optima_racv_billing" {
 }
 
 # ================================
+# EventBridge Scheduler: Interval (Weekly)
+# ================================
+
+# Bunnings Interval Weekly - Sunday 8:00 AM Sydney (full history export)
+resource "aws_scheduler_schedule" "optima_bunnings_interval_weekly" {
+  name       = "optima-bunnings-interval-weekly"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 8 ? * SUN *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_interval_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input = jsonencode({
+      project   = "bunnings"
+      startDate = "2024-01-01"
+    })
+  }
+}
+
+# ================================
 # IAM Role for EventBridge Scheduler
 # ================================
 
