@@ -84,7 +84,7 @@ resource "aws_lambda_function" "cim_report_exporter" {
 
       # Email Settings (EMAIL_TO supports comma-separated list for multiple recipients)
       EMAIL_FROM    = "zyc@gegroup.com.au"
-      EMAIL_TO      = "zyc@gegroup.com.au"
+      EMAIL_TO      = "zyc@gegroup.com.au,CharterHallAFDD@gegroup.com.au"
       EMAIL_SUBJECT = "CIM AFDD Report - Charter Hall"
     }
   }
