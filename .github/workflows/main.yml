@@ -45,6 +45,8 @@ jobs:
               - 'src/functions/optima_exporter/**'
               - 'pyproject.toml'
               - 'uv.lock'
+            cim_exporter:
+              - 'src/functions/cim_exporter/**'
             glue_script:
               - 'src/glue/hudi_import/**'
 
@@ -72,6 +74,7 @@ jobs:
              [[ "${{ steps.changes.outputs.weekly_archiver }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.glue_trigger }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.optima_exporter }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.cim_exporter }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.glue_script }}" == "true" ]]; then
             echo "needed=true" >> $GITHUB_OUTPUT
           else
@@ -254,6 +257,41 @@ jobs:
             --publish
 
       # --------------------
+      # Build & Deploy CIM Exporter (Docker container image)
+      # --------------------
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.cim_exporter == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        if: steps.changes.outputs.cim_exporter == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push CIM Exporter
+        if: steps.changes.outputs.cim_exporter == 'true'
+        env:
+          ECR_REGISTRY: 318396632821.dkr.ecr.ap-southeast-2.amazonaws.com
+          ECR_REPOSITORY: cim-exporter
+          IMAGE_TAG: latest
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --push src/functions/cim_exporter
+
+      - name: Update CIM Exporter Lambda
+        if: steps.changes.outputs.cim_exporter == 'true'
+        env:
+          ECR_REGISTRY: 318396632821.dkr.ecr.ap-southeast-2.amazonaws.com
+          ECR_REPOSITORY: cim-exporter
+          IMAGE_TAG: latest
+        run: |
+          aws lambda update-function-code \
+            --function-name cim-report-exporter \
+            --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          aws lambda wait function-updated \
+            --function-name cim-report-exporter
+
+      # --------------------
       # Upload Glue Script
       # --------------------
       - name: Upload Glue Script
@@ -275,4 +313,5 @@ jobs:
           echo "Weekly Archiver: ${{ steps.changes.outputs.weekly_archiver }}"
           echo "Glue Trigger: ${{ steps.changes.outputs.glue_trigger }}"
           echo "Optima Exporter: ${{ steps.changes.outputs.optima_exporter }}"
+          echo "CIM Exporter: ${{ steps.changes.outputs.cim_exporter }}"
           echo "Glue Script: ${{ steps.changes.outputs.glue_script }}"

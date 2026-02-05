@@ -27,8 +27,9 @@ ENV/
 
 # uv
 .python-version
-requirements.txt
-requirements.in
+/requirements.txt
+/requirements.in
+!src/functions/*/requirements.txt
 
 # Testing
 .pytest_cache/
@@ -107,3 +108,8 @@ tests/unit/fixtures/nem12_real*.csv
 
 # Local test output
 output/
+
+.agents/
+.conductor/
+.playwright-mcp/
+.claude/
