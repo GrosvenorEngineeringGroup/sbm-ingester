@@ -1,6 +1,6 @@
 # sbm-ingester
 
-![Version](https://img.shields.io/badge/version-0.5.0-blue)
+![Version](https://img.shields.io/badge/version-0.6.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-FF9900?logo=awslambda&logoColor=white)
 ![AWS Glue](https://img.shields.io/badge/AWS-Glue-FF9900?logo=amazonaws&logoColor=white)
@@ -38,7 +38,7 @@ SBM Ingester is part of the Sustainable Building Manager (SBM) platform. It hand
 
 Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, and maps meter readings to Neptune graph database sensor IDs.
 
-### Key Features (v0.5.0)
+### Key Features (v0.6.0)
 
 - **AWS Lambda Powertools** - Structured JSON logging, CloudWatch metrics
 - **X-Ray Tracing** - Optional distributed tracing (enabled per Lambda)
@@ -48,6 +48,7 @@ Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, a
 - **File Stability Check** - Prevents processing of partially uploaded streaming files
 - **Glue ETL Pipeline** - Apache Hudi data lake integration with automated batch import
 - **Optima Exporter** - Automated BidEnergy data export with detailed error diagnostics
+- **CIM Report Exporter** - Browser automation for AFDD ticket report downloads using Playwright
 
 ## Install
 
@@ -158,7 +159,9 @@ flowchart LR
 | `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
 | `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
 | `sbm-glue-trigger` | Python 3.13 | 128 MB | 30s | Hourly job - triggers Glue ETL when files ≥ threshold |
-| `sbm-optima-exporter` | Python 3.13 | 256 MB | 900s | Scheduled daily export of BidEnergy/Optima interval data via email (X-Ray disabled) |
+| `optima-interval-exporter` | Python 3.13 | 256 MB | 900s | Daily export - downloads BidEnergy interval CSV data to S3 |
+| `optima-billing-exporter` | Python 3.13 | 128 MB | 120s | Monthly export - triggers BidEnergy billing report (email delivery) |
+| `cim-report-exporter` | Python 3.13 | 1024 MB | 300s | Daily job (8 AM Sydney) - Playwright browser automation for CIM AFDD reports |
 
 ### Glue ETL Job
 
@@ -176,6 +179,26 @@ EventBridge (hourly) → Lambda (sbm-glue-trigger) → Glue Job (if files ≥ 10
                                                        ↓
                                               Archive to sensorDataFilesArchived/
 ```
+
+### CIM Report Exporter
+
+Uses Docker container image with Playwright for browser automation:
+
+```
+EventBridge (daily 8 AM Sydney) → Lambda (cim-report-exporter)
+                                            ↓
+                                   Launch headless Chromium
+                                            ↓
+                                   Login to CIM via Keycloak
+                                            ↓
+                                   Navigate to Actions report
+                                            ↓
+                                   Download CSV (90 days)
+                                            ↓
+                                   Send via SES email
+```
+
+**Deployment:** Docker image → ECR → Lambda (container image type)
 
 ### File Processing Outcomes
 
@@ -222,8 +245,13 @@ sbm-ingester/
 │   │   │   └── app.py
 │   │   ├── glue_trigger/        # Glue trigger Lambda
 │   │   │   └── app.py
-│   │   └── optima_exporter/     # Optima/BidEnergy data exporter
-│   │       └── app.py
+│   │   ├── optima_exporter/     # Optima/BidEnergy data exporter
+│   │   │   └── app.py
+│   │   └── cim_exporter/        # CIM AFDD report exporter (Docker)
+│   │       ├── Dockerfile
+│   │       ├── requirements.txt
+│   │       ├── cim_shared/      # Config utilities
+│   │       └── report_exporter/ # Playwright automation + emailer
 │   ├── glue/
 │   │   └── hudi_import/         # Glue ETL job
 │   │       └── script.py
@@ -247,6 +275,7 @@ sbm-ingester/
 │   ├── ingester.tf              # Lambda functions
 │   ├── glue.tf                  # Glue job and trigger
 │   ├── optima_exporter.tf       # Optima exporter Lambda, DynamoDB, Scheduler
+│   ├── cim_exporter.tf          # CIM exporter Lambda, ECR, EventBridge Scheduler
 │   ├── monitoring.tf            # Alarms and SNS
 │   ├── logs.tf                  # CloudWatch Log Groups
 │   └── ...                      # Other Terraform modules
@@ -271,7 +300,9 @@ Local deployment script for quick iterations during development.
 ./scripts/deploy-lambda.sh all
 ```
 
-**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `glue-trigger`, `optima-exporter`, `all`
+**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `glue-trigger`, `optima-exporter`, `cim-exporter`, `all`
+
+**Note:** `cim-exporter` uses Docker container deployment via ECR, not zip packages.
 
 ### Process NEM12 Locally
 
@@ -333,10 +364,11 @@ uv run scripts/migrate_archives_to_weekly.py --workers 100
 - **DynamoDB:** `sbm-ingester-idempotency` (duplicate prevention, 24h TTL)
 - **Neptune:** NEM12 ID → sensor ID mappings
 - **SNS:** `sbm-ingester-alerts` (error notifications)
+- **ECR:** `cim-exporter` (Docker image repository)
 
 ## Testing
 
-Tests use pytest with moto for AWS mocking. **Total: 349 tests.**
+Tests use pytest with moto for AWS mocking. **Total: 356 tests.**
 
 ```bash
 # Run all tests
@@ -365,8 +397,9 @@ uv run pytest --cov=src --cov-report=html
 ## Deployment
 
 Deployment is automated via GitHub Actions on push to `main`. The CI/CD pipeline:
-1. Builds and deploys 6 Lambda functions
+1. Builds and deploys 8 Lambda functions (7 zip + 1 Docker container)
 2. Uploads Glue ETL script to S3
+3. Builds and pushes CIM Exporter Docker image to ECR
 
 ### Manual Deployment
 
