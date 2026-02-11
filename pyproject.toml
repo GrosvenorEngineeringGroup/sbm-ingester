@@ -1,0 +1,115 @@
+[project]
+name = "sbm-ingester"
+version = "0.5.0"
+description = "SBM file ingestion pipeline for building energy data"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.42.10",
+    "botocore>=1.42.10",
+    "nemreader>=0.9.2",
+    "pandas>=2.2.0,<2.3.3",  # manylinux_2_17 wheels available up to 2.3.2
+    "numpy>=2.2.0,<2.3",  # manylinux_2_17 wheels available up to 2.2.6
+    "requests>=2.32.5",
+    "pytz>=2025.2",
+    "aws-lambda-powertools>=3.24.0",
+    "aws-xray-sdk>=2.15.0",
+    "openpyxl>=3.1.5",
+    "gremlinpython>=3.7.3",
+    "tornado>=6.4",
+    "sqlmodel>=0.0.32",
+    "psycopg2-binary>=2.9.11",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "moto>=5.1.18",
+    "pytest-mock>=3.15.1",
+    "freezegun>=1.5.5",
+    "ruff>=0.14.11",
+    "boto3-stubs[logs,s3]>=1.42.26",
+    "responses>=0.25.0",
+    "tqdm>=4.67.2",
+    "awswrangler>=3.15.0",  # For data_gap_detector local testing
+    "playwright>=1.58.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short -m 'not slow'"
+filterwarnings = [
+    "ignore:No application metrics to publish:UserWarning:aws_lambda_powertools",
+]
+pythonpath = ["src/functions/optima_exporter"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"', run with '-m slow')",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+exclude = [
+    "src/libs",  # External fork (nemreader) - don't lint
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # Pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+    "RUF",    # Ruff-specific rules
+    "ANN",    # flake8-annotations
+    "ISC",    # flake8-implicit-str-concat
+    "ICN",    # flake8-import-conventions
+    "RET",    # flake8-return
+    "TID",    # flake8-tidy-imports
+    "TC",     # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "NPY",    # NumPy-specific rules
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "SIM108", # allow if-else over ternary
+    "SIM117", # allow nested with in tests for readability
+    "ANN401", # allow Any type for Lambda context and similar
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ANN",    # No type annotations required in tests
+    "RUF059", # Allow unused variables in tuple unpacking (common in tests)
+    "C401",   # Allow generator expressions in tests
+    "C416",   # Allow dict comprehensions in tests
+    "B905",   # Allow zip without strict in tests
+]
+
+[tool.coverage.run]
+omit = [
+    "src/libs/*",  # External fork (nemreader) - don't measure coverage
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "playwright>=1.58.0",
+]

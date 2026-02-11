@@ -1,0 +1,317 @@
+name: Deploy Lambdas
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history to compare changes
+
+      # Detect which paths have changed
+      - name: Detect changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            ingester:
+              - 'src/functions/file_processor/**'
+              - 'src/shared/**'
+              - 'src/libs/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            redrive:
+              - 'src/functions/redrive_handler/**'
+            nem12_mappings:
+              - 'src/functions/nem12_exporter/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            weekly_archiver:
+              - 'src/functions/weekly_archiver/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            glue_trigger:
+              - 'src/functions/glue_trigger/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            optima_exporter:
+              - 'src/functions/optima_exporter/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            cim_exporter:
+              - 'src/functions/cim_exporter/**'
+            glue_script:
+              - 'src/glue/hudi_import/**'
+
+      # Check if pip dependencies are needed (excludes redrive and glue_script)
+      - name: Check if dependencies needed
+        id: needs_deps
+        run: |
+          if [[ "${{ steps.changes.outputs.ingester }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.nem12_mappings }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.weekly_archiver }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.glue_trigger }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.optima_exporter }}" == "true" ]]; then
+            echo "needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Check if any AWS operation is needed
+      - name: Check if AWS needed
+        id: needs_aws
+        run: |
+          if [[ "${{ steps.changes.outputs.ingester }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.redrive }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.nem12_mappings }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.weekly_archiver }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.glue_trigger }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.optima_exporter }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.cim_exporter }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.glue_script }}" == "true" ]]; then
+            echo "needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "needed=false" >> $GITHUB_OUTPUT
+          fi
+
+      # --------------------
+      # Setup (only when pip deps needed)
+      # --------------------
+      - name: Set up Python
+        if: steps.needs_deps.outputs.needed == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        if: steps.needs_deps.outputs.needed == 'true'
+        uses: astral-sh/setup-uv@v4
+
+      - name: Cache pip packages
+        if: steps.needs_deps.outputs.needed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Build dependencies layer
+        if: steps.needs_deps.outputs.needed == 'true'
+        run: |
+          uv export --no-dev --no-hashes -o requirements.txt
+          mkdir -p build/deps
+          pip install -r requirements.txt -t build/deps/
+
+      # --------------------
+      # Build Ingester Lambda
+      # --------------------
+      - name: Build Ingester Lambda
+        if: steps.changes.outputs.ingester == 'true'
+        run: |
+          mkdir -p build/ingester
+          cp -r build/deps/* build/ingester/
+          cp -r src/* build/ingester/
+          cd build/ingester && zip -r ../../ingester.zip . && cd ../..
+
+      # --------------------
+      # Build Redrive Lambda (no dependencies)
+      # --------------------
+      - name: Build Redrive Lambda
+        if: steps.changes.outputs.redrive == 'true'
+        run: |
+          mkdir -p build/redrive
+          cp src/functions/redrive_handler/app.py build/redrive/redrive.py
+          cd build/redrive && zip -r ../../redrive.zip . && cd ../..
+
+      # --------------------
+      # Build Nem12 Mappings Lambda
+      # --------------------
+      - name: Build Nem12 Mappings Lambda
+        if: steps.changes.outputs.nem12_mappings == 'true'
+        run: |
+          mkdir -p build/nem12_mappings_to_s3
+          cp -r build/deps/* build/nem12_mappings_to_s3/
+          cp src/functions/nem12_exporter/app.py build/nem12_mappings_to_s3/nem12_mappings_to_s3.py
+          cd build/nem12_mappings_to_s3 && zip -r ../../nem12-mappings-to-s3.zip . && cd ../..
+
+      # --------------------
+      # Build Weekly Archiver Lambda
+      # --------------------
+      - name: Build Weekly Archiver Lambda
+        if: steps.changes.outputs.weekly_archiver == 'true'
+        run: |
+          mkdir -p build/weekly_archiver
+          cp -r build/deps/* build/weekly_archiver/
+          cp src/functions/weekly_archiver/app.py build/weekly_archiver/
+          cd build/weekly_archiver && zip -r ../../weekly_archiver.zip . && cd ../..
+
+      # --------------------
+      # Build Glue Trigger Lambda
+      # --------------------
+      - name: Build Glue Trigger Lambda
+        if: steps.changes.outputs.glue_trigger == 'true'
+        run: |
+          mkdir -p build/glue_trigger
+          cp -r build/deps/* build/glue_trigger/
+          cp src/functions/glue_trigger/app.py build/glue_trigger/
+          cd build/glue_trigger && zip -r ../../glue-trigger.zip . && cd ../..
+
+      # --------------------
+      # Build Optima Exporter Lambda (shared zip for interval + billing exporters)
+      # --------------------
+      - name: Build Optima Exporter Lambda
+        if: steps.changes.outputs.optima_exporter == 'true'
+        run: |
+          mkdir -p build/optima_exporter
+          cp -r build/deps/* build/optima_exporter/
+          cp -r src/functions/optima_exporter/optima_shared build/optima_exporter/
+          cp -r src/functions/optima_exporter/interval_exporter build/optima_exporter/
+          cp -r src/functions/optima_exporter/billing_exporter build/optima_exporter/
+          cd build/optima_exporter && zip -r ../../optima_exporter.zip . && cd ../..
+
+      # --------------------
+      # Configure AWS
+      # --------------------
+      - name: Configure AWS Credentials
+        if: steps.needs_aws.outputs.needed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # --------------------
+      # Upload & Refresh Lambdas (conditional)
+      # --------------------
+      - name: Upload Ingester & Refresh
+        if: steps.changes.outputs.ingester == 'true'
+        run: |
+          aws s3 cp ingester.zip s3://gega-code-deployment-bucket/sbm-files-ingester/ingester.zip
+          aws lambda update-function-code \
+            --function-name sbm-files-ingester \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/ingester.zip \
+            --publish
+
+      - name: Upload Redrive & Refresh
+        if: steps.changes.outputs.redrive == 'true'
+        run: |
+          aws s3 cp redrive.zip s3://gega-code-deployment-bucket/sbm-files-ingester/redrive.zip
+          aws lambda update-function-code \
+            --function-name sbm-files-ingester-redrive \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/redrive.zip \
+            --publish
+
+      - name: Upload Nem12 Mappings & Refresh
+        if: steps.changes.outputs.nem12_mappings == 'true'
+        run: |
+          aws s3 cp nem12-mappings-to-s3.zip s3://gega-code-deployment-bucket/sbm-files-ingester/nem12-mappings-to-s3.zip
+          aws lambda update-function-code \
+            --function-name sbm-files-ingester-nem12-mappings-to-s3 \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/nem12-mappings-to-s3.zip \
+            --publish
+
+      - name: Upload Weekly Archiver & Refresh
+        if: steps.changes.outputs.weekly_archiver == 'true'
+        run: |
+          aws s3 cp weekly_archiver.zip s3://gega-code-deployment-bucket/sbm-files-ingester/weekly_archiver.zip
+          aws lambda update-function-code \
+            --function-name sbm-weekly-archiver \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/weekly_archiver.zip \
+            --publish
+
+      - name: Upload Glue Trigger & Refresh
+        if: steps.changes.outputs.glue_trigger == 'true'
+        run: |
+          aws s3 cp glue-trigger.zip s3://gega-code-deployment-bucket/sbm-files-ingester/glue-trigger.zip
+          aws lambda update-function-code \
+            --function-name sbm-glue-trigger \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/glue-trigger.zip \
+            --publish
+
+      - name: Upload Optima Exporter & Refresh
+        if: steps.changes.outputs.optima_exporter == 'true'
+        run: |
+          aws s3 cp optima_exporter.zip s3://gega-code-deployment-bucket/sbm-files-ingester/optima_exporter.zip
+          aws lambda update-function-code \
+            --function-name optima-interval-exporter \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/optima_exporter.zip \
+            --publish
+          aws lambda update-function-code \
+            --function-name optima-billing-exporter \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/optima_exporter.zip \
+            --publish
+
+      # --------------------
+      # Build & Deploy CIM Exporter (Docker container image)
+      # --------------------
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs.cim_exporter == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Amazon ECR
+        if: steps.changes.outputs.cim_exporter == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push CIM Exporter
+        if: steps.changes.outputs.cim_exporter == 'true'
+        env:
+          ECR_REGISTRY: 318396632821.dkr.ecr.ap-southeast-2.amazonaws.com
+          ECR_REPOSITORY: cim-exporter
+          IMAGE_TAG: latest
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            --push src/functions/cim_exporter
+
+      - name: Update CIM Exporter Lambda
+        if: steps.changes.outputs.cim_exporter == 'true'
+        env:
+          ECR_REGISTRY: 318396632821.dkr.ecr.ap-southeast-2.amazonaws.com
+          ECR_REPOSITORY: cim-exporter
+          IMAGE_TAG: latest
+        run: |
+          aws lambda update-function-code \
+            --function-name cim-report-exporter \
+            --image-uri $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          aws lambda wait function-updated \
+            --function-name cim-report-exporter
+
+      # --------------------
+      # Upload Glue Script
+      # --------------------
+      - name: Upload Glue Script
+        if: steps.changes.outputs.glue_script == 'true'
+        run: |
+          aws s3 cp src/glue/hudi_import/script.py \
+            s3://aws-glue-assets-318396632821-ap-southeast-2/scripts/hudiImportScript
+
+      # --------------------
+      # Summary
+      # --------------------
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo "=== Deployment Summary ==="
+          echo "Ingester: ${{ steps.changes.outputs.ingester }}"
+          echo "Redrive: ${{ steps.changes.outputs.redrive }}"
+          echo "NEM12 Mappings: ${{ steps.changes.outputs.nem12_mappings }}"
+          echo "Weekly Archiver: ${{ steps.changes.outputs.weekly_archiver }}"
+          echo "Glue Trigger: ${{ steps.changes.outputs.glue_trigger }}"
+          echo "Optima Exporter: ${{ steps.changes.outputs.optima_exporter }}"
+          echo "CIM Exporter: ${{ steps.changes.outputs.cim_exporter }}"
+          echo "Glue Script: ${{ steps.changes.outputs.glue_script }}"
