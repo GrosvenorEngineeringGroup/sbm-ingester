@@ -49,25 +49,11 @@ def create_all_tables() -> None:
                 ON meters (neptune_id) WHERE neptune_id IS NOT NULL
             """)
         )
-        # Composite unique constraint on bills (meter_id, bill_date)
-        conn.execute(
-            text("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_bills_meter_id_bill_date
-                ON bills (meter_id, bill_date)
-            """)
-        )
-        # Performance index on bills.bill_date
+        # Performance index on bills.bill_date (meter_id already covered by PK prefix)
         conn.execute(
             text("""
                 CREATE INDEX IF NOT EXISTS idx_bills_bill_date
                 ON bills (bill_date)
-            """)
-        )
-        # Performance index on bills.meter_id
-        conn.execute(
-            text("""
-                CREATE INDEX IF NOT EXISTS idx_bills_meter_id
-                ON bills (meter_id)
             """)
         )
 
@@ -96,6 +82,4 @@ def print_schema() -> None:
     print(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_meters_neptune_id ON meters (neptune_id) WHERE neptune_id IS NOT NULL;"
     )
-    print("CREATE UNIQUE INDEX IF NOT EXISTS idx_bills_meter_id_bill_date ON bills (meter_id, bill_date);")
     print("CREATE INDEX IF NOT EXISTS idx_bills_bill_date ON bills (bill_date);")
-    print("CREATE INDEX IF NOT EXISTS idx_bills_meter_id ON bills (meter_id);")
