@@ -31,6 +31,7 @@ def download_csv(
     end_date: str,
     project: str,
     nmi: str,
+    country: str = "AU",
 ) -> tuple[bytes, str] | None:
     """
     Download CSV interval usage data from BidEnergy.
@@ -42,6 +43,7 @@ def download_csv(
         end_date: End date in ISO format (YYYY-MM-DD)
         project: Project name for filename
         nmi: NMI identifier for filename
+        country: Country code ("AU" or "NZ")
 
     Returns:
         Tuple of (CSV content bytes, suggested filename), or None if download failed
@@ -60,7 +62,7 @@ def download_csv(
         "end": end_formatted,
         "filter.SiteIdStr": site_id_str,
         "filter.commodities": "Electricity",
-        "filter.countrystr": "AU",
+        "filter.countrystr": country,
         "filter.SiteStatus": "Active",
     }
 

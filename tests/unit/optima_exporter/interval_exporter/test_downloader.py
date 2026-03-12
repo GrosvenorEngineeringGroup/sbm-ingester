@@ -241,3 +241,57 @@ class TestDownloadCsv:
         )
 
         assert result is not None
+
+    @responses.activate
+    def test_passes_country_parameter_to_api(self) -> None:
+        """Test that country parameter is passed as filter.countrystr."""
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            status=200,
+            body=b"data",
+            content_type="text/csv",
+        )
+
+        download_csv(
+            cookies=".ASPXAUTH=token123",
+            site_id_str="site-guid-001",
+            start_date="2026-01-01",
+            end_date="2026-01-07",
+            project="bunnings",
+            nmi="NMI001",
+            country="NZ",
+        )
+
+        # Verify the request was made with correct country parameter
+        assert len(responses.calls) == 1
+        request_url = responses.calls[0].request.url
+        assert "filter.countrystr=NZ" in request_url
+
+    @responses.activate
+    def test_defaults_country_to_au(self) -> None:
+        """Test that country defaults to AU when not specified."""
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            status=200,
+            body=b"data",
+            content_type="text/csv",
+        )
+
+        download_csv(
+            cookies=".ASPXAUTH=token123",
+            site_id_str="site-guid-001",
+            start_date="2026-01-01",
+            end_date="2026-01-07",
+            project="bunnings",
+            nmi="NMI001",
+        )
+
+        assert len(responses.calls) == 1
+        request_url = responses.calls[0].request.url
+        assert "filter.countrystr=AU" in request_url

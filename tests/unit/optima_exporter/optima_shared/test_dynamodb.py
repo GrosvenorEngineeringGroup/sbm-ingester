@@ -65,8 +65,8 @@ class TestGetSitesForProject:
         sites = dynamodb_module.get_sites_for_project("bunnings")
 
         assert len(sites) == 2
-        assert {"nmi": "NMI001", "siteIdStr": "site-guid-001"} in sites
-        assert {"nmi": "NMI002", "siteIdStr": "site-guid-002"} in sites
+        assert {"nmi": "NMI001", "siteIdStr": "site-guid-001", "country": "AU"} in sites
+        assert {"nmi": "NMI002", "siteIdStr": "site-guid-002", "country": "AU"} in sites
 
     @mock_aws
     def test_handles_pagination(self) -> None:
@@ -118,7 +118,7 @@ class TestGetSitesForProject:
         sites = dynamodb_module.get_sites_for_project("bunnings")
 
         assert len(sites) == 1
-        assert sites[0]["nmi"] == "NMI001"
+        assert sites[0] == {"nmi": "NMI001", "siteIdStr": "site-guid-001", "country": "AU"}
 
     @mock_aws
     def test_returns_empty_list_when_no_sites(self) -> None:
@@ -173,7 +173,7 @@ class TestGetSitesForProject:
         sites = dynamodb_module.get_sites_for_project("bunnings")
 
         assert len(sites) == 1
-        assert sites[0] == {"nmi": "NMI001", "siteIdStr": "site-guid-001"}
+        assert sites[0] == {"nmi": "NMI001", "siteIdStr": "site-guid-001", "country": "AU"}
 
     @mock_aws
     def test_with_extra_fields_complex(self) -> None:
@@ -208,8 +208,36 @@ class TestGetSitesForProject:
         sites = dynamodb_module.get_sites_for_project("bunnings")
 
         assert len(sites) == 1
-        assert sites[0] == {"nmi": "NMI001", "siteIdStr": "site-guid-001"}
+        assert sites[0] == {"nmi": "NMI001", "siteIdStr": "site-guid-001", "country": "NZ"}
         assert "extra1" not in sites[0]
+
+    @mock_aws
+    def test_defaults_country_to_au_when_missing(self) -> None:
+        """Test that country defaults to AU when not set in DynamoDB."""
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI002", "siteIdStr": "site-guid-002", "country": "NZ"})
+
+        dynamodb_module = reload_dynamodb_module()
+        sites = dynamodb_module.get_sites_for_project("bunnings")
+
+        assert len(sites) == 2
+        site_by_nmi = {s["nmi"]: s for s in sites}
+        assert site_by_nmi["NMI001"]["country"] == "AU"
+        assert site_by_nmi["NMI002"]["country"] == "NZ"
 
 
 class TestGetSiteByNmi:
@@ -238,8 +266,7 @@ class TestGetSiteByNmi:
         site = dynamodb_module.get_site_by_nmi("bunnings", "NMI001")
 
         assert site is not None
-        assert site["nmi"] == "NMI001"
-        assert site["siteIdStr"] == "site-guid-001"
+        assert site == {"nmi": "NMI001", "siteIdStr": "site-guid-001", "country": "AU"}
 
     @mock_aws
     def test_returns_none_when_not_found(self) -> None:
@@ -322,7 +349,7 @@ class TestGetSiteByNmi:
         site = dynamodb_module.get_site_by_nmi("bunnings", "NMI001")
 
         assert site is not None
-        assert site == {"nmi": "NMI001", "siteIdStr": "site-guid-001"}
+        assert site == {"nmi": "NMI001", "siteIdStr": "site-guid-001", "country": "NZ"}
         assert "extraField" not in site
 
     @mock_aws

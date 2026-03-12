@@ -45,7 +45,11 @@ def get_sites_for_project(project: str) -> list[dict[str, str]]:
         sites.extend(response.get("Items", []))
 
     # Filter out items missing required fields
-    valid_sites = [{"nmi": s["nmi"], "siteIdStr": s["siteIdStr"]} for s in sites if "nmi" in s and "siteIdStr" in s]
+    valid_sites = [
+        {"nmi": s["nmi"], "siteIdStr": s["siteIdStr"], "country": s.get("country", "AU")}
+        for s in sites
+        if "nmi" in s and "siteIdStr" in s
+    ]
 
     if len(valid_sites) < len(sites):
         logger.warning(
@@ -74,7 +78,7 @@ def get_site_by_nmi(project: str, nmi: str) -> dict[str, str] | None:
 
     if item and "siteIdStr" in item:
         logger.info("Found site by NMI", extra={"project": project, "nmi": nmi})
-        return {"nmi": item["nmi"], "siteIdStr": item["siteIdStr"]}
+        return {"nmi": item["nmi"], "siteIdStr": item["siteIdStr"], "country": item.get("country", "AU")}
 
     logger.warning("Site not found or missing siteIdStr", extra={"project": project, "nmi": nmi})
     return None

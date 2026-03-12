@@ -43,6 +43,7 @@ def process_site(
     start_date: str,
     end_date: str,
     project: str,
+    country: str = "AU",
 ) -> dict[str, Any]:
     """
     Process a single site: download CSV and upload to S3.
@@ -54,6 +55,7 @@ def process_site(
         start_date: Start date in ISO format
         end_date: End date in ISO format
         project: Project name for logging
+        country: Country code ("AU" or "NZ")
 
     Returns:
         Dict with processing result
@@ -66,7 +68,7 @@ def process_site(
     }
 
     # Download CSV
-    download_result = download_csv(cookies, site_id_str, start_date, end_date, project, nmi)
+    download_result = download_csv(cookies, site_id_str, start_date, end_date, project, nmi, country)
     if download_result is None:
         result["error"] = "Failed to download CSV"
         return result
@@ -180,6 +182,7 @@ def process_export(
                 start_date=start_date,
                 end_date=end_date,
                 project=project,
+                country=site.get("country", "AU"),
             ): site
             for site in sites
         }
