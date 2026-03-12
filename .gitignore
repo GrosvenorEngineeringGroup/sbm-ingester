@@ -110,6 +110,10 @@ tests/unit/fixtures/nem12_real*.csv
 # Local test output
 output/
 
+# Local data files
+data/*.csv
+tmp_optima_test/
+
 .agents/
 .conductor/
 .playwright-mcp/
