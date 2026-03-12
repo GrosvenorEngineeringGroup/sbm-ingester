@@ -58,12 +58,6 @@ variable "aurora_master_username" {
   default     = "postgres"
 }
 
-variable "aurora_master_password" {
-  description = "Master password for the Aurora cluster"
-  type        = string
-  sensitive   = true
-}
-
 # -----------------------------
 # Optima Exporter Credentials
 # -----------------------------

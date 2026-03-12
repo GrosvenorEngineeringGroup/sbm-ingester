@@ -160,7 +160,7 @@ resource "aws_lambda_function" "optima_billing_exporter" {
 # EventBridge Scheduler: Interval (Daily)
 # ================================
 
-# Bunnings Interval - Daily 7:00 AM Sydney
+# Bunnings Interval - Daily 2:00 PM Sydney
 resource "aws_scheduler_schedule" "optima_bunnings_interval" {
   name       = "optima-bunnings-interval-daily"
   group_name = "default"
@@ -169,7 +169,7 @@ resource "aws_scheduler_schedule" "optima_bunnings_interval" {
     mode = "OFF"
   }
 
-  schedule_expression          = "cron(0 7 * * ? *)"
+  schedule_expression          = "cron(0 14 * * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
@@ -179,7 +179,7 @@ resource "aws_scheduler_schedule" "optima_bunnings_interval" {
   }
 }
 
-# RACV Interval - Daily 7:00 AM Sydney
+# RACV Interval - Daily 2:00 PM Sydney
 resource "aws_scheduler_schedule" "optima_racv_interval" {
   name       = "optima-racv-interval-daily"
   group_name = "default"
@@ -188,7 +188,7 @@ resource "aws_scheduler_schedule" "optima_racv_interval" {
     mode = "OFF"
   }
 
-  schedule_expression          = "cron(0 7 * * ? *)"
+  schedule_expression          = "cron(0 14 * * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
@@ -244,27 +244,27 @@ resource "aws_scheduler_schedule" "optima_racv_billing" {
 # EventBridge Scheduler: Interval (Weekly)
 # ================================
 
-# Bunnings Interval Weekly - Sunday 8:00 AM Sydney (full history export)
-resource "aws_scheduler_schedule" "optima_bunnings_interval_weekly" {
-  name       = "optima-bunnings-interval-weekly"
-  group_name = "default"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  schedule_expression          = "cron(0 8 ? * SUN *)"
-  schedule_expression_timezone = "Australia/Sydney"
-
-  target {
-    arn      = aws_lambda_function.optima_interval_exporter.arn
-    role_arn = aws_iam_role.optima_scheduler_role.arn
-    input = jsonencode({
-      project   = "bunnings"
-      startDate = "2024-01-01"
-    })
-  }
-}
+# Bunnings Interval Weekly - SUSPENDED
+# resource "aws_scheduler_schedule" "optima_bunnings_interval_weekly" {
+#   name       = "optima-bunnings-interval-weekly"
+#   group_name = "default"
+#
+#   flexible_time_window {
+#     mode = "OFF"
+#   }
+#
+#   schedule_expression          = "cron(0 8 ? * SUN *)"
+#   schedule_expression_timezone = "Australia/Sydney"
+#
+#   target {
+#     arn      = aws_lambda_function.optima_interval_exporter.arn
+#     role_arn = aws_iam_role.optima_scheduler_role.arn
+#     input = jsonencode({
+#       project   = "bunnings"
+#       startDate = "2024-01-01"
+#     })
+#   }
+# }
 
 # ================================
 # IAM Role for EventBridge Scheduler

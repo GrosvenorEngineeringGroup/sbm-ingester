@@ -36,7 +36,7 @@ output "glue_job_name" {
 # via EventBridge Scheduler "scanForNewDfs" (rate: 1 hour)
 
 output "aurora_connection_url" {
-  value       = "postgresql://${var.aurora_master_username}:${var.aurora_master_password}@${aws_rds_cluster.sbm_aurora.endpoint}:5432/${var.aurora_db_name}"
+  value       = "postgresql://${var.aurora_master_username}:${local.aurora_credentials["password"]}@${aws_rds_cluster.sbm_aurora.endpoint}:5432/${var.aurora_db_name}"
   description = "Full Aurora PostgreSQL connection URL."
   sensitive   = true
 }

@@ -5,6 +5,14 @@
 # -----------------------------
 # Data Sources
 # -----------------------------
+data "aws_secretsmanager_secret_version" "sbm_aurora" {
+  secret_id = "prod/db/sbm-aurora"
+}
+
+locals {
+  aurora_credentials = jsondecode(data.aws_secretsmanager_secret_version.sbm_aurora.secret_string)
+}
+
 data "aws_vpc" "default" {
   id = "vpc-06cf402dcf817e812"
 }
@@ -87,7 +95,7 @@ resource "aws_rds_cluster" "sbm_aurora" {
   database_name   = var.aurora_db_name
   master_username = var.aurora_master_username
 
-  master_password = var.aurora_master_password
+  master_password = local.aurora_credentials["password"]
 
   db_subnet_group_name   = data.aws_db_subnet_group.default.name
   vpc_security_group_ids = [aws_security_group.sbm_aurora.id]
