@@ -329,7 +329,7 @@ class DirectCSVWriter:
     Eliminates DataFrame construction, concat, and to_csv overhead.
     """
 
-    CSV_HEADER = "sensorId,ts,val,unit,its\n"
+    CSV_HEADER = "sensorId,ts,val,unit,its,quality\n"
     TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 
     def __init__(self, batch_timestamp: str, executor: ThreadPoolExecutor) -> None:
@@ -340,11 +340,11 @@ class DirectCSVWriter:
         self.row_count = 0
         self.futures: list = []
 
-    def write_row(self, sensor_id: str, ts: Any, val: float, unit: str) -> None:
+    def write_row(self, sensor_id: str, ts: Any, val: float, unit: str, quality: str = "") -> None:
         """Write a single row to the buffer."""
         ts_str = ts.strftime(self.TS_FORMAT) if hasattr(ts, "strftime") else str(ts)
-        # CSV format: sensorId,ts,val,unit,its (its = ts)
-        self.buffer.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str}\n")
+        # CSV format: sensorId,ts,val,unit,its,quality (its = ts)
+        self.buffer.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str},{quality}\n")
         self.row_count += 1
 
     def flush(self) -> None:
@@ -470,10 +470,18 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         # Extract unit from column name (e.g., "E1_kWh" -> "kwh")
                         unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
 
+                        # Get per-channel quality column if available
+                        quality_col_name = f"quality_{suffix}"
+                        quality_col = df[quality_col_name] if quality_col_name in df.columns else None
+
                         # Write rows directly to CSV buffer (no DataFrame construction)
                         val_col = df[col]
-                        for ts, val in zip(t_start_col, val_col, strict=False):
-                            csv_writer.write_row(neptune_id, ts, val, unit_name)
+                        if quality_col is not None:
+                            for ts, val, q in zip(t_start_col, val_col, quality_col, strict=False):
+                                csv_writer.write_row(neptune_id, ts, val, unit_name, "" if pd.isna(q) else q)
+                        else:
+                            for ts, val in zip(t_start_col, val_col, strict=False):
+                                csv_writer.write_row(neptune_id, ts, val, unit_name)
 
                         processed_monitor_points_count += 1
 

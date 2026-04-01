@@ -47,9 +47,9 @@ class TestOutputAsDataFrames:
 
         _nmi, df = result[0]
 
-        # Find data columns (not metadata columns)
-        metadata_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
-        data_cols = [col for col in df.columns if col not in metadata_cols]
+        # Find data columns (not metadata columns); quality_* columns are also excluded
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
 
         # Each data column should have format like "E1_kWh"
         for col in data_cols:
@@ -119,12 +119,16 @@ class TestOutputAsDataFrames:
 
         _nmi, df = result[0]
 
-        # Should have these metadata columns
-        expected_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
+        # Should have these metadata columns (quality_method replaced by quality_<suffix>)
+        expected_cols = {"t_start", "t_end", "event_code", "event_desc"}
         actual_cols = set(df.columns)
 
         for col in expected_cols:
             assert col in actual_cols, f"Missing column: {col}"
+
+        # At least one per-channel quality column must exist
+        quality_cols = [col for col in df.columns if col.startswith("quality_")]
+        assert len(quality_cols) >= 1, "Expected at least one quality_<suffix> column"
 
     def test_t_start_is_datetime(self, nem12_sample_file: str) -> None:
         """Test that t_start column contains datetime values."""
@@ -174,9 +178,9 @@ class TestUnitExtraction:
 
         _nmi, df = result[0]
 
-        # Find data columns
-        metadata_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
-        data_cols = [col for col in df.columns if col not in metadata_cols]
+        # Find data columns (quality_* columns are also excluded)
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
 
         # At least one column should have a unit suffix
         for col in data_cols:
@@ -184,6 +188,145 @@ class TestUnitExtraction:
                 unit = col.split("_")[-1]
                 # Unit should be a reasonable energy unit
                 assert unit.lower() in ["kwh", "kvarh", "kw", "kvar", "mwh", "wh"], f"Unexpected unit: {unit}"
+
+
+class TestPerChannelQuality:
+    """Tests for per-channel quality_<suffix> columns."""
+
+    def test_quality_column_per_channel(self, nem12_sample_file: str) -> None:
+        """Each data channel must have a corresponding quality_<suffix> column."""
+        from shared.nem_adapter import output_as_data_frames
+
+        result = output_as_data_frames(nem12_sample_file)
+        assert len(result) > 0
+
+        _nmi, df = result[0]
+
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
+
+        for col in data_cols:
+            suffix = col.split("_")[0]  # e.g. "E1" from "E1_kWh"
+            quality_col = f"quality_{suffix}"
+            assert quality_col in df.columns, f"Missing {quality_col} for data column {col}"
+
+    def test_shared_quality_method_column_removed(self, nem12_sample_file: str) -> None:
+        """The legacy quality_method column must no longer exist."""
+        from shared.nem_adapter import output_as_data_frames
+
+        result = output_as_data_frames(nem12_sample_file)
+        assert len(result) > 0
+
+        _nmi, df = result[0]
+        assert "quality_method" not in df.columns, "quality_method column should have been removed"
+
+    def test_quality_values_are_strings(self, nem12_sample_file: str) -> None:
+        """Quality column values must be non-empty strings."""
+        from shared.nem_adapter import output_as_data_frames
+
+        result = output_as_data_frames(nem12_sample_file)
+        assert len(result) > 0
+
+        _nmi, df = result[0]
+
+        quality_cols = [col for col in df.columns if col.startswith("quality_")]
+        assert len(quality_cols) >= 1
+
+        for q_col in quality_cols:
+            for val in df[q_col]:
+                assert isinstance(val, str), f"Quality value {val!r} in {q_col} is not a string"
+                assert len(val) > 0, f"Quality value in {q_col} is an empty string"
+
+    def test_multi_channel_different_quality(self) -> None:
+        """B1 and B2 channels store their own quality independently."""
+        from shared.nem_adapter import _build_nmi_dataframe
+
+        def make_reading(ts_offset: int, quality: str) -> MagicMock:
+            r = MagicMock()
+            r.t_start = pd.Timestamp(f"2024-01-01 0{ts_offset}:00:00")
+            r.t_end = pd.Timestamp(f"2024-01-01 0{ts_offset}:30:00")
+            r.quality_method = quality
+            r.event_code = ""
+            r.event_desc = ""
+            r.read_value = float(ts_offset)
+            r.uom = "kWh"
+            return r
+
+        b1_readings = [make_reading(0, "S14"), make_reading(1, "S14")]
+        b2_readings = [make_reading(0, "A"), make_reading(1, "A")]
+
+        df = _build_nmi_dataframe(
+            nmi="TEST123",
+            nmi_readings={"B1": b1_readings, "B2": b2_readings},
+            nmi_transactions={"B1": [], "B2": []},
+            split_days=False,
+        )
+
+        assert df is not None
+        assert "quality_B1" in df.columns
+        assert "quality_B2" in df.columns
+        assert list(df["quality_B1"]) == ["S14", "S14"]
+        assert list(df["quality_B2"]) == ["A", "A"]
+
+    def test_nem13_per_channel_quality(self, nem13_sample_file: str) -> None:
+        """NEM13 files must also produce per-channel quality_<suffix> columns."""
+        from shared.nem_adapter import output_as_data_frames
+
+        result = output_as_data_frames(nem13_sample_file)
+        assert len(result) > 0
+
+        _nmi, df = result[0]
+
+        assert "quality_method" not in df.columns, "quality_method should not exist for NEM13 either"
+        quality_cols = [col for col in df.columns if col.startswith("quality_")]
+        assert len(quality_cols) >= 1, "NEM13 DataFrame must have at least one quality_<suffix> column"
+
+
+class TestStreamingPerChannelQuality:
+    """Tests for per-channel quality columns in the streaming path."""
+
+    def test_streaming_has_per_channel_quality(self, nem12_sample_file: str) -> None:
+        """Streaming mode must produce quality_{suffix} columns, not quality_method."""
+        from shared.nem_adapter import stream_as_data_frames
+
+        result = list(stream_as_data_frames(nem12_sample_file))
+        assert len(result) > 0
+
+        _nmi, df = result[0]
+
+        assert "quality_method" not in df.columns, "quality_method should not appear in streaming output"
+
+        quality_cols = [col for col in df.columns if col.startswith("quality_")]
+        assert len(quality_cols) >= 1, "Expected at least one quality_<suffix> column in streaming output"
+
+        # Each data column must have a corresponding quality column
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
+        for col in data_cols:
+            suffix = col.split("_")[0]
+            assert f"quality_{suffix}" in df.columns, f"Missing quality_{suffix} for data column {col}"
+
+    def test_streaming_matches_batch_quality(self, nem12_sample_file: str) -> None:
+        """Streaming and batch modes must produce the same quality column names."""
+        from shared.nem_adapter import output_as_data_frames, stream_as_data_frames
+
+        batch_result = output_as_data_frames(nem12_sample_file)
+        stream_result = list(stream_as_data_frames(nem12_sample_file))
+
+        assert len(batch_result) == len(stream_result)
+
+        for (batch_nmi, batch_df), (stream_nmi, stream_df) in zip(
+            sorted(batch_result, key=lambda x: x[0]),
+            sorted(stream_result, key=lambda x: x[0]),
+            strict=True,
+        ):
+            assert batch_nmi == stream_nmi
+
+            batch_quality_cols = sorted(col for col in batch_df.columns if col.startswith("quality_"))
+            stream_quality_cols = sorted(col for col in stream_df.columns if col.startswith("quality_"))
+            assert batch_quality_cols == stream_quality_cols, (
+                f"Quality column mismatch for {batch_nmi}: batch={batch_quality_cols}, stream={stream_quality_cols}"
+            )
 
 
 class TestEdgeCases:
