@@ -305,6 +305,8 @@ def build_hudi_config(
         "hoodie.datasource.write.keygenerator.class": "org.apache.hudi.keygen.CustomKeyGenerator",
         # Table settings
         "hoodie.table.name": hudi_table_name,
+        # Schema evolution — allow adding nullable columns to existing table
+        "hoodie.datasource.write.reconcile.schema": "true",
         # Timestamp parsing for partition path
         "hoodie.deltastreamer.keygen.timebased.timestamp.type": "DATE_STRING",
         "hoodie.deltastreamer.keygen.timebased.input.dateformat": "yyyy-MM-dd H:mm:ss",
@@ -328,6 +330,7 @@ def get_schema() -> StructType:
             StructField("val", DoubleType(), True),
             StructField("unit", StringType(), True),
             StructField("its", StringType(), True),
+            StructField("quality", StringType(), True),
         ]
     )
 

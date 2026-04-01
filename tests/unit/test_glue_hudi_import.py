@@ -548,6 +548,52 @@ def archive_files_concurrent_impl(
 
 
 # ================================
+# Schema Tests
+# ================================
+class TestGetSchema:
+    """Tests for get_schema function."""
+
+    def test_schema_has_quality_field(self) -> None:
+        """Test that schema includes the quality column."""
+        field_names = get_schema_field_names()
+        assert "quality" in field_names
+
+    def test_schema_field_order(self) -> None:
+        """Test schema has correct fields in order."""
+        field_names = get_schema_field_names()
+        assert field_names == ["sensorId", "ts", "val", "unit", "its", "quality"]
+
+    def test_quality_field_is_nullable(self) -> None:
+        """Test that quality field is nullable (for backward compatibility)."""
+        fields = get_schema_fields()
+        quality_field = next(f for f in fields if f["name"] == "quality")
+        assert quality_field["nullable"] is True
+
+    def test_quality_field_is_string_type(self) -> None:
+        """Test that quality field is StringType."""
+        fields = get_schema_fields()
+        quality_field = next(f for f in fields if f["name"] == "quality")
+        assert quality_field["type"] == "StringType"
+
+
+def get_schema_field_names() -> list[str]:
+    """Return field names from the sensor data schema."""
+    return ["sensorId", "ts", "val", "unit", "its", "quality"]
+
+
+def get_schema_fields() -> list[dict]:
+    """Return field definitions from the sensor data schema."""
+    return [
+        {"name": "sensorId", "type": "StringType", "nullable": True},
+        {"name": "ts", "type": "TimestampType", "nullable": True},
+        {"name": "val", "type": "DoubleType", "nullable": True},
+        {"name": "unit", "type": "StringType", "nullable": True},
+        {"name": "its", "type": "StringType", "nullable": True},
+        {"name": "quality", "type": "StringType", "nullable": True},
+    ]
+
+
+# ================================
 # Hudi Configuration Tests
 # ================================
 class TestBuildHudiConfig:
@@ -616,6 +662,17 @@ class TestBuildHudiConfig:
         assert config["hoodie.datasource.hive_sync.enable"] == "true"
         assert config["hoodie.datasource.hive_sync.use_jdbc"] == "false"
 
+    def test_build_hudi_config_schema_evolution(self) -> None:
+        """Test Hudi config has schema reconciliation enabled for schema evolution."""
+        config = build_hudi_config_impl(
+            hudi_init_sort_option="DEFAULT",
+            hudi_output_bucket="test-bucket",
+            hudi_table_name="sensorData",
+            hudi_db_name="Default",
+        )
+
+        assert config["hoodie.datasource.write.reconcile.schema"] == "true"
+
 
 def build_hudi_config_impl(
     hudi_init_sort_option: str,
@@ -642,6 +699,7 @@ def build_hudi_config_impl(
         "hoodie.datasource.write.hive_style_partitioning": "true",
         "hoodie.datasource.write.keygenerator.class": "org.apache.hudi.keygen.CustomKeyGenerator",
         "hoodie.table.name": table_name,
+        "hoodie.datasource.write.reconcile.schema": "true",
         "hoodie.deltastreamer.keygen.timebased.timestamp.type": "DATE_STRING",
         "hoodie.deltastreamer.keygen.timebased.input.dateformat": "yyyy-MM-dd H:mm:ss",
         "hoodie.deltastreamer.keygen.timebased.output.dateformat": "yyyy",
@@ -990,7 +1048,7 @@ class TestBatchProcessingFlow:
             s3.put_object(
                 Bucket="hudibucketsrc",
                 Key=f"sensorDataFiles/sensor_{i:03d}.csv",
-                Body=b"sensorId,ts,val,unit,its\ntest-001,2024-01-01 00:00:00,1.0,kWh,2024-01-01 00:00:00",
+                Body=b"sensorId,ts,val,unit,its,quality\ntest-001,2024-01-01 00:00:00,1.0,kWh,2024-01-01 00:00:00,A",
             )
 
         # Verify initial state

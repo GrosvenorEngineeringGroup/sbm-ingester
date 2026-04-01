@@ -508,7 +508,7 @@ class TestIntegration:
             s3.put_object(
                 Bucket="test-bucket",
                 Key=f"sensorDataFiles/sensor_{i:03d}.csv",
-                Body=b"sensorId,ts,val,unit,its\ntest,2024-01-01,1.0,kWh,2024",
+                Body=b"sensorId,ts,val,unit,its,quality\ntest,2024-01-01,1.0,kWh,2024,A",
             )
 
         # Import and test count function with real moto S3
