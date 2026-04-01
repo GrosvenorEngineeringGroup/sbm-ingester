@@ -459,8 +459,11 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         if suffix not in NMI_DATA_STREAM_COMBINED:
                             continue
 
-                        monitor_point_name = f"{nmi}-{suffix}"
-                        neptune_id = nem12_mappings.get(monitor_point_name)
+                        if nmi.startswith("p:"):
+                            neptune_id = nmi
+                        else:
+                            monitor_point_name = f"{nmi}-{suffix}"
+                            neptune_id = nem12_mappings.get(monitor_point_name)
 
                         if neptune_id is None:
                             continue
