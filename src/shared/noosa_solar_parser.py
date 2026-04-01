@@ -43,7 +43,7 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserResult:
     if len(unexpected_tz) > 0:
         logger.warning(
             "Unexpected timezone in Noosa Solar file",
-            extra={"timezones": unexpected_tz.tolist()},
+            extra={"timezones": unexpected_tz},
         )
 
     df["timestamp"] = df["timestamp"].str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
