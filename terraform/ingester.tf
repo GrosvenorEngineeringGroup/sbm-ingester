@@ -61,7 +61,7 @@ resource "aws_dynamodb_table" "sbm_ingester_idempotency" {
   }
 
   ttl {
-    attribute_name = "ttl"
+    attribute_name = "expiration"
     enabled        = true
   }
 
