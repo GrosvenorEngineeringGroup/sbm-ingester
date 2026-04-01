@@ -6,6 +6,7 @@ and the API expected by file_processor.
 
 Key features:
 - Column names include unit suffix: "E1_kWh", "B1_kWh" etc.
+- Quality flags stored per-channel as quality_{suffix} columns (e.g., quality_E1, quality_B1)
 - Supports both batch (output_as_data_frames) and streaming (stream_as_data_frames) modes
 - Streaming mode is memory-efficient for large files
 """
@@ -33,7 +34,7 @@ def output_as_data_frames(
 
     This adapter maintains compatibility with the internal nemreader output format:
     - Column names include unit suffix: "E1_kWh", "B1_kWh" etc.
-    - DataFrame columns: t_start, t_end, quality_method, event_code, event_desc, <channel>_<unit>
+    - DataFrame columns: t_start, t_end, quality_<suffix>, event_code, event_desc, <channel>_<unit>
 
     Args:
         file_name: Path to NEM12/NEM13 file (supports .csv and .zip)
@@ -109,7 +110,7 @@ def _build_nmi_dataframe(
     d = {
         "t_start": [x.t_start for x in first_readings],
         "t_end": [x.t_end for x in first_readings],
-        "quality_method": [x.quality_method for x in first_readings],
+        f"quality_{first_ch}": [x.quality_method for x in first_readings],
         "event_code": [x.event_code for x in first_readings],
         "event_desc": [x.event_desc for x in first_readings],
     }
@@ -133,6 +134,10 @@ def _build_nmi_dataframe(
         values = [x.read_value for x in ch_readings]
         ser = pd.Series(data=values, index=index, name=col_name)
         df.loc[:, col_name] = ser
+
+        quality = [x.quality_method for x in ch_readings]
+        quality_ser = pd.Series(data=quality, index=index, name=f"quality_{ch}")
+        df.loc[:, f"quality_{ch}"] = quality_ser
 
     return df
 
