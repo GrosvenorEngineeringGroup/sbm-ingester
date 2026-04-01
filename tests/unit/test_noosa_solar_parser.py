@@ -320,6 +320,65 @@ class TestSensorIdFormat:
             assert sensor_id.startswith("p:racv:r:")
 
 
+class TestStripParenthesizedSuffix:
+    """Tests for stripping parenthesized suffixes from sensor IDs."""
+
+    def test_strip_kwhr_suffix(self, tmp_path: Path) -> None:
+        """Sensor ID with '(kW-hr)' suffix is stripped to plain ID."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            columns={"p:racv:r:abc-123 (kW-hr)": ["10.0", "20.0", "30.0"]},
+        )
+
+        with patch("shared.noosa_solar_parser.logger"):
+            from shared.noosa_solar_parser import noosa_solar_parser
+
+            result = noosa_solar_parser(filepath, "error_log")
+
+        assert len(result) == 1
+        sensor_id, _ = result[0]
+        assert sensor_id == "p:racv:r:abc-123"
+        assert "(kW-hr)" not in sensor_id
+
+    def test_mixed_suffixed_and_plain_columns(self, tmp_path: Path) -> None:
+        """File with both suffixed and plain headers produces consistent IDs."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            columns={
+                "p:racv:r:sensor-a (kW-hr)": ["1.0", "2.0", "3.0"],
+                "p:racv:r:sensor-b": ["4.0", "5.0", "6.0"],
+            },
+        )
+
+        with patch("shared.noosa_solar_parser.logger"):
+            from shared.noosa_solar_parser import noosa_solar_parser
+
+            result = noosa_solar_parser(filepath, "error_log")
+
+        ids = [sid for sid, _ in result]
+        assert "p:racv:r:sensor-a" in ids
+        assert "p:racv:r:sensor-b" in ids
+        assert all("(" not in sid for sid in ids)
+
+    def test_strip_arbitrary_parenthesized_suffix(self, tmp_path: Path) -> None:
+        """Any parenthesized suffix is stripped, not just (kW-hr)."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            columns={"p:racv:r:xyz (some unit)": ["Normal Operation", "Standby", "Off"]},
+        )
+
+        with patch("shared.noosa_solar_parser.logger"):
+            from shared.noosa_solar_parser import noosa_solar_parser
+
+            result = noosa_solar_parser(filepath, "error_log")
+
+        sensor_id, _ = result[0]
+        assert sensor_id == "p:racv:r:xyz"
+
+
 class TestEmptyFile:
     """Tests for empty file handling."""
 
