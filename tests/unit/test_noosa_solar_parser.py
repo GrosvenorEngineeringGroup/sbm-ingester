@@ -336,6 +336,22 @@ class TestEmptyFile:
                 noosa_solar_parser(filepath, "error_log")
 
 
+class TestMissingTimestampColumn:
+    """Tests for missing timestamp column validation."""
+
+    def test_missing_timestamp_column(self, tmp_path: Path) -> None:
+        """File with wrong first column name raises exception."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        content = "wrong_header,p:racv:r:s1\n31-Mar-26 8:00 AM AEST,1.0\n"
+        Path(filepath).write_text(content, encoding="utf-8-sig")
+
+        with patch("shared.noosa_solar_parser.logger"):
+            from shared.noosa_solar_parser import noosa_solar_parser
+
+            with pytest.raises(Exception, match="Missing timestamp column"):
+                noosa_solar_parser(filepath, "error_log")
+
+
 class TestAllNanColumnSkipped:
     """Tests for columns with all NaN values."""
 
