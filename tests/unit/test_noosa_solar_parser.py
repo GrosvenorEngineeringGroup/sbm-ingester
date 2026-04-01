@@ -418,7 +418,7 @@ class TestMultipleStatusValues:
             "No Fronius Solar Net Comm",
             "No Comm with Inverter",
             "Overcurrent detected in Fronius Solar Net",
-            "Inverter Update being Processed",
+            "Inverter Update being Performed",
             "AFCI Event",
         ]
         # Generate 13 valid 12-hour timestamps (1:00 AM through 1:00 PM)

@@ -21,7 +21,7 @@ FRONIUS_MODE_MAP: dict[str, int] = {
     "No Fronius Solar Net Comm": 9,
     "No Comm with Inverter": 10,
     "Overcurrent detected in Fronius Solar Net": 11,
-    "Inverter Update being Processed": 12,
+    "Inverter Update being Performed": 12,
     "AFCI Event": 13,
 }
 

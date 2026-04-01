@@ -30,7 +30,7 @@
 | 9 | No Fronius Solar Net Comm |
 | 10 | No Comm with Inverter |
 | 11 | Overcurrent detected in Fronius Solar Net |
-| 12 | Inverter Update being Processed |
+| 12 | Inverter Update being Performed |
 | 13 | AFCI Event |
 
 **Tech Stack:** Python 3.13, pandas, Ruff (ANN, PTH rules enabled)
@@ -93,7 +93,7 @@ FRONIUS_MODE_MAP: dict[str, int] = {
     "No Fronius Solar Net Comm": 9,
     "No Comm with Inverter": 10,
     "Overcurrent detected in Fronius Solar Net": 11,
-    "Inverter Update being Processed": 12,
+    "Inverter Update being Performed": 12,
     "AFCI Event": 13,
 }
 
