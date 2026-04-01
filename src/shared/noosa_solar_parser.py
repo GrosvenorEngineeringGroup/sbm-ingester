@@ -52,8 +52,10 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserResult:
     sensor_columns = [col for col in df.columns if col.startswith("p:")]
 
     results: ParserResult = []
-    for sensor_id in sensor_columns:
-        series = df[sensor_id]
+    for raw_col in sensor_columns:
+        series = df[raw_col]
+        # Strip parenthesized suffix e.g. "p:racv:r:xxx (kW-hr)" -> "p:racv:r:xxx"
+        sensor_id = raw_col.split(" (")[0]
 
         # Dynamic type detection: try numeric conversion
         numeric_series = pd.to_numeric(series, errors="coerce")
