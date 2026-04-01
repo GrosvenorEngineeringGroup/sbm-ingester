@@ -4,6 +4,8 @@ import boto3
 import pandas as pd
 from aws_lambda_powertools import Logger
 
+from shared.noosa_solar_parser import noosa_solar_parser
+
 logger = Logger(service="non-nem-parsers", child=True)
 
 # Type alias for parser return type
@@ -186,6 +188,7 @@ def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_p
 
 def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
     parsers = [
+        noosa_solar_parser,  # Must be first — checks filename, fast rejection
         envizi_vertical_parser_water,
         envizi_vertical_parser_electricity,
         racv_elec_parser,
