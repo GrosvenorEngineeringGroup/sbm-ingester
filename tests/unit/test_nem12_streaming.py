@@ -270,10 +270,14 @@ class TestStreamAsDataFramesEdgeCases:
         assert len(result) > 0
         nmi, df = result[0]
 
-        # Required metadata columns
-        required_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
+        # Required metadata columns (quality_method replaced by per-channel quality_<suffix>)
+        required_cols = {"t_start", "t_end", "event_code", "event_desc"}
         for col in required_cols:
             assert col in df.columns
+
+        # At least one per-channel quality column must exist
+        quality_cols = [col for col in df.columns if col.startswith("quality_")]
+        assert len(quality_cols) >= 1, "Expected at least one quality_<suffix> column"
 
     def test_channel_columns_named_correctly(self, nem12_sample_file: str) -> None:
         """Test that channel columns follow suffix_unit format."""
@@ -284,9 +288,9 @@ class TestStreamAsDataFramesEdgeCases:
         assert len(result) > 0
         nmi, df = result[0]
 
-        # Find data columns
-        metadata_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
-        data_cols = [col for col in df.columns if col not in metadata_cols]
+        # Find data columns (exclude metadata and quality_* columns)
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
 
         assert len(data_cols) >= 1
         # Should be like "E1_kWh"
@@ -304,9 +308,9 @@ class TestStreamAsDataFramesEdgeCases:
         assert len(result) == 1
         nmi, df = result[0]
 
-        # Find data columns
-        metadata_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
-        data_cols = [col for col in df.columns if col not in metadata_cols]
+        # Find data columns (exclude metadata and quality_* columns)
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
 
         # Sample file has E1 and Q1 channels
         assert len(data_cols) >= 2
@@ -330,9 +334,9 @@ class TestStreamAsDataFramesEdgeCases:
         assert len(result) == 1
         nmi, df = result[0]
 
-        # Find the data column
-        metadata_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
-        data_cols = [col for col in df.columns if col not in metadata_cols]
+        # Find the data column (exclude metadata and quality_* columns)
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
 
         # Should have some NaN values
         assert df[data_cols[0]].isna().any()
@@ -410,9 +414,9 @@ class TestStreamingVsBatchEquivalence:
         ):
             assert batch_nmi == stream_nmi
 
-            # Compare data columns
-            metadata_cols = {"t_start", "t_end", "quality_method", "event_code", "event_desc"}
-            data_cols = [col for col in batch_df.columns if col not in metadata_cols]
+            # Compare data columns (exclude metadata and quality_* columns)
+            metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+            data_cols = [col for col in batch_df.columns if col not in metadata_cols and not col.startswith("quality_")]
 
             for col in data_cols:
                 if col in stream_df.columns:

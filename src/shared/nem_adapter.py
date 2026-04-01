@@ -198,6 +198,7 @@ def _build_dataframe_from_channels(
     Build a DataFrame from a list of channel data.
 
     Optimized: Single-pass iteration over readings for better performance.
+    Per-channel quality flags are stored as quality_{suffix} columns.
 
     Args:
         channels: List of (suffix, uom, readings) tuples
@@ -218,7 +219,7 @@ def _build_dataframe_from_channels(
     n = len(first_readings)
     t_start_list = [None] * n
     t_end_list = [None] * n
-    quality_list = [None] * n
+    first_quality_list = [None] * n
     event_code_list = [None] * n
     event_desc_list = [None] * n
     first_values = [None] * n
@@ -227,50 +228,44 @@ def _build_dataframe_from_channels(
     for i, reading in enumerate(first_readings):
         t_start_list[i] = reading.t_start
         t_end_list[i] = reading.t_end
-        quality_list[i] = reading.quality_method
+        first_quality_list[i] = reading.quality_method
         event_code_list[i] = reading.event_code
         event_desc_list[i] = reading.event_desc
         first_values[i] = reading.read_value
 
-    # Build DataFrame data dict
+    # Build DataFrame data dict (first channel only, with per-channel quality)
     first_col_name = f"{first_suffix}_{first_uom or 'kWh'}"
     d = {
         "t_start": t_start_list,
         "t_end": t_end_list,
-        "quality_method": quality_list,
+        f"quality_{first_suffix}": first_quality_list,
         "event_code": event_code_list,
         "event_desc": event_desc_list,
         first_col_name: first_values,
     }
 
-    # Add additional channels with single-pass iteration
+    # Collect additional channel data into a separate list to avoid length mismatch
+    additional_channels: list[tuple[str, str, list, list, list]] = []
     for suffix, uom, readings in channels[1:]:
         if not readings:
             continue
 
         col_name = f"{suffix}_{uom or 'kWh'}"
-        # Single pass: extract both index and values
         index = [None] * len(readings)
         values = [None] * len(readings)
+        quality = [None] * len(readings)
         for i, reading in enumerate(readings):
             index[i] = reading.t_start
             values[i] = reading.read_value
+            quality[i] = reading.quality_method
+        additional_channels.append((suffix, col_name, index, values, quality))
 
-        # Store for later DataFrame assignment
-        d[f"_idx_{col_name}"] = index
-        d[col_name] = values
+    # Create base DataFrame from first channel only
+    df = pd.DataFrame(data=d, index=t_start_list)
 
-    # Create base DataFrame
-    df = pd.DataFrame(data={k: v for k, v in d.items() if not k.startswith("_idx_")}, index=t_start_list)
-
-    # Assign additional channels using stored indices
-    for suffix, uom, readings in channels[1:]:
-        if not readings:
-            continue
-        col_name = f"{suffix}_{uom or 'kWh'}"
-        idx_key = f"_idx_{col_name}"
-        if idx_key in d:
-            ser = pd.Series(data=d[col_name], index=d[idx_key], name=col_name)
-            df.loc[:, col_name] = ser
+    # Assign additional channels via pd.Series with proper index alignment
+    for suffix, col_name, index, values, quality in additional_channels:
+        df.loc[:, col_name] = pd.Series(data=values, index=index, name=col_name)
+        df.loc[:, f"quality_{suffix}"] = pd.Series(data=quality, index=index, name=f"quality_{suffix}")
 
     return df

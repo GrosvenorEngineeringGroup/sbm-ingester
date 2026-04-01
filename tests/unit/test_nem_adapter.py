@@ -282,6 +282,53 @@ class TestPerChannelQuality:
         assert len(quality_cols) >= 1, "NEM13 DataFrame must have at least one quality_<suffix> column"
 
 
+class TestStreamingPerChannelQuality:
+    """Tests for per-channel quality columns in the streaming path."""
+
+    def test_streaming_has_per_channel_quality(self, nem12_sample_file: str) -> None:
+        """Streaming mode must produce quality_{suffix} columns, not quality_method."""
+        from shared.nem_adapter import stream_as_data_frames
+
+        result = list(stream_as_data_frames(nem12_sample_file))
+        assert len(result) > 0
+
+        _nmi, df = result[0]
+
+        assert "quality_method" not in df.columns, "quality_method should not appear in streaming output"
+
+        quality_cols = [col for col in df.columns if col.startswith("quality_")]
+        assert len(quality_cols) >= 1, "Expected at least one quality_<suffix> column in streaming output"
+
+        # Each data column must have a corresponding quality column
+        metadata_cols = {"t_start", "t_end", "event_code", "event_desc"}
+        data_cols = [col for col in df.columns if col not in metadata_cols and not col.startswith("quality_")]
+        for col in data_cols:
+            suffix = col.split("_")[0]
+            assert f"quality_{suffix}" in df.columns, f"Missing quality_{suffix} for data column {col}"
+
+    def test_streaming_matches_batch_quality(self, nem12_sample_file: str) -> None:
+        """Streaming and batch modes must produce the same quality column names."""
+        from shared.nem_adapter import output_as_data_frames, stream_as_data_frames
+
+        batch_result = output_as_data_frames(nem12_sample_file)
+        stream_result = list(stream_as_data_frames(nem12_sample_file))
+
+        assert len(batch_result) == len(stream_result)
+
+        for (batch_nmi, batch_df), (stream_nmi, stream_df) in zip(
+            sorted(batch_result, key=lambda x: x[0]),
+            sorted(stream_result, key=lambda x: x[0]),
+            strict=True,
+        ):
+            assert batch_nmi == stream_nmi
+
+            batch_quality_cols = sorted(col for col in batch_df.columns if col.startswith("quality_"))
+            stream_quality_cols = sorted(col for col in stream_df.columns if col.startswith("quality_"))
+            assert batch_quality_cols == stream_quality_cols, (
+                f"Quality column mismatch for {batch_nmi}: batch={batch_quality_cols}, stream={stream_quality_cols}"
+            )
+
+
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 

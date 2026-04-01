@@ -283,9 +283,13 @@ class TestDataFrameStructure:
         )
 
         assert result is not None
-        expected_cols = ["t_start", "t_end", "quality_method", "event_code", "event_desc"]
+        expected_cols = ["t_start", "t_end", "event_code", "event_desc"]
         for col in expected_cols:
             assert col in result.columns
+
+        # At least one per-channel quality column must exist
+        quality_cols = [col for col in result.columns if col.startswith("quality_")]
+        assert len(quality_cols) > 0, "Expected at least one quality_<suffix> column"
 
     def test_dataframe_index_is_t_start(self) -> None:
         """Test that DataFrame index is set to t_start."""
