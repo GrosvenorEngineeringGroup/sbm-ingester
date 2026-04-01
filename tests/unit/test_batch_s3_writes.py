@@ -123,6 +123,51 @@ class TestFlushBufferToS3:
                 assert "its" in header
 
 
+class TestDirectCSVWriterQuality:
+    """Tests for quality column in DirectCSVWriter."""
+
+    def test_csv_header_includes_quality(self) -> None:
+        """Test that CSV header includes quality column."""
+        from functions.file_processor.app import DirectCSVWriter
+
+        assert "quality" in DirectCSVWriter.CSV_HEADER
+
+    def test_write_row_with_quality(self) -> None:
+        """Test that write_row includes quality value."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        import pandas as pd
+
+        from functions.file_processor.app import DirectCSVWriter
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        writer = DirectCSVWriter("test_batch", executor)
+        writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", "A")
+
+        content = writer.buffer.getvalue()
+        lines = content.strip().split("\n")
+        assert lines[0] == "sensorId,ts,val,unit,its,quality"
+        assert lines[1].endswith(",A")
+        executor.shutdown(wait=False)
+
+    def test_write_row_default_empty_quality(self) -> None:
+        """Test that write_row defaults to empty quality (becomes NULL in Spark)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        import pandas as pd
+
+        from functions.file_processor.app import DirectCSVWriter
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        writer = DirectCSVWriter("test_batch", executor)
+        writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh")
+
+        content = writer.buffer.getvalue()
+        lines = content.strip().split("\n")
+        assert lines[1] == "sensor-1,2024-01-01 00:00:00,1.5,kwh,2024-01-01 00:00:00,"
+        executor.shutdown(wait=False)
+
+
 class TestNmiDataStreamFiltering:
     """Tests for NMI data stream suffix filtering."""
 
