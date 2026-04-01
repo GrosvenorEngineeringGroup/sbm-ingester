@@ -174,7 +174,7 @@ class TestProcessNem12File:
                 mock_s3_local.get_object(Bucket="hudibucketsrc", Key=obj["Key"])["Body"].read().decode("utf-8")
             )
             # Check CSV header
-            assert "sensorId,ts,val,unit,its" in file_content
+            assert "sensorId,ts,val,unit,its,quality" in file_content
 
     def test_process_file_unmapped_nmis(self, mock_s3_local: S3Client, nem12_sample_path: str) -> None:
         """Test processing NEM12 file with unmapped NMIs."""
@@ -296,7 +296,7 @@ class TestOutputFormat:
         rows = list(reader)
 
         assert len(rows) > 0
-        assert set(reader.fieldnames) == {"sensorId", "ts", "val", "unit", "its"}
+        assert set(reader.fieldnames) == {"sensorId", "ts", "val", "unit", "its", "quality"}
 
         # Check data format
         first_row = rows[0]
