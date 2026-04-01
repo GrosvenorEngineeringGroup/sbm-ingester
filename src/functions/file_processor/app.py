@@ -478,7 +478,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         val_col = df[col]
                         if quality_col is not None:
                             for ts, val, q in zip(t_start_col, val_col, quality_col, strict=False):
-                                csv_writer.write_row(neptune_id, ts, val, unit_name, "" if q is None else q)
+                                csv_writer.write_row(neptune_id, ts, val, unit_name, "" if pd.isna(q) else q)
                         else:
                             for ts, val in zip(t_start_col, val_col, strict=False):
                                 csv_writer.write_row(neptune_id, ts, val, unit_name)

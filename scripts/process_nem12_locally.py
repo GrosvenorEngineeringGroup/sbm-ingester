@@ -135,7 +135,10 @@ def process_nem12_file(
             output_df = output_df.rename(columns={"t_start": "ts", col: "val"})
             output_df["its"] = output_df["ts"]
             quality_col_name = f"quality_{suffix}"
-            output_df["quality"] = df[quality_col_name].values if quality_col_name in df.columns else ""
+            if quality_col_name in df.columns:
+                output_df["quality"] = df[quality_col_name].fillna("").values
+            else:
+                output_df["quality"] = ""
             output_df = output_df[["sensorId", "ts", "val", "unit", "its", "quality"]]
 
             # Format timestamps
