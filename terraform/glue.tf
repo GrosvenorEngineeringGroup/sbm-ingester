@@ -16,8 +16,9 @@ data "aws_iam_role" "glue_role" {
 # -----------------------------
 # Glue Job
 # -----------------------------
-# Note: Hudi connector "Apache Hudi Connector 0.10.1 for AWS Glue 3.0"
-# was created via AWS Console/Marketplace.
+# Note: Uses Glue 4.0 native Hudi 0.12.1 via --datalake-formats.
+# Previously used Marketplace connector "Apache Hudi Connector 0.10.1 for AWS Glue 3.0"
+# which caused Avro version conflict (NoSuchMethodError: Schema$Field.defaultValue).
 
 resource "aws_glue_job" "hudi_import" {
   name        = "DataImportIntoLake"
@@ -53,9 +54,10 @@ resource "aws_glue_job" "hudi_import" {
     "--HUDI_DB_NAME"          = "Default"
     "--HUDI_INIT_SORT_OPTION" = "DEFAULT"
     "--OUTPUT_BUCKET"         = local.hudi_output_bucket
-  }
 
-  connections = ["Apache Hudi Connector 0.10.1 for AWS Glue 3.0"]
+    # Enable Glue 4.0 native Hudi 0.12.1 (replaces Marketplace connector)
+    "--datalake-formats" = "hudi"
+  }
 
   execution_property {
     max_concurrent_runs = 1
