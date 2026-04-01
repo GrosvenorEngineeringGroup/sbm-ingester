@@ -128,7 +128,7 @@ persistence_layer = DynamoDBPersistenceLayer(
     key_attr="file_key",  # Match DynamoDB table's primary key
 )
 idempotency_config = IdempotencyConfig(
-    expires_after_seconds=86400,  # 24 hours TTL
+    expires_after_seconds=43200,  # 12 hours TTL
 )
 
 s3_resource = boto3.resource("s3")
