@@ -259,6 +259,69 @@ class TestUnitHandling:
             assert f"E1_{uom}" in result.columns
 
 
+class TestQualityEdgeCases:
+    """Tests for quality flag edge cases."""
+
+    def test_quality_none_in_reading(self) -> None:
+        """Test that None quality_method in a Reading is preserved as None in DataFrame."""
+        from shared.nem_adapter import _build_nmi_dataframe
+
+        r = MagicMock()
+        r.t_start = pd.Timestamp("2024-01-01 00:00:00")
+        r.t_end = pd.Timestamp("2024-01-01 00:30:00")
+        r.quality_method = None  # No quality flag
+        r.event_code = ""
+        r.event_desc = ""
+        r.read_value = 1.5
+        r.uom = "kWh"
+
+        result = _build_nmi_dataframe("TEST", {"E1": [r]}, {"E1": []}, split_days=False)
+        assert result is not None
+        assert "quality_E1" in result.columns
+        assert result["quality_E1"].iloc[0] is None
+
+    def test_mixed_quality_within_channel(self) -> None:
+        """Test channel with mixed quality flags across different timestamps (e.g., from 400 records)."""
+        from shared.nem_adapter import _build_nmi_dataframe
+
+        def make_reading(ts_hour: int, quality: str) -> MagicMock:
+            r = MagicMock()
+            r.t_start = pd.Timestamp(f"2024-01-01 {ts_hour:02d}:00:00")
+            r.t_end = pd.Timestamp(f"2024-01-01 {ts_hour:02d}:30:00")
+            r.quality_method = quality
+            r.event_code = ""
+            r.event_desc = ""
+            r.read_value = float(ts_hour)
+            r.uom = "kWh"
+            return r
+
+        # Simulate 400 record override: first 2 intervals are "A", last is "S14"
+        readings = [make_reading(0, "A"), make_reading(1, "A"), make_reading(2, "S14")]
+        result = _build_nmi_dataframe("TEST", {"E1": readings}, {"E1": []}, split_days=False)
+
+        assert result is not None
+        assert list(result["quality_E1"]) == ["A", "A", "S14"]
+
+    def test_single_channel_nmi_quality(self) -> None:
+        """Test NMI with only one channel still gets quality column."""
+        from shared.nem_adapter import _build_nmi_dataframe
+
+        r = MagicMock()
+        r.t_start = pd.Timestamp("2024-01-01 00:00:00")
+        r.t_end = pd.Timestamp("2024-01-01 00:30:00")
+        r.quality_method = "E"
+        r.event_code = ""
+        r.event_desc = ""
+        r.read_value = 1.0
+        r.uom = "kWh"
+
+        result = _build_nmi_dataframe("TEST", {"E1": [r]}, {"E1": []}, split_days=False)
+        assert result is not None
+        quality_cols = [c for c in result.columns if c.startswith("quality_")]
+        assert quality_cols == ["quality_E1"]
+        assert result["quality_E1"].iloc[0] == "E"
+
+
 class TestDataFrameStructure:
     """Tests for DataFrame structure and column integrity."""
 

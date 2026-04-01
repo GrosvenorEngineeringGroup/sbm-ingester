@@ -339,3 +339,76 @@ class TestFullPipeline:
 
             # Either processed successfully or moved to appropriate folder
             assert result == 1 or len(irrev_objects) > 0
+
+
+class TestQualityEndToEnd:
+    """End-to-end tests for quality flag flow through the pipeline."""
+
+    @mock_aws
+    def test_nem12_quality_in_output_csv(self, nem12_sample_file: str) -> None:
+        """Test that NEM12 quality flags appear in output CSV files."""
+        os.environ["AWS_ACCESS_KEY_ID"] = "testing"
+        os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+        os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-2"
+
+        # Setup S3
+        s3_resource = boto3.resource("s3", region_name="ap-southeast-2")
+        s3_resource.create_bucket(
+            Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
+        )
+        s3_resource.create_bucket(
+            Bucket="hudibucketsrc", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
+        )
+
+        # Setup CloudWatch logs
+        logs = boto3.client("logs", region_name="ap-southeast-2")
+        for log_group in [
+            "sbm-ingester-error-log",
+            "sbm-ingester-execution-log",
+            "sbm-ingester-metrics-log",
+            "sbm-ingester-parse-error-log",
+            "sbm-ingester-runtime-error-log",
+        ]:
+            logs.create_log_group(logGroupName=log_group)
+
+        # Upload NEM12 file to S3
+        # nem12_sample.csv has NMI VABD000163 with E1 (kWh) and Q1 (kVArh) channels
+        with Path(nem12_sample_file).open("rb") as f:
+            s3_resource.Object("sbm-file-ingester", "newTBP/nem12_quality_test.csv").put(Body=f.read())
+
+        # Provide mappings that cover the NMI channels in the sample file
+        # so rows are written to hudibucketsrc/sensorDataFiles/
+        mappings = {
+            "VABD000163-E1": "neptune-quality-001",
+            "VABD000163-Q1": "neptune-quality-002",
+        }
+        s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps(mappings))
+
+        # Run the pipeline
+        with patch("functions.file_processor.app.s3_resource", s3_resource):
+            from functions.file_processor.app import parse_and_write_data
+
+            files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/nem12_quality_test.csv"}]
+            parse_and_write_data(tbp_files=files)
+
+            # Verify output CSV was written to hudibucketsrc
+            hudi_bucket = s3_resource.Bucket("hudibucketsrc")
+            output_objects = list(hudi_bucket.objects.filter(Prefix="sensorDataFiles/"))
+            assert len(output_objects) > 0, "Expected at least one output CSV in hudibucketsrc"
+
+            # Read the output CSV and verify it has a quality column
+            obj = s3_resource.Object("hudibucketsrc", output_objects[0].key)
+            body = obj.get()["Body"].read().decode("utf-8")
+            lines = [line for line in body.strip().split("\n") if line]
+
+            # Header must contain 'quality'
+            header = lines[0]
+            assert "quality" in header, f"Expected 'quality' column in CSV header, got: {header}"
+
+            # At least some data rows should have a non-empty quality value
+            # The nem12_sample.csv uses quality "A" for all intervals
+            data_rows = lines[1:]
+            assert len(data_rows) > 0, "Expected data rows in output CSV"
+            quality_values = {row.split(",")[-1] for row in data_rows}
+            # Quality "A" (actual) is set in the sample file for all rows
+            assert "A" in quality_values, f"Expected quality value 'A' in output rows, got: {quality_values}"
