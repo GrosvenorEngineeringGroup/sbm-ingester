@@ -521,8 +521,11 @@ class TestPartialDateParameters:
 
     @mock_aws
     @freeze_time("2026-02-04 10:00:00")
-    def test_process_export_with_only_end_date_uses_default_start(self) -> None:
-        """When only endDate is provided, startDate should use OPTIMA_DAYS_BACK."""
+    def test_process_export_with_only_end_date_anchors_start_to_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When only endDate is provided, start must be derived from end (not today)."""
+        # Use DAYS_BACK=7 to make the anchoring observable (start = end - 6)
+        monkeypatch.setenv("OPTIMA_DAYS_BACK", "7")
+
         dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
         table = dynamodb.create_table(
             TableName="sbm-optima-config",
@@ -547,17 +550,13 @@ class TestPartialDateParameters:
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
 
-            # Use a different end_date to clearly distinguish from the default
-            result = processor_module.process_export(project="bunnings", end_date="2026-01-15")
+            # Backfill scenario - endDate far in the past
+            result = processor_module.process_export(project="bunnings", end_date="2024-06-15")
 
             assert result["statusCode"] == 200
-            # end_date should be preserved as provided (not the default yesterday)
-            assert result["body"]["date_range"]["end"] == "2026-01-15"
-            # PRE-FIX behaviour (Task 5 will fix this):
-            # When only endDate is provided, start defaults to (today - DAYS_BACK).
-            # With DAYS_BACK=1: today - 1 = 2026-02-03 (yesterday).
-            # Task 5 changes this to be anchored on end_date instead of today.
-            assert result["body"]["date_range"]["start"] == "2026-02-03"
+            assert result["body"]["date_range"]["end"] == "2024-06-15"
+            # start = end - (DAYS_BACK - 1) = 2024-06-15 - 6 = 2024-06-09
+            assert result["body"]["date_range"]["start"] == "2024-06-09"
 
 
 class TestParallelProcessing:

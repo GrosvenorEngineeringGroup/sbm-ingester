@@ -1,7 +1,7 @@
 """Processing logic for interval data export."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from aws_lambda_powertools import Logger
@@ -149,7 +149,9 @@ def process_export(
         if not end_date:
             end_date = (today - timedelta(days=1)).isoformat()  # Yesterday
         if not start_date:
-            start_date = (today - timedelta(days=OPTIMA_DAYS_BACK)).isoformat()
+            # Anchor start to the (now-resolved) end_date so backfills behave correctly
+            end_d = date.fromisoformat(end_date)
+            start_date = (end_d - timedelta(days=OPTIMA_DAYS_BACK - 1)).isoformat()
 
     # Login to BidEnergy
     logger.info(
