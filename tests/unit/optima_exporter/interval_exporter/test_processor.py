@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import patch
 
 import boto3
+import pytest
 import responses
 from freezegun import freeze_time
 from moto import mock_aws
@@ -690,3 +691,29 @@ class TestParallelProcessing:
             # All 4 sites should still be processed
             assert mock_process.call_count == 4
             assert result["body"]["success_count"] == 4
+
+
+class TestProductionDefaults:
+    """Verify source-code defaults match the design (DAYS_BACK=1, MAX_WORKERS=20).
+
+    Uses monkeypatch.delenv to remove the autouse env override and observe the raw
+    `os.environ.get(...)` fallback in config.py.
+    """
+
+    def test_default_days_back_is_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import importlib
+
+        monkeypatch.delenv("OPTIMA_DAYS_BACK", raising=False)
+        from optima_shared import config
+
+        importlib.reload(config)
+        assert config.OPTIMA_DAYS_BACK == 1
+
+    def test_default_max_workers_is_twenty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import importlib
+
+        monkeypatch.delenv("OPTIMA_MAX_WORKERS", raising=False)
+        from optima_shared import config
+
+        importlib.reload(config)
+        assert config.MAX_WORKERS == 20
