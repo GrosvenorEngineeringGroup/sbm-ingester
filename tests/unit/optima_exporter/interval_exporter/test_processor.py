@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import patch
 
 import boto3
+import pytest
 import responses
 from freezegun import freeze_time
 from moto import mock_aws
@@ -20,15 +21,14 @@ class TestGetDateRange:
 
     @freeze_time("2026-01-23 10:00:00")
     def test_returns_correct_date_range(self) -> None:
-        """Test that correct date range is calculated."""
+        """Default DAYS_BACK=1 returns yesterday only (single-day range)."""
         processor_module = reload_processor_module()
 
         start_date, end_date = processor_module.get_date_range()
 
-        # End date should be yesterday (2026-01-22)
-        # Start date should be 7 days back from end_date (2026-01-16)
+        # Both dates equal yesterday (2026-01-22) - single-day window
         assert end_date == "2026-01-22"
-        assert start_date == "2026-01-16"
+        assert start_date == "2026-01-22"
 
     @freeze_time("2026-01-23 10:00:00")
     def test_respects_optima_days_back(self) -> None:
@@ -77,10 +77,16 @@ class TestProcessSite:
 
         processor_module = reload_processor_module()
 
-        csv_content = b"Date,Value\n2026-01-01,100"
+        # Valid NEM12 content with NMI001 so _prefix_nmi_in_nem12 can rewrite it
+        csv_content = (
+            b"100,NEM12,202601080000,MDP1,Origin\n"
+            b"200,NMI001,E1,E1,E1,E1,12345,kWh,30\n"
+            b"300,20260101,1.0,A,,,20260102000000,\n"
+            b"900\n"
+        )
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=csv_content,
             content_type="text/csv",
@@ -109,7 +115,7 @@ class TestProcessSite:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=500,
         )
 
@@ -132,11 +138,17 @@ class TestProcessSite:
         # Don't create bucket to trigger error
         processor_module = reload_processor_module()
 
+        # Valid NEM12 content so prefix rewrite succeeds, then S3 upload fails (no bucket)
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
-            body=b"data",
+            body=(
+                b"100,NEM12,202601080000,MDP1,Origin\n"
+                b"200,NMI001,E1,E1,E1,E1,12345,kWh,30\n"
+                b"300,20260101,1.0,A,,,20260102000000,\n"
+                b"900\n"
+            ),
             content_type="text/csv",
         )
 
@@ -164,12 +176,18 @@ class TestProcessSite:
 
         processor_module = reload_processor_module()
 
-        csv_content = b"Date,Value\n2026-01-01,100"
+        # Valid NEM12 content; the processor rewrites NMI001 → Optima_NMI001 before upload
+        raw_content = (
+            b"100,NEM12,202601080000,MDP1,Origin\n"
+            b"200,NMI001,E1,E1,E1,E1,12345,kWh,30\n"
+            b"300,20260101,1.0,A,,,20260102000000,\n"
+            b"900\n"
+        )
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
-            body=csv_content,
+            body=raw_content,
             content_type="text/csv",
         )
 
@@ -184,9 +202,10 @@ class TestProcessSite:
 
         assert result["success"] is True
 
-        # Verify file in S3
-        response = s3.get_object(Bucket="sbm-file-ingester", Key=result["s3_key"])
-        assert response["Body"].read() == csv_content
+        # Verify file in S3 - NMI prefix has been applied by the processor
+        s3_body = s3.get_object(Bucket="sbm-file-ingester", Key=result["s3_key"])["Body"].read()
+        assert b"200,Optima_NMI001," in s3_body
+        assert b"200,NMI001," not in s3_body
 
 
 class TestProcessExport:
@@ -235,8 +254,8 @@ class TestProcessExport:
 
             assert result["statusCode"] == 200
             assert mock_process.call_count == 2
-            # Verify default dates are used (2026-01-16 to 2026-01-22)
-            assert result["body"]["date_range"]["start"] == "2026-01-16"
+            # Default DAYS_BACK=1 - both dates equal yesterday (2026-01-22)
+            assert result["body"]["date_range"]["start"] == "2026-01-22"
             assert result["body"]["date_range"]["end"] == "2026-01-22"
 
     @mock_aws
@@ -521,8 +540,11 @@ class TestPartialDateParameters:
 
     @mock_aws
     @freeze_time("2026-02-04 10:00:00")
-    def test_process_export_with_only_end_date_uses_default_start(self) -> None:
-        """When only endDate is provided, startDate should use OPTIMA_DAYS_BACK."""
+    def test_process_export_with_only_end_date_anchors_start_to_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When only endDate is provided, start must be derived from end (not today)."""
+        # Use DAYS_BACK=7 to make the anchoring observable (start = end - 6)
+        monkeypatch.setenv("OPTIMA_DAYS_BACK", "7")
+
         dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
         table = dynamodb.create_table(
             TableName="sbm-optima-config",
@@ -547,15 +569,13 @@ class TestPartialDateParameters:
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
 
-            # Use a different end_date to clearly distinguish from the default
-            result = processor_module.process_export(project="bunnings", end_date="2026-01-15")
+            # Backfill scenario - endDate far in the past
+            result = processor_module.process_export(project="bunnings", end_date="2024-06-15")
 
             assert result["statusCode"] == 200
-            # end_date should be preserved as provided (not the default yesterday)
-            assert result["body"]["date_range"]["end"] == "2026-01-15"
-            # start_date should be OPTIMA_DAYS_BACK (7) days before today (2026-02-04)
-            # today - 7 = 2026-01-28
-            assert result["body"]["date_range"]["start"] == "2026-01-28"
+            assert result["body"]["date_range"]["end"] == "2024-06-15"
+            # start = end - (DAYS_BACK - 1) = 2024-06-15 - 6 = 2024-06-09
+            assert result["body"]["date_range"]["start"] == "2024-06-09"
 
 
 class TestParallelProcessing:
@@ -689,3 +709,159 @@ class TestParallelProcessing:
             # All 4 sites should still be processed
             assert mock_process.call_count == 4
             assert result["body"]["success_count"] == 4
+
+
+class TestProductionDefaults:
+    """Verify source-code defaults match the design (DAYS_BACK=1, MAX_WORKERS=20).
+
+    Uses monkeypatch.delenv to remove the autouse env override and observe the raw
+    `os.environ.get(...)` fallback in config.py.
+    """
+
+    def test_default_days_back_is_one(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import importlib
+
+        monkeypatch.delenv("OPTIMA_DAYS_BACK", raising=False)
+        from optima_shared import config
+
+        importlib.reload(config)
+        assert config.OPTIMA_DAYS_BACK == 1
+
+    def test_default_max_workers_is_twenty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import importlib
+
+        monkeypatch.delenv("OPTIMA_MAX_WORKERS", raising=False)
+        from optima_shared import config
+
+        importlib.reload(config)
+        assert config.MAX_WORKERS == 20
+
+
+class TestDateRangeValidation:
+    """Validation that startDate <= endDate."""
+
+    def test_rejects_start_after_end(self) -> None:
+        from interval_exporter.processor import process_export
+
+        result = process_export(
+            project="bunnings",
+            start_date="2026-04-15",
+            end_date="2026-04-10",
+        )
+
+        assert result["statusCode"] == 400
+        assert "startDate" in result["body"]
+        assert "endDate" in result["body"]
+        assert "2026-04-15" in result["body"]
+        assert "2026-04-10" in result["body"]
+
+    @mock_aws
+    def test_accepts_equal_start_and_end(self) -> None:
+        """Single-day range (start == end) must be accepted."""
+        from unittest.mock import patch
+
+        import boto3
+        from interval_exporter import processor
+
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+
+        with (
+            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(processor, "process_site", return_value={"success": True, "nmi": "NMI001"}),
+        ):
+            result = processor.process_export(
+                project="bunnings",
+                start_date="2026-04-10",
+                end_date="2026-04-10",
+            )
+            assert result["statusCode"] == 200
+
+    @mock_aws
+    @freeze_time("2026-04-13 10:00:00")
+    def test_rejects_partial_date_that_resolves_to_inverted_range(self) -> None:
+        """User supplies only future startDate; end resolves to yesterday => invalid."""
+        import boto3
+        from interval_exporter.processor import process_export
+
+        # Set up DynamoDB so get_sites_for_project succeeds and we reach date resolution
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+
+        # end_date will default to yesterday (2026-04-12); start is future => inverted
+        result = process_export(
+            project="bunnings",
+            start_date="2026-05-01",
+        )
+
+        assert result["statusCode"] == 400
+        assert "resolution" in result["body"].lower() or "invalid range" in result["body"].lower()
+        assert "2026-05-01" in result["body"]
+
+
+class TestProcessSitePassesNmiPrefix:
+    """Regression: process_site must pass nmi_prefix='Optima_' (and country) to download_csv."""
+
+    @mock_aws
+    def test_process_site_passes_optima_prefix_and_country(self) -> None:
+        from unittest.mock import patch
+
+        import boto3
+        from interval_exporter import processor
+
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        with (
+            patch.object(processor, "download_csv") as mock_dl,
+            patch.object(processor, "upload_to_s3", return_value=True),
+        ):
+            mock_dl.return_value = (b"100,NEM12,...", "fakefile.csv")
+            processor.process_site(
+                cookies=".ASPXAUTH=token",
+                nmi="Optima_4001348123",
+                site_id_str="site-guid-001",
+                start_date="2026-04-10",
+                end_date="2026-04-12",
+                project="bunnings",
+                country="NZ",
+            )
+
+        assert mock_dl.call_count == 1
+        kwargs = mock_dl.call_args.kwargs
+        assert kwargs.get("nmi_prefix") == "Optima_"
+        assert kwargs.get("country") == "NZ"
+
+    def test_optima_nmi_prefix_constant_value(self) -> None:
+        from interval_exporter.processor import OPTIMA_NMI_PREFIX
+
+        assert OPTIMA_NMI_PREFIX == "Optima_"

@@ -98,7 +98,7 @@ class TestConfiguration:
         os.environ.pop("OPTIMA_DAYS_BACK", None)
         config_module = reload_config_module()
 
-        assert config_module.OPTIMA_DAYS_BACK == 7
+        assert config_module.OPTIMA_DAYS_BACK == 1
 
     def test_default_config_table(self) -> None:
         """Test default OPTIMA_CONFIG_TABLE value."""
@@ -112,7 +112,7 @@ class TestConfiguration:
         os.environ.pop("OPTIMA_MAX_WORKERS", None)
         config_module = reload_config_module()
 
-        assert config_module.MAX_WORKERS == 10
+        assert config_module.MAX_WORKERS == 20
 
     def test_custom_max_workers(self) -> None:
         """Test custom OPTIMA_MAX_WORKERS value."""

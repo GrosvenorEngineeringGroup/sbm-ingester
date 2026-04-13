@@ -18,8 +18,8 @@ S3_UPLOAD_BUCKET = os.environ.get("S3_UPLOAD_BUCKET", "sbm-file-ingester")
 S3_UPLOAD_PREFIX = os.environ.get("S3_UPLOAD_PREFIX", "newTBP/")
 
 # Interval exporter configuration
-OPTIMA_DAYS_BACK = int(os.environ.get("OPTIMA_DAYS_BACK", "7"))
-MAX_WORKERS = int(os.environ.get("OPTIMA_MAX_WORKERS", "10"))
+OPTIMA_DAYS_BACK = int(os.environ.get("OPTIMA_DAYS_BACK", "1"))
+MAX_WORKERS = int(os.environ.get("OPTIMA_MAX_WORKERS", "20"))
 
 # Billing exporter configuration
 OPTIMA_BILLING_MONTHS = int(os.environ.get("OPTIMA_BILLING_MONTHS", "12"))

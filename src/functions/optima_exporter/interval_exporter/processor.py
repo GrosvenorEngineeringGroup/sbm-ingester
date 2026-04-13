@@ -1,7 +1,7 @@
 """Processing logic for interval data export."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from aws_lambda_powertools import Logger
@@ -13,6 +13,10 @@ from interval_exporter.downloader import download_csv
 from interval_exporter.uploader import upload_to_s3
 
 logger = Logger(service="optima-interval-exporter")
+
+# Optima sites live under the "Optima_" namespace in Neptune mappings.
+# Applied to NMI fields in BidEnergy NEM12 responses by download_csv.
+OPTIMA_NMI_PREFIX = "Optima_"
 
 
 def get_date_range() -> tuple[str, str]:
@@ -68,7 +72,16 @@ def process_site(
     }
 
     # Download CSV
-    download_result = download_csv(cookies, site_id_str, start_date, end_date, project, nmi, country)
+    download_result = download_csv(
+        cookies,
+        site_id_str,
+        start_date,
+        end_date,
+        project,
+        nmi,
+        country=country,
+        nmi_prefix=OPTIMA_NMI_PREFIX,
+    )
     if download_result is None:
         result["error"] = "Failed to download CSV"
         return result
@@ -105,6 +118,17 @@ def process_export(
         Response dict with processing results
     """
     project = project.lower()
+
+    # Reject inverted ranges when both dates are explicitly provided
+    if start_date and end_date and date.fromisoformat(start_date) > date.fromisoformat(end_date):
+        logger.warning(
+            "Export rejected: startDate after endDate",
+            extra={"project": project, "start_date": start_date, "end_date": end_date},
+        )
+        return {
+            "statusCode": 400,
+            "body": f"Invalid range: startDate ({start_date}) > endDate ({end_date})",
+        }
 
     logger.info(
         "Starting interval export",
@@ -149,7 +173,20 @@ def process_export(
         if not end_date:
             end_date = (today - timedelta(days=1)).isoformat()  # Yesterday
         if not start_date:
-            start_date = (today - timedelta(days=OPTIMA_DAYS_BACK)).isoformat()
+            # Anchor start to the (now-resolved) end_date so backfills behave correctly
+            end_d = date.fromisoformat(end_date)
+            start_date = (end_d - timedelta(days=OPTIMA_DAYS_BACK - 1)).isoformat()
+
+    # Defense in depth: after date resolution, assert the range is still valid
+    if date.fromisoformat(start_date) > date.fromisoformat(end_date):
+        logger.warning(
+            "Export rejected: resolved startDate after endDate",
+            extra={"project": project, "start_date": start_date, "end_date": end_date},
+        )
+        return {
+            "statusCode": 400,
+            "body": f"Invalid range after resolution: startDate ({start_date}) > endDate ({end_date})",
+        }
 
     # Login to BidEnergy
     logger.info(

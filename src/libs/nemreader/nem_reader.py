@@ -109,11 +109,11 @@ class NEMFile:
         except zipfile.BadZipFile:
             """Not a zip"""
             if not isinstance(self.fileobj, io.IOBase):
-                datafile = open(self.file_path)  # noqa: SIM115
+                datafile = open(self.file_path, encoding="utf-8-sig")  # noqa: SIM115
             else:
                 """If we've been given a binary IO stream change it"""
                 if not isinstance(self.fileobj, io.TextIOBase):
-                    datafile = self.fileobj.read().decode("utf-8")
+                    datafile = self.fileobj.read().decode("utf-8-sig")
                 else:
                     datafile = self.fileobj
             reads = self.parse_nem_file(datafile, file_name=self.file_path)

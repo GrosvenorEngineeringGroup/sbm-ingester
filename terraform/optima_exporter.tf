@@ -100,8 +100,8 @@ resource "aws_lambda_function" "optima_interval_exporter" {
       S3_UPLOAD_PREFIX = "newTBP/"
 
       # Interval export configuration
-      OPTIMA_DAYS_BACK   = "7"
-      OPTIMA_MAX_WORKERS = "10"
+      OPTIMA_DAYS_BACK   = "1"
+      OPTIMA_MAX_WORKERS = "20"
     })
   }
 
