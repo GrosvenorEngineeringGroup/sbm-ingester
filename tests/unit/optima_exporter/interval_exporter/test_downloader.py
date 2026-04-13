@@ -295,3 +295,131 @@ class TestDownloadCsv:
         assert len(responses.calls) == 1
         request_url = responses.calls[0].request.url
         assert "filter.countrystr=AU" in request_url
+
+
+class TestPrefixNmiInNem12:
+    """Comprehensive tests for the byte-level NMI prefix rewriter."""
+
+    def test_prefixes_single_200_record(self) -> None:
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = (
+            b"100,NEM12,202604120100,MDP1,Origin\n"
+            b"200,4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n"
+            b"300,20260410,1.0,A,,,20260411011219,\n"
+            b"900\n"
+        )
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+        assert b"200,Optima_4001348123,B1E1K1Q1,E1,E1,E1," in out
+        assert b"200,4001348123," not in out
+
+    def test_prefixes_all_four_channels_consistently(self) -> None:
+        """Real BidEnergy responses have one 200 record per channel; all must be rewritten."""
+        from pathlib import Path
+
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = Path("tests/unit/fixtures/optima_bidenergy_nem12_sample.csv").read_bytes()
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+
+        # 4 channels x 1 NMI = 4 prefixed records
+        assert out.count(b"200,Optima_4001348123,") == 4
+        assert b"200,4001348123," not in out
+
+        # Channel suffixes preserved
+        for ch in (b"B1", b"E1", b"K1", b"Q1"):
+            assert b"200,Optima_4001348123,B1E1K1Q1," + ch + b"," in out
+
+    def test_handles_crlf_line_endings(self) -> None:
+        """BidEnergy is ASP.NET; CRLF responses must rewrite identically."""
+        from pathlib import Path
+
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = Path("tests/unit/fixtures/optima_bidenergy_nem12_crlf.csv").read_bytes()
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+
+        assert out.count(b"200,Optima_4001348123,") == 4
+        # CRLF preserved (we never touched line endings)
+        assert b"\r\n" in out
+        assert b"\r\n200,Optima_4001348123," in out
+
+    def test_handles_bom_prefixed_response(self) -> None:
+        """ASP.NET may emit UTF-8 BOM; helper must accept it."""
+        from pathlib import Path
+
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = Path("tests/unit/fixtures/optima_bidenergy_nem12_bom.csv").read_bytes()
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+
+        assert out.startswith(b"\xef\xbb\xbf100,")  # BOM preserved at file head
+        assert out.count(b"200,Optima_4001348123,") == 4
+
+    def test_does_not_touch_300_records_with_numeric_dates(self) -> None:
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = (
+            b"100,NEM12,202604120100,MDP1,Origin\n"
+            b"200,4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n"
+            b"300,20260410,1.0,A,,,20260411011219,\n"
+            b"300,20260411,2.0,A,,,20260411011219,\n"
+            b"900\n"
+        )
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+        # 300 rows untouched (dates not prefixed)
+        assert b"300,20260410,1.0," in out
+        assert b"300,20260411,2.0," in out
+        assert b"Optima_20260410" not in out
+
+    def test_anchor_resists_embedded_200_bytes_in_data(self) -> None:
+        """Defensive: a 300 row whose interval payload happens to contain the bytes '200,' is not rewritten."""
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = (
+            b"100,NEM12,202604120100,MDP1,Origin\n"
+            b"200,4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n"
+            b"300,20260410,200,300,A,,,20260411011219,\n"  # '200,' appears mid-line
+            b"900\n"
+        )
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+        # Only the real 200 record rewritten
+        assert out.count(b"200,Optima_") == 1
+        # The mid-line '200,' inside the 300 row is untouched
+        assert b"300,20260410,200,300," in out
+
+    def test_idempotent_on_already_prefixed(self) -> None:
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = (
+            b"100,NEM12,202604120100,MDP1,Origin\n"
+            b"200,Optima_4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n"
+            b"300,20260410,1.0,A,,,20260411011219,\n"
+            b"900\n"
+        )
+        out = _prefix_nmi_in_nem12(content, prefix="Optima_")
+        assert out == content
+        assert b"Optima_Optima_" not in out
+
+    def test_raises_on_non_nem12_inputs(self) -> None:
+        import pytest
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        for invalid in [
+            b"<!DOCTYPE html><html>session expired</html>",
+            b"<html><body>error</body></html>",
+            b"",
+            b'{"error":"unauthorized"}',
+            b"PK\x03\x04random_zip_bytes",
+        ]:
+            with pytest.raises(ValueError, match="missing 100 header"):
+                _prefix_nmi_in_nem12(invalid, prefix="Optima_")
+
+    def test_uses_supplied_prefix_value(self) -> None:
+        """Prefix string is parameterised - confirm it's not hard-coded to 'Optima_'."""
+        from interval_exporter.downloader import _prefix_nmi_in_nem12
+
+        content = b"100,NEM12,202604120100,MDP1,Origin\n200,4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n900\n"
+        out = _prefix_nmi_in_nem12(content, prefix="TestNS_")
+        assert b"200,TestNS_4001348123," in out
+        assert b"200,Optima_" not in out

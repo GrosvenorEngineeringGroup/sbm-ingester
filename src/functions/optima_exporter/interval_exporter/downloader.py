@@ -1,12 +1,49 @@
 """CSV download utilities for interval data export."""
 
+import re
 from datetime import datetime
+from typing import Final
 
 import requests
 from aws_lambda_powertools import Logger
 from optima_shared.config import BIDENERGY_BASE_URL
 
 logger = Logger(service="optima-interval-exporter")
+
+# UTF-8 BOM + ASCII whitespace tolerated before the NEM12 100 header.
+# ASP.NET stacks may emit BOM after a server-side encoding-config change.
+_NEM12_HEADER_PREFIXES: Final[bytes] = b"\xef\xbb\xbf \t\r\n"
+
+# Anchored at line start (re.MULTILINE) so it only matches a real 200 record,
+# never numeric data that happens to start with bytes "200," inside a 300 row.
+_NEM12_200_RE: Final[re.Pattern[bytes]] = re.compile(rb"^200,([^,]+),", re.MULTILINE)
+
+
+def _prefix_nmi_in_nem12(content: bytes, *, prefix: str) -> bytes:
+    """
+    Rewrite the NMI field of every `200` record in a NEM12 file by prepending `prefix`.
+
+    Optima data uses the `Optima_<bare-nmi>` namespace in Neptune mappings, but
+    BidEnergy emits the bare NMI. Applying the prefix here keeps downstream parsers
+    (nem_adapter, file_processor) oblivious to the convention - they just see a
+    NEM12 file whose 200-record NMI already matches Neptune.
+
+    Idempotent: re-running on already-prefixed content produces identical bytes.
+    Tolerates a leading UTF-8 BOM and ASCII whitespace before the 100 header.
+    Raises ValueError if input is not a NEM12 file.
+    """
+    if not content.lstrip(_NEM12_HEADER_PREFIXES).startswith(b"100,"):
+        raise ValueError("Input is not a NEM12 file (missing 100 header)")
+
+    prefix_bytes = prefix.encode("ascii")
+
+    def _replace(match: re.Match[bytes]) -> bytes:
+        nmi = match.group(1)
+        if nmi.startswith(prefix_bytes):  # idempotent
+            return match.group(0)
+        return b"200," + prefix_bytes + nmi + b","
+
+    return _NEM12_200_RE.sub(_replace, content)
 
 
 def format_date_for_url(date_str: str) -> str:
