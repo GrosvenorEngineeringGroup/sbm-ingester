@@ -746,3 +746,120 @@ class TestDownloadCsvEndToEnd:
             nmi_prefix="Optima_",
         )
         assert result is None
+
+
+class TestDownloadCsvErrorPaths:
+    """Cover remaining HTTP error and exception branches."""
+
+    @responses.activate
+    def test_returns_none_on_401(self) -> None:
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=401,
+            body=b"Unauthorized",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=expired",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
+
+    @responses.activate
+    def test_returns_none_on_404(self) -> None:
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=404,
+            body=b"Not Found",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="invalid-site",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
+
+    @responses.activate
+    def test_returns_none_on_connection_error(self) -> None:
+        import requests as req_lib
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            body=req_lib.exceptions.ConnectionError("boom"),
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
+
+    @responses.activate
+    def test_returns_none_on_generic_request_exception(self) -> None:
+        import requests as req_lib
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            body=req_lib.exceptions.RequestException("generic"),
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
+
+    @responses.activate
+    def test_returns_none_when_prefix_rewrite_fails_on_malformed_nem12(self) -> None:
+        """If response body passes content-type check but is not a valid NEM12, rewrite raises and returns None.
+
+        Triggered when content_type contains 'csv' (so the check passes via first clause),
+        but body does not start with '100,' after BOM+whitespace strip — _prefix_nmi_in_nem12 raises.
+        """
+        from interval_exporter.downloader import download_csv
+
+        # Content-type contains 'csv' so the body-sniff fallback isn't needed,
+        # but the body is missing the 100 header, so prefix rewrite must raise ValueError.
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=b"corrupted body without 100 header",
+            content_type="text/csv",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
