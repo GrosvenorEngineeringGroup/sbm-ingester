@@ -83,7 +83,8 @@ def reset_env() -> Generator[None]:
 
     # Optima config
     os.environ["OPTIMA_PROJECTS"] = "bunnings,racv"
-    os.environ["OPTIMA_DAYS_BACK"] = "7"
+    os.environ["OPTIMA_DAYS_BACK"] = "1"
+    os.environ["OPTIMA_MAX_WORKERS"] = "20"
     os.environ["OPTIMA_CONFIG_TABLE"] = "sbm-optima-config"
     os.environ["BIDENERGY_BASE_URL"] = "https://app.bidenergy.com"
 

@@ -20,15 +20,14 @@ class TestGetDateRange:
 
     @freeze_time("2026-01-23 10:00:00")
     def test_returns_correct_date_range(self) -> None:
-        """Test that correct date range is calculated."""
+        """Default DAYS_BACK=1 returns yesterday only (single-day range)."""
         processor_module = reload_processor_module()
 
         start_date, end_date = processor_module.get_date_range()
 
-        # End date should be yesterday (2026-01-22)
-        # Start date should be 7 days back from end_date (2026-01-16)
+        # Both dates equal yesterday (2026-01-22) - single-day window
         assert end_date == "2026-01-22"
-        assert start_date == "2026-01-16"
+        assert start_date == "2026-01-22"
 
     @freeze_time("2026-01-23 10:00:00")
     def test_respects_optima_days_back(self) -> None:
@@ -235,8 +234,8 @@ class TestProcessExport:
 
             assert result["statusCode"] == 200
             assert mock_process.call_count == 2
-            # Verify default dates are used (2026-01-16 to 2026-01-22)
-            assert result["body"]["date_range"]["start"] == "2026-01-16"
+            # Default DAYS_BACK=1 - both dates equal yesterday (2026-01-22)
+            assert result["body"]["date_range"]["start"] == "2026-01-22"
             assert result["body"]["date_range"]["end"] == "2026-01-22"
 
     @mock_aws
@@ -553,9 +552,11 @@ class TestPartialDateParameters:
             assert result["statusCode"] == 200
             # end_date should be preserved as provided (not the default yesterday)
             assert result["body"]["date_range"]["end"] == "2026-01-15"
-            # start_date should be OPTIMA_DAYS_BACK (7) days before today (2026-02-04)
-            # today - 7 = 2026-01-28
-            assert result["body"]["date_range"]["start"] == "2026-01-28"
+            # PRE-FIX behaviour (Task 5 will fix this):
+            # When only endDate is provided, start defaults to (today - DAYS_BACK).
+            # With DAYS_BACK=1: today - 1 = 2026-02-03 (yesterday).
+            # Task 5 changes this to be anchored on end_date instead of today.
+            assert result["body"]["date_range"]["start"] == "2026-02-03"
 
 
 class TestParallelProcessing:
