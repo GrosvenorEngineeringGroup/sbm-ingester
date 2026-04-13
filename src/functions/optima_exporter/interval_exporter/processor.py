@@ -164,6 +164,17 @@ def process_export(
             end_d = date.fromisoformat(end_date)
             start_date = (end_d - timedelta(days=OPTIMA_DAYS_BACK - 1)).isoformat()
 
+    # Defense in depth: after date resolution, assert the range is still valid
+    if date.fromisoformat(start_date) > date.fromisoformat(end_date):
+        logger.warning(
+            "Export rejected: resolved startDate after endDate",
+            extra={"project": project, "start_date": start_date, "end_date": end_date},
+        )
+        return {
+            "statusCode": 400,
+            "body": f"Invalid range after resolution: startDate ({start_date}) > endDate ({end_date})",
+        }
+
     # Login to BidEnergy
     logger.info(
         "Authenticating with BidEnergy",

@@ -770,3 +770,37 @@ class TestDateRangeValidation:
                 end_date="2026-04-10",
             )
             assert result["statusCode"] == 200
+
+    @mock_aws
+    @freeze_time("2026-04-13 10:00:00")
+    def test_rejects_partial_date_that_resolves_to_inverted_range(self) -> None:
+        """User supplies only future startDate; end resolves to yesterday => invalid."""
+        import boto3
+        from interval_exporter.processor import process_export
+
+        # Set up DynamoDB so get_sites_for_project succeeds and we reach date resolution
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+
+        # end_date will default to yesterday (2026-04-12); start is future => inverted
+        result = process_export(
+            project="bunnings",
+            start_date="2026-05-01",
+        )
+
+        assert result["statusCode"] == 400
+        assert "resolution" in result["body"].lower() or "invalid range" in result["body"].lower()
+        assert "2026-05-01" in result["body"]
