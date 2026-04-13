@@ -1,9 +1,14 @@
 # Optima Interval Exporter — Migration to BidEnergy NEM12 Endpoint
 
 **Date:** 2026-04-13
-**Status:** Draft — pending user review
-**Scope:** `src/functions/optima_exporter/interval_exporter/**`, related tests, Terraform env var
+**Status:** Reviewed (APPROVE_WITH_MINOR_EDITS applied)
+**Scope:** `src/functions/optima_exporter/interval_exporter/**`, related tests, Terraform env vars
 **Non-scope:** File processor, NEM12 adapter, other parsers, billing exporter, DynamoDB schema, IAM policies, authentication code path
+
+## Revision history
+
+- `2026-04-13 (initial)`: First draft covering endpoint swap, NMI-prefix rewrite, date-range fixes, timeout bump, and full-structure NEM12 validation.
+- `2026-04-13 (post-review)`: Applied changes from independent design review and a 105-site live scan. Simplified validation to a single BOM-safe header check (see §4.6); dropped the broader structural validator and line-split rewrite as over-defensive; kept the byte-level `re.MULTILINE` rewrite (§4.3). Aligned source-code defaults (`OPTIMA_DAYS_BACK=1`, `OPTIMA_MAX_WORKERS=20`) with Terraform. Promoted NZ verification to the first staging step (§7.3). Clarified idempotency wording (§5.2). `nmi_prefix` is a required keyword-only argument on `download_csv` (§4.4).
 
 ---
 
@@ -128,9 +133,10 @@ A new helper in `downloader.py`:
 
 ```python
 _NEM12_200_RE: Final = re.compile(rb"^200,([^,]+),", re.MULTILINE)
+_NEM12_HEADER_PREFIXES: Final = b"\xef\xbb\xbf \t\r\n"   # UTF-8 BOM + whitespace
 
 
-def _prefix_nmi_in_nem12(content: bytes, prefix: str) -> bytes:
+def _prefix_nmi_in_nem12(content: bytes, *, prefix: str) -> bytes:
     """
     Rewrite the NMI field of every `200` record in a NEM12 file by prepending `prefix`.
 
@@ -139,14 +145,16 @@ def _prefix_nmi_in_nem12(content: bytes, prefix: str) -> bytes:
     downstream code (nem_adapter, file_processor) oblivious to the convention —
     it just sees a NEM12 file whose 200-record NMI already matches Neptune.
     """
-    if not content.startswith(b"100,"):
+    # BOM-tolerant NEM12 header check. ASP.NET stacks sometimes prefix responses
+    # with a UTF-8 BOM; today BidEnergy does not, but behaviour can change.
+    if not content.lstrip(_NEM12_HEADER_PREFIXES).startswith(b"100,"):
         raise ValueError("Input is not a NEM12 file (missing 100 header)")
 
     prefix_bytes = prefix.encode("ascii")
 
     def _replace(match: re.Match[bytes]) -> bytes:
         nmi = match.group(1)
-        if nmi.startswith(prefix_bytes):  # idempotent
+        if nmi.startswith(prefix_bytes):  # idempotent: already prefixed → no-op
             return match.group(0)
         return b"200," + prefix_bytes + nmi + b","
 
@@ -156,12 +164,14 @@ def _prefix_nmi_in_nem12(content: bytes, prefix: str) -> bytes:
 Properties:
 
 - **Scoped by import**: only lives in `optima_exporter.interval_exporter.downloader`; a guard test enforces it is not imported elsewhere.
-- **Called only when `download_csv` is invoked with a non-empty `nmi_prefix`** (see §4.4).
-- **Idempotent**: rerunning against already-prefixed content produces identical output.
+- **Called only from `download_csv` when the caller passed a non-empty `nmi_prefix`** (see §4.4).
+- **Idempotent**: rerunning against already-prefixed content produces identical bytes.
 - **Byte-level**: no encoding assumptions beyond NEM12's ASCII semantics.
-- **Fail-fast on non-NEM12 input** (e.g. HTML error page that slipped past content checks) — raises before any corruption happens.
+- **BOM-tolerant header guard**: `lstrip(BOM + whitespace)` before the `100,` check accepts legitimate responses that may gain a BOM or leading whitespace after a server-side config change, without weakening the rejection of HTML / JSON / empty bodies.
+- **Regex rewrite uses `^200,` with `re.MULTILINE`**: line-anchored at byte level, so `300` data rows (which start with numeric dates like `20240413` that can never match `200,`) cannot be falsely rewritten. A line-split alternative was considered during review and rejected as over-defensive — NEM12 is a single-line-per-record CSV, no legitimate response path produces embedded `\n200,` outside a real `200` record.
+- **No separate structural validator**: the design initially included an `_is_valid_nem12_structure` helper that required `200`/`300`/`900` records in particular positions. It was removed after review: the downstream pipeline already quarantines unparseable files to `newParseErr/`, the structural checks proposed (`endswith(b"900")`, etc.) were either too loose to catch real corruption or too strict (false negatives on CRLF / trailing newlines). The single header-byte guard above is the only validation needed; anything that passes it and is still malformed falls through to downstream parse-error handling with full file contents preserved for forensics.
 
-### 4.4 Explicit `nmi_prefix` parameter on `download_csv`
+### 4.4 `nmi_prefix` as a required keyword-only parameter on `download_csv`
 
 ```python
 def download_csv(
@@ -171,18 +181,23 @@ def download_csv(
     end_date: str,
     project: str,
     nmi: str,
+    *,
     country: str = "AU",
-    nmi_prefix: str = "",   # <-- new, default empty = no rewrite
+    nmi_prefix: str,   # required keyword-only, no default
 ) -> tuple[bytes, str] | None:
 ```
 
-`processor.process_site` passes `nmi_prefix="Optima_"` explicitly via a module constant:
+`processor.process_site` passes `nmi_prefix=OPTIMA_NMI_PREFIX` via a module constant:
 
 ```python
 OPTIMA_NMI_PREFIX = "Optima_"
 ```
 
-This makes the business convention visible at the call site, guards against future reuse that might accidentally apply the prefix, and keeps `download_csv` reusable in principle.
+Design rationale (review change from default-empty to required):
+
+- A default of `""` would let a future refactor silently drop the prefix, breaking production without any test firing. Making `nmi_prefix` required forces callers to declare intent; a "no-prefix" call must pass `nmi_prefix=""` explicitly, so the choice is always visible in code review.
+- The namespace convention becomes discoverable at every call site, not hidden in a helper's default argument.
+- `download_csv` stays reusable for a hypothetical non-Optima caller — they would simply pass `nmi_prefix=""`.
 
 ### 4.5 Content-type handling
 
@@ -197,21 +212,22 @@ if "csv" in content_type or starts_like_nem12:
 
 This accepts the new vendor-specific content type *and* any future variant where the body starts with a NEM12 header — while still rejecting HTML error pages (which start with `<!DOCTYPE` or `<html`).
 
-### 4.6 NEM12 structural validation
+### 4.6 NEM12 header check (only validation we keep)
 
-After content-type check and before upload, a lightweight sanity check:
+The only validation lives inside `_prefix_nmi_in_nem12` (see §4.3):
 
 ```python
-def _is_valid_nem12_structure(content: bytes) -> bool:
-    return (
-        content.startswith(b"100,")
-        and b"\n200," in content
-        and b"\n300," in content
-        and content.rstrip().endswith(b"900")
-    )
+if not content.lstrip(_NEM12_HEADER_PREFIXES).startswith(b"100,"):
+    raise ValueError("Input is not a NEM12 file (missing 100 header)")
 ```
 
-Failure logs a structured error with site id and first 500 bytes of the response, returns `None` (same as existing failure path), and the file is not uploaded.
+This is intentionally a single byte-level guard. Rationale:
+
+- **Fast-fail surface we actually care about**: the realistic failure modes are HTML error pages (session expired while Lambda ran a long batch), empty bodies, and JSON error payloads — all caught by the `100,` check. Anything else (internal server error, gzip-decoded garbage, truncated mid-body) either already fails the content-type / `is_html` checks upstream, or falls through to downstream parse-error handling where the full bytes are preserved in `newParseErr/` for forensics.
+- **Why no stricter structural check**: the original draft had `_is_valid_nem12_structure` that required `200`/`300`/`900` markers at specific positions. Review showed this adds risk without benefit: `content.rstrip().endswith(b"900")` is simultaneously too loose (matches `...1234900` substrings, though NEM12's line-based format makes that theoretical) and too strict (would false-negative on CRLF line endings without careful regex). The downstream `sbm-files-ingester` has a robust three-tier parse-or-quarantine flow — duplicating that logic in the downloader creates drift risk.
+- **BOM-tolerant**: `lstrip(b"\xef\xbb\xbf \t\r\n")` accepts the three realistic prefix variants ASP.NET may emit in the future, without weakening rejection of non-NEM12 bodies.
+
+On failure `download_csv` logs the error with site id, project, status code, content-type, and the first 500 bytes of the response body, then returns `None`. The calling `process_site` reports the site as failed but does not stop the batch.
 
 ### 4.7 Request timeout
 
@@ -222,14 +238,18 @@ Failure logs a structured error with site id and first 500 bytes of the response
 #### 4.8.1 Default export range → yesterday only
 
 ```python
-# config.py — unchanged, env var default is parsed
-OPTIMA_DAYS_BACK = int(os.environ.get("OPTIMA_DAYS_BACK", "7"))  # leave source default
+# config.py
+OPTIMA_DAYS_BACK = int(os.environ.get("OPTIMA_DAYS_BACK", "1"))   # was "7"
+MAX_WORKERS = int(os.environ.get("OPTIMA_MAX_WORKERS", "20"))     # was "10"
 
 # terraform/optima_exporter.tf
-OPTIMA_DAYS_BACK = "1"   # was "7"
+OPTIMA_DAYS_BACK   = "1"   # was "7"
+OPTIMA_MAX_WORKERS = "20"  # was "10"
 ```
 
-The tf change produces a 1-day run in production. The source default stays at 7 so running the Lambda locally without env overrides behaves conservatively (wider range easier to spot-check than a single day).
+Both source-code defaults and Terraform values are aligned to the new production behaviour. Review change: an earlier draft kept the source default at `7` for "conservative local runs" while overriding to `1` in Terraform — that two-layer scheme made local / unit-test behaviour silently diverge from production. A single source of truth is safer.
+
+`OPTIMA_MAX_WORKERS` bumped 10 → 20 to cut full-sweep wall-clock time roughly in half (replaces the rejected global-deadline mitigation from review item S4); 20 worker threads on a 256 MB Lambda still leaves comfortable memory headroom (peak ≈ 20 × 5.7 MB ≈ 114 MB for 2-year pulls).
 
 #### 4.8.2 Fix partial-date bug
 
@@ -293,9 +313,14 @@ EventBridge cron 14:00 Sydney daily
 
 The filename pattern `optima_<project>_NMI#<NMI>_<start>_<end>_<ts>.csv` is unchanged. `<NMI>` in the filename continues to be the DynamoDB-stored `Optima_<id>` form (already prefixed), so filenames look identical before and after migration. The only content-level change is that the `200` record inside the file now also carries the prefix.
 
-### 5.2 Idempotency at the Hudi layer
+### 5.2 Idempotency: final-state correct, pipeline does work twice
 
-The Hudi data lake keys on `(sensorId, ts)`. Re-processing the same day (e.g. two overlapping exports, or this migration running against a day that was already ingested via the old path) produces *upserts*, not duplicates. Equivalent sensors resolved via either path resolve to the same Neptune ID and therefore the same `sensorId` column value. The switch is a drop-in.
+Two independent layers behave differently on a re-run:
+
+- **Hudi data lake** keys on `(sensorId, ts)`. Re-ingesting the same day produces *upserts* — final stored values are correct, no duplicates. Sensors resolved via the new NEM12 path resolve to the same Neptune ID (and therefore the same `sensorId` column value) as the old CSV path, so a switch-over day where some files arrive via the old path and some via the new produces a coherent final state.
+- **`sbm-ingester-idempotency` DynamoDB table** keys on the S3 object key. Filenames embed `%Y%m%d%H%M%S` (`downloader.py:97`), so re-invoking `optima-interval-exporter` for the same date range produces *new* S3 keys → no idempotency hit at the ingester layer → the file-processor and Glue ETL run again. This is wasted work, not corruption: the eventual Hudi state is identical to a single-run.
+
+In practice this means: re-running a back-fill is safe (final state is right), just not free. If a future need arises for true exporter-level idempotency, a separate idempotency key based on `(project, siteIdStr, start_date, end_date)` would have to be introduced — out of scope here.
 
 ---
 
@@ -303,13 +328,16 @@ The Hudi data lake keys on `(sensorId, ts)`. Re-processing the same day (e.g. tw
 
 | File | Change |
 |---|---|
-| `src/functions/optima_exporter/interval_exporter/downloader.py` | Endpoint URL; timeout 120 → 300; content-type logic; `_prefix_nmi_in_nem12()`; `_is_valid_nem12_structure()`; `download_csv` gets `nmi_prefix` param |
-| `src/functions/optima_exporter/interval_exporter/processor.py` | Pass `nmi_prefix="Optima_"` to `download_csv`; fix partial-date anchor; add `start > end` validation; declare `OPTIMA_NMI_PREFIX` constant |
-| `terraform/optima_exporter.tf` | `OPTIMA_DAYS_BACK = "1"` for interval exporter |
-| `tests/unit/optima_exporter/interval_exporter/test_downloader.py` | Update 11 mocked URLs; add tests for prefix rewrite (idempotent / multiple `200` rows / non-NEM12 input); add content-type test for `application/vnd.csv`; add NEM12 structure-validation tests; add end-to-end test (downloader output parses cleanly via `nem_adapter` and yields `Optima_`-prefixed NMI) |
-| `tests/unit/optima_exporter/interval_exporter/test_processor.py` | Update `TestGetDateRange` expectations; update `TestPartialDateParameters::test_process_export_with_only_end_date_uses_default_start` to the corrected semantics; add `test_rejects_start_after_end`; add `test_default_days_back_is_one_in_production_config` (env-var coverage) |
-| New: `tests/unit/optima_exporter/interval_exporter/test_prefix_scoping.py` | Guard test — `_prefix_nmi_in_nem12` symbol only appears inside `src/functions/optima_exporter/**` |
-| New fixture: `tests/unit/fixtures/optima_bidenergy_nem12_sample.csv` | Real BidEnergy NEM12 response (redacted) for end-to-end parsing tests |
+| `src/functions/optima_exporter/interval_exporter/downloader.py` | Endpoint URL → `ExportIntervalUsageProfileNem12`; `timeout` 120 → 300; content-type accepts `application/vnd.csv` (`"csv" in content_type` + body sniff `starts with 100,`); add `_prefix_nmi_in_nem12()` with BOM-tolerant header guard; `download_csv` gains required keyword-only `nmi_prefix: str` argument |
+| `src/functions/optima_exporter/interval_exporter/processor.py` | Declare `OPTIMA_NMI_PREFIX = "Optima_"` constant; pass `nmi_prefix=OPTIMA_NMI_PREFIX` to `download_csv` (keyword-only); fix partial-date anchor (start derived from end, not today); add `start > end` validation that returns 400 |
+| `src/functions/optima_exporter/optima_shared/config.py` | `OPTIMA_DAYS_BACK` source default 7 → 1; `OPTIMA_MAX_WORKERS` source default 10 → 20 |
+| `terraform/optima_exporter.tf` | `OPTIMA_DAYS_BACK = "1"` (was `"7"`); `OPTIMA_MAX_WORKERS = "20"` (was `"10"`) |
+| `tests/unit/optima_exporter/interval_exporter/test_downloader.py` | Update 11 mocked URLs to NEM12 endpoint; add tests for prefix rewrite (single 200, multi-channel multi-200, idempotent on already-prefixed input, BOM-prefixed body accepted, raises on non-NEM12 input); add `application/vnd.csv` content-type acceptance test; add end-to-end test (mock returns synthetic NEM12, downloader output parses via `nem_adapter`, yielded NMI starts with `"Optima_"`); add test that `nmi_prefix` is required and TypeError raised if omitted |
+| `tests/unit/optima_exporter/interval_exporter/test_processor.py` | Update `TestGetDateRange` expectations to `DAYS_BACK=1` default; update `TestPartialDateParameters::test_process_export_with_only_end_date_uses_default_start` to the corrected end-anchored semantics; add `test_rejects_start_after_end`; add `test_default_days_back_is_one`; add `test_default_max_workers_is_twenty` |
+| New: `tests/unit/optima_exporter/interval_exporter/test_prefix_scoping.py` | Guard test — string `_prefix_nmi_in_nem12` appears only in source files under `src/functions/optima_exporter/**` |
+| New fixture: `tests/unit/fixtures/optima_bidenergy_nem12_sample.csv` | Redacted real BidEnergy NEM12 response for end-to-end parsing test |
+
+The S1 review item — verifying that a single `siteIdStr` returns a single NMI — was discharged by a 105-site live scan during design: 50 bunnings_AU + 30 bunnings_NZ + 25 racv_AU, all 105 returned exactly 1 NMI matching the DynamoDB record. No code changes needed for multi-NMI handling; staging plan §7.3 retains a one-shot re-verification.
 
 No changes to: `app.py`, `uploader.py`, `optima_shared/**`, shared parsers, Lambda IAM role, DynamoDB schema, SQS config, EventBridge schedules.
 
@@ -319,12 +347,12 @@ No changes to: `app.py`, `uploader.py`, `optima_shared/**`, shared parsers, Lamb
 
 ### 7.1 Unit tests (primary coverage)
 
-- **Prefix rewrite**: single `200` record, multiple records, idempotency on already-prefixed input, non-NEM12 input raises `ValueError`, `300` records that start with numeric dates are not touched.
-- **Content-type acceptance**: `application/vnd.csv`, `text/csv`, `application/csv`, and NEM12-body-with-html-content-type all accepted; HTML body rejected.
-- **NEM12 structural validation**: valid file passes, truncated file (no `900`) fails, missing `200` fails, missing `300` fails, empty body fails.
-- **Downloader integration**: mock endpoint returns synthetic NEM12, downloader output passed through `nem_adapter.output_as_data_frames()` yields dataframes whose NMI column is `Optima_<bare>`.
-- **Processor date logic**: default (yesterday only) with `DAYS_BACK=1`; only `startDate` given; only `endDate` given (regression test for the fix); both given; invalid range rejected with 400.
-- **Scoping guard**: greps the source tree for `_prefix_nmi_in_nem12` and asserts only `optima_exporter` files reference it.
+- **Prefix rewrite**: single `200` record, multi-channel (4 × 200 same NMI all rewritten consistently), idempotency on already-prefixed input, BOM-prefixed body still recognized as NEM12, non-NEM12 input raises `ValueError`, `300` records that start with numeric dates are not touched.
+- **Content-type acceptance**: `application/vnd.csv` accepted; `text/csv` accepted; `application/csv` accepted; NEM12-body-with-`text/html`-header accepted (body sniff); HTML body with HTML content-type rejected; empty body rejected.
+- **`download_csv` API**: `nmi_prefix` is required (omitting it raises `TypeError`); `nmi_prefix=""` is valid (no rewrite); `nmi_prefix="Optima_"` produces prefixed bytes; `country=NZ` propagates to `filter.countrystr=NZ` in URL.
+- **End-to-end downloader → nem_adapter**: mock endpoint returns synthetic NEM12, downloader output passed through `nem_adapter.output_as_data_frames()` yields dataframes whose NMI value equals `Optima_<bare>`.
+- **Processor date logic**: default behaviour (yesterday only, `DAYS_BACK=1`); only `startDate` given (end defaults to yesterday); only `endDate` given (start derived from end, regression test for the partial-date fix); both given (preserved); invalid range (`startDate > endDate`) rejected with statusCode 400.
+- **Scoping guard**: greps the source tree under `src/` for the literal `_prefix_nmi_in_nem12`; asserts every match resolves to a path under `src/functions/optima_exporter/`.
 
 ### 7.2 Regression surface
 
@@ -333,11 +361,13 @@ No changes to: `app.py`, `uploader.py`, `optima_shared/**`, shared parsers, Lamb
 
 ### 7.3 Manual / staging verification (post-merge, pre-production schedule)
 
-1. Invoke Lambda manually with `{"project": "bunnings", "nmi": "Optima_4001348123", "startDate": "2026-04-10", "endDate": "2026-04-12"}`.
-2. Verify the S3 object in `newTBP/` is NEM12 with `200,Optima_4001348123,...` line present.
-3. Wait for `sbm-files-ingester` SQS consumption; verify it lands in `newP/` (not `newIrrevFiles/`) and the CloudWatch `sbm-ingester-metrics-log` reports a non-zero monitor-point count.
-4. Athena query `SELECT COUNT(*) FROM default.sensordata_default WHERE sensorid = '<neptune-id-for-4001348123>' AND ts BETWEEN '2026-04-10' AND '2026-04-12'` — expect approximately `4 channels × 3 days × 288 intervals = 3456` rows (or the 5-min equivalent given the actual channel count).
-5. Repeat against one NZ site to confirm country flag still propagates.
+Order matters — do the broader cross-region check first so any country-specific surprise (different channel codes, different units, different NMI conventions) surfaces before the deeper AU-only validation.
+
+1. **NZ site verification (priority 1)**: Invoke Lambda with `{"project": "bunnings", "nmi": "<one Optima_NZ NMI>", "startDate": "2026-04-10", "endDate": "2026-04-12", "country": "NZ"}` (country read from DynamoDB record). Verify the S3 object is NEM12, `200,Optima_<bare>,...` present, channel suffixes look like AU equivalents (B1/E1/K1/Q1 or whatever the NZ site exposes), and downstream lands in `newP/` not `newIrrevFiles/`.
+2. **AU site verification**: Invoke with `{"project": "bunnings", "nmi": "Optima_4001348123", "startDate": "2026-04-10", "endDate": "2026-04-12"}`. Same downstream checks.
+3. **Multi-NMI sanity re-check (S1 follow-up)**: Pick 5 sites with the largest expected meter counts; download via the new endpoint; for each file count distinct NMIs in `200` records; assert each distinct NMI matches the project's DynamoDB NMI set (after `Optima_` prefixing). This re-validates the design assumption verified pre-merge by the 105-site scan.
+4. **Athena query**: `SELECT COUNT(*) FROM default.sensordata_default WHERE sensorid = '<neptune-id-for-4001348123>' AND ts BETWEEN '2026-04-10' AND '2026-04-12'` — expect approximately `4 channels × 3 days × 288 intervals = 3 456` rows (5-min resolution; actual count depends on channels exposed).
+5. **CloudWatch**: confirm `sbm-ingester-metrics-log` reports a non-zero monitor-point count for the run; `sbm-ingester-parse-error-log` contains no entries traceable to the new exports.
 
 ### 7.4 Coverage threshold
 
@@ -375,23 +405,27 @@ Because the output S3 location, filename convention, and downstream code path ar
 
 ---
 
-## 10. Open questions
+## 10. Open questions / deferred items
 
-None — all behavioural choices confirmed with the user during brainstorming:
+All behavioural choices for this PR confirmed with the user:
 
 - Default range: **1 day (yesterday only)**.
-- Partial-date bug fix: **include** in this PR.
+- Partial-date bug fix: **include**.
 - `start > end` validation: **include**.
-- Timeout bump to 300 s: **include**.
-- NEM12 structural validation: **include**.
-- Authentication hardening, retry policies, IAM tightening: **defer**.
+- Timeout bump 120 → 300 s: **include**.
+- NEM12 validation: **single BOM-tolerant `100,` header check only** (full structural validator dropped post-review).
+- `OPTIMA_MAX_WORKERS` 10 → 20: **include** (replaces the rejected global-deadline mitigation).
+- Source defaults aligned with Terraform: **include** (no two-layer divergence).
+- Authentication hardening (POST body instead of URL params), retry policies (transient retries, 401 re-login), IAM tightening (drop `dynamodb:Scan`), interval-length fixture coverage at 5/15/30 min, `requests` streaming for very large pulls, normalising BOM in uploaded bytes: **defer to follow-up PRs**.
+- Global Lambda deadline (review item S4): **rejected** — the user judged the extreme-tail timeout scenario sufficiently rare that adding deadline-tracking complexity is not justified; the worker bump 10 → 20 covers the realistic upside.
 
 ---
 
 ## 11. Acceptance criteria
 
-1. `optima-interval-exporter` with no event overrides (EventBridge-style invocation) pulls yesterday's data for every AU and NZ site in DynamoDB, writes valid NEM12 files into `s3://sbm-file-ingester/newTBP/`, and each file's `200` record contains `Optima_<bare-nmi>`.
-2. Manual invocation with arbitrary `startDate` / `endDate` back-fills the requested window for the requested project / optional NMI.
-3. Downstream `sbm-files-ingester` processes the files via the standard NEM12 path (not the `non_nem` fallback), populates the `quality` column, and emits non-zero monitor-point counts in `sbm-ingester-metrics-log`.
-4. All 487 existing tests still pass; new tests for prefix rewrite, structural validation, content-type, partial-date fix, and scoping guard also pass; coverage ≥ 90 %.
-5. Non-Optima NEM12 files in `newTBP/` (e.g. `5MINNEM12MDFF_*`, `Building_*`) continue to be processed with their original NMIs unchanged — verified by inspecting that `_prefix_nmi_in_nem12` is not reachable from any code path outside `optima_exporter`.
+1. `optima-interval-exporter` with no event overrides (EventBridge-style invocation) pulls **yesterday's** data for every AU and NZ site in DynamoDB, writes valid NEM12 files into `s3://sbm-file-ingester/newTBP/`, and each file's `200` records contain `Optima_<bare-nmi>`.
+2. Manual invocation with arbitrary `startDate` / `endDate` back-fills the requested window for the requested project (and optional NMI). Invocation with only `endDate` derives `startDate` from `endDate - (OPTIMA_DAYS_BACK - 1)`. Invocation with `startDate > endDate` returns statusCode 400.
+3. Downstream `sbm-files-ingester` processes the files via the standard NEM12 path (`output_as_data_frames`, not the `non_nem` fallback), populates the `quality` column, and emits non-zero monitor-point counts in `sbm-ingester-metrics-log`.
+4. All 487 existing tests still pass; new tests for prefix rewrite (incl. multi-channel and BOM), header check, content-type acceptance, `nmi_prefix` required-kwarg enforcement, end-to-end nem_adapter handoff, partial-date fix, `start > end` rejection, and scoping guard also pass; coverage ≥ 90 %.
+5. Non-Optima NEM12 files in `newTBP/` (e.g. `5MINNEM12MDFF_*`, `Building_*`, `Centre_*`) continue to be processed with their original NMIs unchanged — guarded by the scoping test that asserts `_prefix_nmi_in_nem12` is referenced only by source files under `src/functions/optima_exporter/`.
+6. Production `OPTIMA_DAYS_BACK = "1"` and `OPTIMA_MAX_WORKERS = "20"` are visible in `terraform plan` output and applied with the PR; matching source defaults in `optima_shared/config.py`.
