@@ -46,7 +46,7 @@ class TestDownloadCsv:
         csv_content = b"Date,Value\n2026-01-01,100\n2026-01-02,200"
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=csv_content,
             content_type="text/csv",
@@ -59,6 +59,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is not None
@@ -74,7 +75,7 @@ class TestDownloadCsv:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=500,
             body="Server error",
         )
@@ -86,6 +87,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is None
@@ -98,7 +100,7 @@ class TestDownloadCsv:
         html_content = b"<!DOCTYPE html><html><body>Error</body></html>"
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=html_content,
             content_type="text/html",
@@ -111,6 +113,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is None
@@ -122,7 +125,7 @@ class TestDownloadCsv:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=b"data",
             content_type="text/csv",
@@ -135,6 +138,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="RACV",  # Uppercase project
             nmi="nmi123",  # Lowercase NMI
+            nmi_prefix="",
         )
 
         assert result is not None
@@ -149,7 +153,7 @@ class TestDownloadCsv:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             body=req_lib.exceptions.Timeout("Timeout"),
         )
 
@@ -160,6 +164,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is None
@@ -173,7 +178,7 @@ class TestDownloadCsv:
         large_content = b"Date,Value\n" + b"2026-01-01,100\n" * 100000
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=large_content,
             content_type="text/csv",
@@ -186,6 +191,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is not None
@@ -201,7 +207,7 @@ class TestDownloadCsv:
         csv_content = b"\xef\xbb\xbfDate,Value\n2026-01-01,100"
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=csv_content,
             content_type="text/csv",
@@ -214,6 +220,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is not None
@@ -225,7 +232,7 @@ class TestDownloadCsv:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=b"data",
             content_type="application/csv",
@@ -238,6 +245,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert result is not None
@@ -249,7 +257,7 @@ class TestDownloadCsv:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=b"data",
             content_type="text/csv",
@@ -263,6 +271,7 @@ class TestDownloadCsv:
             project="bunnings",
             nmi="NMI001",
             country="NZ",
+            nmi_prefix="",
         )
 
         # Verify the request was made with correct country parameter
@@ -277,7 +286,7 @@ class TestDownloadCsv:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=b"data",
             content_type="text/csv",
@@ -290,6 +299,7 @@ class TestDownloadCsv:
             end_date="2026-01-07",
             project="bunnings",
             nmi="NMI001",
+            nmi_prefix="",
         )
 
         assert len(responses.calls) == 1
@@ -423,3 +433,316 @@ class TestPrefixNmiInNem12:
         out = _prefix_nmi_in_nem12(content, prefix="TestNS_")
         assert b"200,TestNS_4001348123," in out
         assert b"200,Optima_" not in out
+
+
+class TestDownloadCsvNmiPrefix:
+    """Tests for the required nmi_prefix keyword-only argument and rewrite wiring."""
+
+    def test_nmi_prefix_is_required(self) -> None:
+        """Omitting nmi_prefix must raise TypeError."""
+        import pytest
+        from interval_exporter.downloader import download_csv
+
+        with pytest.raises(TypeError, match="nmi_prefix"):
+            download_csv(
+                cookies=".ASPXAUTH=token",
+                site_id_str="site-guid-001",
+                start_date="2026-04-10",
+                end_date="2026-04-10",
+                project="bunnings",
+                nmi="Optima_4001348123",
+            )
+
+    def test_country_is_keyword_only(self) -> None:
+        """country must be passed by keyword (not positional)."""
+        import pytest
+        from interval_exporter.downloader import download_csv
+
+        with pytest.raises(TypeError):
+            # 7th positional arg should be rejected (country is now keyword-only)
+            download_csv(
+                ".ASPXAUTH=token",
+                "site-guid-001",
+                "2026-04-10",
+                "2026-04-10",
+                "bunnings",
+                "Optima_4001348123",
+                "AU",
+            )
+
+    @responses.activate
+    def test_empty_nmi_prefix_does_not_rewrite(self) -> None:
+        from interval_exporter.downloader import download_csv
+
+        body = (
+            b"100,NEM12,202604120100,MDP1,Origin\n"
+            b"200,4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n"
+            b"300,20260410,1.0,A,,,20260411011219,\n"
+            b"900\n"
+        )
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=body,
+            content_type="application/vnd.csv",
+        )
+
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="",
+        )
+        assert result is not None
+        content, _ = result
+        assert content == body
+
+    @responses.activate
+    def test_optima_nmi_prefix_rewrites_all_200_records(self) -> None:
+        from pathlib import Path
+
+        from interval_exporter.downloader import download_csv
+
+        sample = Path("tests/unit/fixtures/optima_bidenergy_nem12_sample.csv").read_bytes()
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=sample,
+            content_type="application/vnd.csv",
+        )
+
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is not None
+        content, _ = result
+        assert content.count(b"200,Optima_4001348123,") == 4
+        assert b"200,4001348123," not in content
+
+
+class TestDownloadCsvContentTypes:
+    """Verify content-type variants BidEnergy may emit are all accepted."""
+
+    @responses.activate
+    def test_accepts_application_vnd_csv(self) -> None:
+        from pathlib import Path
+
+        from interval_exporter.downloader import download_csv
+
+        sample = Path("tests/unit/fixtures/optima_bidenergy_nem12_sample.csv").read_bytes()
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=sample,
+            content_type="application/vnd.csv",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is not None
+
+    @responses.activate
+    def test_accepts_nem12_with_text_html_content_type_via_body_sniff(self) -> None:
+        """If BidEnergy mis-labels the response, body sniff (starts with 100,) saves us."""
+        from interval_exporter.downloader import download_csv
+
+        body = b"100,NEM12,202604120100,MDP1,Origin\n200,4001348123,B1E1K1Q1,E1,E1,E1,250920091,Kwh,5\n900\n"
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=body,
+            content_type="text/html",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is not None
+
+    @responses.activate
+    def test_rejects_real_html_error_page(self) -> None:
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=b"<!DOCTYPE html><html><body>Session expired</body></html>",
+            content_type="text/html",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
+
+    @responses.activate
+    def test_rejects_html_with_bom(self) -> None:
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=b"\xef\xbb\xbf<!DOCTYPE html><html>error</html>",
+            content_type="text/html",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None
+
+
+class TestDownloadCsvEndToEnd:
+    """End-to-end: downloaded NEM12 must parse cleanly via nem_adapter and yield Optima-prefixed NMI."""
+
+    @responses.activate
+    def test_real_fixture_yields_optima_prefixed_nmi(self) -> None:
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        sys.path.insert(0, "src")
+        from interval_exporter.downloader import download_csv
+
+        from shared.nem_adapter import output_as_data_frames
+
+        sample = Path("tests/unit/fixtures/optima_bidenergy_nem12_sample.csv").read_bytes()
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=sample,
+            content_type="application/vnd.csv",
+        )
+
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is not None
+        content, _ = result
+
+        tmp_file: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+                tmp.write(content)
+                tmp_file = Path(tmp.name)
+            frames = output_as_data_frames(str(tmp_file))
+            assert len(frames) == 1
+            nmi, df = frames[0]
+            assert nmi == "Optima_4001348123"
+            assert {"B1_Kwh", "E1_Kwh", "K1_Kvarh", "Q1_Kvarh"}.issubset(df.columns)
+            assert len(df) == 288
+        finally:
+            if tmp_file:
+                tmp_file.unlink()
+
+    @responses.activate
+    def test_quality_flag_preserved_through_pipeline(self) -> None:
+        import sys
+        import tempfile
+        from pathlib import Path
+
+        sys.path.insert(0, "src")
+        from interval_exporter.downloader import download_csv
+
+        from shared.nem_adapter import output_as_data_frames
+
+        sample = Path("tests/unit/fixtures/optima_bidenergy_nem12_sample.csv").read_bytes()
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=200,
+            body=sample,
+            content_type="application/vnd.csv",
+        )
+
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is not None
+        content, _ = result
+
+        tmp_file: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+                tmp.write(content)
+                tmp_file = Path(tmp.name)
+            frames = output_as_data_frames(str(tmp_file))
+            _, df = frames[0]
+            quality_cols = [c for c in df.columns if c.startswith("quality_")]
+            assert quality_cols, f"no quality columns: {list(df.columns)}"
+            for qc in quality_cols:
+                non_null = df[qc].dropna().unique().tolist()
+                assert "A" in non_null, f"{qc} did not contain 'A': {non_null}"
+        finally:
+            if tmp_file:
+                tmp_file.unlink()
+
+    @responses.activate
+    def test_500_response_returns_none(self) -> None:
+        from interval_exporter.downloader import download_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
+            status=500,
+            body=b"Internal Server Error",
+        )
+        result = download_csv(
+            cookies=".ASPXAUTH=token",
+            site_id_str="site-guid-001",
+            start_date="2026-04-10",
+            end_date="2026-04-10",
+            project="bunnings",
+            nmi="Optima_4001348123",
+            nmi_prefix="Optima_",
+        )
+        assert result is None

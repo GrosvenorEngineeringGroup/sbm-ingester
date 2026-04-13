@@ -14,6 +14,10 @@ from interval_exporter.uploader import upload_to_s3
 
 logger = Logger(service="optima-interval-exporter")
 
+# Optima sites live under the "Optima_" namespace in Neptune mappings.
+# Applied to NMI fields in BidEnergy NEM12 responses by download_csv.
+OPTIMA_NMI_PREFIX = "Optima_"
+
 
 def get_date_range() -> tuple[str, str]:
     """
@@ -68,7 +72,16 @@ def process_site(
     }
 
     # Download CSV
-    download_result = download_csv(cookies, site_id_str, start_date, end_date, project, nmi, country)
+    download_result = download_csv(
+        cookies,
+        site_id_str,
+        start_date,
+        end_date,
+        project,
+        nmi,
+        country=country,
+        nmi_prefix=OPTIMA_NMI_PREFIX,
+    )
     if download_result is None:
         result["error"] = "Failed to download CSV"
         return result

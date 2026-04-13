@@ -68,7 +68,9 @@ def download_csv(
     end_date: str,
     project: str,
     nmi: str,
+    *,
     country: str = "AU",
+    nmi_prefix: str,
 ) -> tuple[bytes, str] | None:
     """
     Download CSV interval usage data from BidEnergy.
@@ -81,6 +83,7 @@ def download_csv(
         project: Project name for filename
         nmi: NMI identifier for filename
         country: Country code ("AU" or "NZ")
+        nmi_prefix: Prefix to prepend to NMI fields in 200 records (e.g. "Optima_"); pass "" to skip rewrite
 
     Returns:
         Tuple of (CSV content bytes, suggested filename), or None if download failed
@@ -90,7 +93,7 @@ def download_csv(
     end_formatted = format_date_for_url(end_date)
 
     # Build export URL
-    export_url = f"{BIDENERGY_BASE_URL}/BuyerReport/ExportActualIntervalUsageProfile"
+    export_url = f"{BIDENERGY_BASE_URL}/BuyerReport/ExportIntervalUsageProfileNem12"
 
     params = {
         "nmi": "",  # Empty to get all NMIs for the site
@@ -117,19 +120,39 @@ def download_csv(
             export_url,
             params=params,
             headers={"Cookie": cookies},
-            timeout=120,  # Large files may take time
+            timeout=300,  # Large files may take time
         )
 
         if response.status_code == 200:
-            # Check if response is actually CSV (not an error page)
-            content_type = response.headers.get("Content-Type", "")
+            content_type = response.headers.get("Content-Type", "").lower()
 
-            # Check for HTML content (may have BOM prefix)
+            # HTML detection (responses may have BOM prefix)
             content_start = response.content[:100].lower()
             is_html = b"<!doctype" in content_start or b"<html" in content_start
 
-            if "text/csv" in content_type or "application/csv" in content_type or not is_html:
-                # Generate filename with NMI and timestamp for traceability and uniqueness
+            # Accept anything whose content-type contains "csv" (text/csv, application/csv,
+            # application/vnd.csv...) or whose body sniff begins with NEM12 header bytes.
+            body_starts_like_nem12 = response.content.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"100,")
+            if "csv" in content_type or (not is_html and body_starts_like_nem12):
+                # Apply namespace prefix to 200 records if requested
+                if nmi_prefix:
+                    try:
+                        body = _prefix_nmi_in_nem12(response.content, prefix=nmi_prefix)
+                    except ValueError as exc:
+                        logger.error(
+                            "NEM12 prefix rewrite failed",
+                            extra={
+                                "project": project,
+                                "nmi": nmi,
+                                "site_id": site_id_str,
+                                "error": str(exc),
+                                "response_preview": response.content[:500].decode("utf-8", errors="replace"),
+                            },
+                        )
+                        return None
+                else:
+                    body = response.content
+
                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                 filename = f"optima_{project.lower()}_NMI#{nmi.upper()}_{start_date}_{end_date}_{timestamp}.csv"
                 logger.info(
@@ -138,10 +161,11 @@ def download_csv(
                         "project": project,
                         "nmi": nmi,
                         "csv_filename": filename,
-                        "size_bytes": len(response.content),
+                        "size_bytes": len(body),
+                        "rewrote_nmi_prefix": bool(nmi_prefix),
                     },
                 )
-                return response.content, filename
+                return body, filename
             logger.error(
                 "CSV download failed: received HTML error page instead of CSV",
                 extra={
@@ -186,7 +210,7 @@ def download_csv(
     except requests.Timeout:
         logger.error(
             "CSV download failed: request timeout",
-            extra={"project": project, "nmi": nmi, "site_id": site_id_str, "timeout_seconds": 120},
+            extra={"project": project, "nmi": nmi, "site_id": site_id_str, "timeout_seconds": 300},
         )
     except requests.ConnectionError as e:
         logger.error(

@@ -77,10 +77,16 @@ class TestProcessSite:
 
         processor_module = reload_processor_module()
 
-        csv_content = b"Date,Value\n2026-01-01,100"
+        # Valid NEM12 content with NMI001 so _prefix_nmi_in_nem12 can rewrite it
+        csv_content = (
+            b"100,NEM12,202601080000,MDP1,Origin\n"
+            b"200,NMI001,E1,E1,E1,E1,12345,kWh,30\n"
+            b"300,20260101,1.0,A,,,20260102000000,\n"
+            b"900\n"
+        )
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
             body=csv_content,
             content_type="text/csv",
@@ -109,7 +115,7 @@ class TestProcessSite:
 
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=500,
         )
 
@@ -132,11 +138,17 @@ class TestProcessSite:
         # Don't create bucket to trigger error
         processor_module = reload_processor_module()
 
+        # Valid NEM12 content so prefix rewrite succeeds, then S3 upload fails (no bucket)
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
-            body=b"data",
+            body=(
+                b"100,NEM12,202601080000,MDP1,Origin\n"
+                b"200,NMI001,E1,E1,E1,E1,12345,kWh,30\n"
+                b"300,20260101,1.0,A,,,20260102000000,\n"
+                b"900\n"
+            ),
             content_type="text/csv",
         )
 
@@ -164,12 +176,18 @@ class TestProcessSite:
 
         processor_module = reload_processor_module()
 
-        csv_content = b"Date,Value\n2026-01-01,100"
+        # Valid NEM12 content; the processor rewrites NMI001 → Optima_NMI001 before upload
+        raw_content = (
+            b"100,NEM12,202601080000,MDP1,Origin\n"
+            b"200,NMI001,E1,E1,E1,E1,12345,kWh,30\n"
+            b"300,20260101,1.0,A,,,20260102000000,\n"
+            b"900\n"
+        )
         responses.add(
             responses.GET,
-            "https://app.bidenergy.com/BuyerReport/ExportActualIntervalUsageProfile",
+            "https://app.bidenergy.com/BuyerReport/ExportIntervalUsageProfileNem12",
             status=200,
-            body=csv_content,
+            body=raw_content,
             content_type="text/csv",
         )
 
@@ -184,9 +202,10 @@ class TestProcessSite:
 
         assert result["success"] is True
 
-        # Verify file in S3
-        response = s3.get_object(Bucket="sbm-file-ingester", Key=result["s3_key"])
-        assert response["Body"].read() == csv_content
+        # Verify file in S3 - NMI prefix has been applied by the processor
+        s3_body = s3.get_object(Bucket="sbm-file-ingester", Key=result["s3_key"])["Body"].read()
+        assert b"200,Optima_NMI001," in s3_body
+        assert b"200,NMI001," not in s3_body
 
 
 class TestProcessExport:
@@ -804,3 +823,45 @@ class TestDateRangeValidation:
         assert result["statusCode"] == 400
         assert "resolution" in result["body"].lower() or "invalid range" in result["body"].lower()
         assert "2026-05-01" in result["body"]
+
+
+class TestProcessSitePassesNmiPrefix:
+    """Regression: process_site must pass nmi_prefix='Optima_' (and country) to download_csv."""
+
+    @mock_aws
+    def test_process_site_passes_optima_prefix_and_country(self) -> None:
+        from unittest.mock import patch
+
+        import boto3
+        from interval_exporter import processor
+
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        with (
+            patch.object(processor, "download_csv") as mock_dl,
+            patch.object(processor, "upload_to_s3", return_value=True),
+        ):
+            mock_dl.return_value = (b"100,NEM12,...", "fakefile.csv")
+            processor.process_site(
+                cookies=".ASPXAUTH=token",
+                nmi="Optima_4001348123",
+                site_id_str="site-guid-001",
+                start_date="2026-04-10",
+                end_date="2026-04-12",
+                project="bunnings",
+                country="NZ",
+            )
+
+        assert mock_dl.call_count == 1
+        kwargs = mock_dl.call_args.kwargs
+        assert kwargs.get("nmi_prefix") == "Optima_"
+        assert kwargs.get("country") == "NZ"
+
+    def test_optima_nmi_prefix_constant_value(self) -> None:
+        from interval_exporter.processor import OPTIMA_NMI_PREFIX
+
+        assert OPTIMA_NMI_PREFIX == "Optima_"
