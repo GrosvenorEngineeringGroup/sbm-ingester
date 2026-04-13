@@ -716,3 +716,57 @@ class TestProductionDefaults:
 
         importlib.reload(config)
         assert config.MAX_WORKERS == 20
+
+
+class TestDateRangeValidation:
+    """Validation that startDate <= endDate."""
+
+    def test_rejects_start_after_end(self) -> None:
+        from interval_exporter.processor import process_export
+
+        result = process_export(
+            project="bunnings",
+            start_date="2026-04-15",
+            end_date="2026-04-10",
+        )
+
+        assert result["statusCode"] == 400
+        assert "startDate" in result["body"]
+        assert "endDate" in result["body"]
+        assert "2026-04-15" in result["body"]
+        assert "2026-04-10" in result["body"]
+
+    @mock_aws
+    def test_accepts_equal_start_and_end(self) -> None:
+        """Single-day range (start == end) must be accepted."""
+        from unittest.mock import patch
+
+        import boto3
+        from interval_exporter import processor
+
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        table = dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.wait_until_exists()
+        table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
+
+        with (
+            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch.object(processor, "process_site", return_value={"success": True, "nmi": "NMI001"}),
+        ):
+            result = processor.process_export(
+                project="bunnings",
+                start_date="2026-04-10",
+                end_date="2026-04-10",
+            )
+            assert result["statusCode"] == 200

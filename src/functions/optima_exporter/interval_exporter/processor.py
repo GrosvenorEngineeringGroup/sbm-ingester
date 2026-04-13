@@ -106,6 +106,17 @@ def process_export(
     """
     project = project.lower()
 
+    # Reject inverted ranges when both dates are explicitly provided
+    if start_date and end_date and date.fromisoformat(start_date) > date.fromisoformat(end_date):
+        logger.warning(
+            "Export rejected: startDate after endDate",
+            extra={"project": project, "start_date": start_date, "end_date": end_date},
+        )
+        return {
+            "statusCode": 400,
+            "body": f"Invalid range: startDate ({start_date}) > endDate ({end_date})",
+        }
+
     logger.info(
         "Starting interval export",
         extra={"project": project, "nmi": nmi, "start_date": start_date, "end_date": end_date},
