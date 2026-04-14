@@ -1,4 +1,4 @@
-"""Unit tests for interval_exporter/uploader.py module.
+"""Unit tests for nem12_exporter/uploader.py module.
 
 Tests S3 client initialization and file upload functionality.
 """

@@ -1,8 +1,8 @@
-"""End-to-end integration test spanning optima-interval-exporter → sbm-files-ingester.
+"""End-to-end integration test spanning optima-nem12-exporter → sbm-files-ingester.
 
 Chain under test:
   Mock BidEnergy HTTP responses
-  → optima_exporter.interval_exporter.app.lambda_handler
+  → optima_exporter.nem12_exporter.app.lambda_handler
   → file lands in s3://sbm-file-ingester/newTBP/
   → file_processor.app.parse_and_write_data
   → file moved to newP/
@@ -43,8 +43,8 @@ NEPTUNE_MAP = {
 
 def _reload_optima_modules() -> None:
     """Force-reload all lazy-singleton optima modules so moto intercepts fresh clients."""
-    import interval_exporter.processor as processor_module
-    import interval_exporter.uploader as uploader_module
+    import nem12_exporter.processor as processor_module
+    import nem12_exporter.uploader as uploader_module
     import optima_shared.config as config_module
     import optima_shared.dynamodb as dynamodb_module
 
@@ -165,16 +165,14 @@ class TestOptimaToFileProcessorFullChain:
         )
 
         # ============================================================
-        # STEP 1: invoke optima interval exporter lambda_handler
+        # STEP 1: invoke optima NEM12 exporter lambda_handler
         # ============================================================
-        from interval_exporter.app import lambda_handler as optima_lambda_handler
+        from nem12_exporter.app import lambda_handler as optima_lambda_handler
 
         mock_context = MagicMock()
-        mock_context.function_name = "optima-interval-exporter"
+        mock_context.function_name = "optima-nem12-exporter"
         mock_context.memory_limit_in_mb = 256
-        mock_context.invoked_function_arn = (
-            "arn:aws:lambda:ap-southeast-2:123456789012:function:optima-interval-exporter"
-        )
+        mock_context.invoked_function_arn = "arn:aws:lambda:ap-southeast-2:123456789012:function:optima-nem12-exporter"
         mock_context.aws_request_id = "e2e-test-request-id"
 
         event = {

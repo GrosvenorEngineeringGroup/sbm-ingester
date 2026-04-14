@@ -2,7 +2,7 @@
 
 Exports energy data from BidEnergy/Optima platform. This module contains two Lambda functions that operate independently:
 
-- **Interval Exporter** - Downloads interval usage CSV data and uploads to S3 for ingestion
+- **NEM12 Exporter** - Downloads NEM12 CSV files and uploads to S3 for ingestion
 - **Billing Exporter** - Triggers monthly billing report generation (delivered via email)
 
 ## Table of Contents
@@ -25,7 +25,7 @@ optima_exporter/
 │   ├── auth.py              # BidEnergy login (cookie-based authentication)
 │   ├── config.py            # Environment variable management
 │   └── dynamodb.py          # Site configuration queries from DynamoDB
-├── interval_exporter/       # Lambda 1: Interval data export
+├── nem12_exporter/          # Lambda 1: NEM12 export
 │   ├── __init__.py
 │   ├── app.py               # Lambda handler
 │   ├── downloader.py        # CSV download from BidEnergy API
@@ -40,13 +40,13 @@ optima_exporter/
 
 ## Data Flow
 
-### Interval Exporter
+### NEM12 Exporter
 
 ```
 EventBridge (daily)
     │
     ▼
-Lambda (optima-interval-exporter)
+Lambda (optima-nem12-exporter)
     │
     ├─→ DynamoDB (sbm-optima-config) ─→ Get site list by project
     │
@@ -95,14 +95,14 @@ Lambda (optima-billing-exporter)
 
 | Function | Memory | Timeout | Purpose |
 |----------|--------|---------|---------|
-| `optima-interval-exporter` | 256 MB | 900s (15min) | Downloads CSV interval data for all sites, uploads to S3 |
+| `optima-nem12-exporter` | 256 MB | 900s (15min) | Downloads NEM12 CSV files for all sites, uploads to S3 |
 | `optima-billing-exporter` | 128 MB | 120s | Triggers billing report generation (async, email delivery) |
 
 **Note:** X-Ray tracing is disabled to avoid "Message too long" errors from large parallel operations.
 
 ## Event Parameters
 
-### Interval Exporter
+### NEM12 Exporter
 
 ```json
 {
@@ -139,7 +139,7 @@ If `startDate`/`endDate` are not provided, defaults to the past 12 months (confi
 | `S3_UPLOAD_BUCKET` | S3 bucket for uploads | `sbm-file-ingester` |
 | `S3_UPLOAD_PREFIX` | S3 key prefix | `newTBP/` |
 
-### Interval Exporter Configuration
+### NEM12 Exporter Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -202,15 +202,15 @@ Configured via EventBridge Scheduler in Terraform (`terraform/optima_exporter.tf
 
 | Schedule | Lambda | Description |
 |----------|--------|-------------|
-| `cron(0 13 * * ? *)` | interval-exporter | Daily at 13:00 UTC (midnight AEDT) |
-| `cron(0 13 1 * ? *)` | billing-exporter | 1st of each month at 13:00 UTC |
+| `cron(0 14 * * ? *)` (Australia/Sydney) | nem12-exporter | Daily at 14:00 Sydney time |
+| `cron(0 7 1 * ? *)` (Australia/Sydney) | billing-exporter | 1st of each month at 07:00 Sydney time |
 
 ### Manual Invocation
 
 ```bash
-# Invoke interval exporter for specific NMI
+# Invoke NEM12 exporter for specific NMI
 aws lambda invoke \
-  --function-name optima-interval-exporter \
+  --function-name optima-nem12-exporter \
   --payload '{"project":"bunnings","nmi":"NMI001"}' \
   response.json
 
@@ -232,7 +232,7 @@ tests/unit/optima_exporter/
 │   ├── test_auth.py               # 6 tests
 │   ├── test_config.py             # 13 tests
 │   └── test_dynamodb.py           # 13 tests
-├── interval_exporter/
+├── nem12_exporter/
 │   ├── test_app.py                # 2 tests
 │   ├── test_downloader.py         # 11 tests
 │   ├── test_processor.py          # 20 tests
@@ -249,7 +249,7 @@ tests/unit/optima_exporter/
 uv run pytest tests/unit/optima_exporter/ -v
 
 # Run specific module tests
-uv run pytest tests/unit/optima_exporter/interval_exporter/ -v
+uv run pytest tests/unit/optima_exporter/nem12_exporter/ -v
 
 # Run with coverage
 uv run pytest tests/unit/optima_exporter/ --cov=src/functions/optima_exporter
@@ -258,5 +258,5 @@ uv run pytest tests/unit/optima_exporter/ --cov=src/functions/optima_exporter
 ## Related Files
 
 - **Terraform:** `terraform/optima_exporter.tf` - Lambda, DynamoDB, EventBridge Scheduler
-- **Deployment:** `.github/workflows/deploy.yml` - CI/CD pipeline (builds `optima_exporter.zip`)
+- **Deployment:** `.github/workflows/main.yml` - CI/CD pipeline (builds `optima_exporter.zip`)
 - **Config Import:** `scripts/import_optima_config_to_dynamodb.py` - Site configuration loader

@@ -2,7 +2,7 @@
 # Optima Exporter: BidEnergy Data Export
 # ================================
 # Two Lambda functions for different export types:
-# - Interval Exporter: Downloads CSV interval data, uploads to S3
+# - NEM12 Exporter: Downloads NEM12 CSV files from BidEnergy, uploads to S3
 # - Billing Exporter: Triggers monthly usage report (email delivery)
 #
 # Each project (bunnings, racv) is triggered separately via EventBridge.
@@ -70,21 +70,21 @@ locals {
 }
 
 # ================================
-# Lambda 1: Interval Exporter
+# Lambda 1: NEM12 Exporter
 # ================================
 
-resource "aws_cloudwatch_log_group" "optima_interval_exporter" {
-  name              = "/aws/lambda/optima-interval-exporter"
+resource "aws_cloudwatch_log_group" "optima_nem12_exporter" {
+  name              = "/aws/lambda/optima-nem12-exporter"
   retention_in_days = var.log_retention_days
 
   tags = local.common_tags
 }
 
-resource "aws_lambda_function" "optima_interval_exporter" {
-  function_name = "optima-interval-exporter"
-  description   = "Exports Optima interval data to S3 for ingestion pipeline"
+resource "aws_lambda_function" "optima_nem12_exporter" {
+  function_name = "optima-nem12-exporter"
+  description   = "Exports Optima NEM12 files to S3 for ingestion pipeline"
   role          = data.aws_iam_role.ingester_role.arn
-  handler       = "interval_exporter.app.lambda_handler"
+  handler       = "nem12_exporter.app.lambda_handler"
   runtime       = "python3.13"
   timeout       = 900 # 15 minutes - Bunnings has 400+ sites
   memory_size   = 256
@@ -93,13 +93,13 @@ resource "aws_lambda_function" "optima_interval_exporter" {
 
   environment {
     variables = merge(local.optima_common_env, {
-      POWERTOOLS_SERVICE_NAME = "optima-interval-exporter"
+      POWERTOOLS_SERVICE_NAME = "optima-nem12-exporter"
 
       # S3 upload configuration
       S3_UPLOAD_BUCKET = "sbm-file-ingester"
       S3_UPLOAD_PREFIX = "newTBP/"
 
-      # Interval export configuration
+      # NEM12 export configuration
       OPTIMA_DAYS_BACK   = "1"
       OPTIMA_MAX_WORKERS = "20"
     })
@@ -109,7 +109,7 @@ resource "aws_lambda_function" "optima_interval_exporter" {
     mode = "PassThrough"
   }
 
-  depends_on = [aws_cloudwatch_log_group.optima_interval_exporter]
+  depends_on = [aws_cloudwatch_log_group.optima_nem12_exporter]
 
   tags = local.common_tags
 }
@@ -157,12 +157,12 @@ resource "aws_lambda_function" "optima_billing_exporter" {
 }
 
 # ================================
-# EventBridge Scheduler: Interval (Daily)
+# EventBridge Scheduler: NEM12 (Daily)
 # ================================
 
-# Bunnings Interval - Daily 2:00 PM Sydney
-resource "aws_scheduler_schedule" "optima_bunnings_interval" {
-  name       = "optima-bunnings-interval-daily"
+# Bunnings NEM12 - Daily 2:00 PM Sydney
+resource "aws_scheduler_schedule" "optima_bunnings_nem12" {
+  name       = "optima-bunnings-nem12-daily"
   group_name = "default"
 
   flexible_time_window {
@@ -173,15 +173,15 @@ resource "aws_scheduler_schedule" "optima_bunnings_interval" {
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
-    arn      = aws_lambda_function.optima_interval_exporter.arn
+    arn      = aws_lambda_function.optima_nem12_exporter.arn
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "bunnings" })
   }
 }
 
-# RACV Interval - Daily 2:00 PM Sydney
-resource "aws_scheduler_schedule" "optima_racv_interval" {
-  name       = "optima-racv-interval-daily"
+# RACV NEM12 - Daily 2:00 PM Sydney
+resource "aws_scheduler_schedule" "optima_racv_nem12" {
+  name       = "optima-racv-nem12-daily"
   group_name = "default"
 
   flexible_time_window {
@@ -192,7 +192,7 @@ resource "aws_scheduler_schedule" "optima_racv_interval" {
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
-    arn      = aws_lambda_function.optima_interval_exporter.arn
+    arn      = aws_lambda_function.optima_nem12_exporter.arn
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "racv" })
   }
@@ -241,12 +241,12 @@ resource "aws_scheduler_schedule" "optima_racv_billing" {
 }
 
 # ================================
-# EventBridge Scheduler: Interval (Weekly)
+# EventBridge Scheduler: NEM12 (Weekly)
 # ================================
 
-# Bunnings Interval Weekly - SUSPENDED
-# resource "aws_scheduler_schedule" "optima_bunnings_interval_weekly" {
-#   name       = "optima-bunnings-interval-weekly"
+# Bunnings NEM12 Weekly - SUSPENDED
+# resource "aws_scheduler_schedule" "optima_bunnings_nem12_weekly" {
+#   name       = "optima-bunnings-nem12-weekly"
 #   group_name = "default"
 #
 #   flexible_time_window {
@@ -257,7 +257,7 @@ resource "aws_scheduler_schedule" "optima_racv_billing" {
 #   schedule_expression_timezone = "Australia/Sydney"
 #
 #   target {
-#     arn      = aws_lambda_function.optima_interval_exporter.arn
+#     arn      = aws_lambda_function.optima_nem12_exporter.arn
 #     role_arn = aws_iam_role.optima_scheduler_role.arn
 #     input = jsonencode({
 #       project   = "bunnings"
@@ -297,7 +297,7 @@ resource "aws_iam_role_policy" "optima_scheduler_invoke_lambda" {
       Effect = "Allow"
       Action = "lambda:InvokeFunction"
       Resource = [
-        aws_lambda_function.optima_interval_exporter.arn,
+        aws_lambda_function.optima_nem12_exporter.arn,
         aws_lambda_function.optima_billing_exporter.arn,
       ]
     }]
@@ -308,8 +308,8 @@ resource "aws_iam_role_policy" "optima_scheduler_invoke_lambda" {
 # CloudWatch Alarms
 # ================================
 
-resource "aws_cloudwatch_metric_alarm" "optima_interval_errors" {
-  alarm_name          = "optima-interval-exporter-errors"
+resource "aws_cloudwatch_metric_alarm" "optima_nem12_errors" {
+  alarm_name          = "optima-nem12-exporter-errors"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "Errors"
@@ -317,10 +317,10 @@ resource "aws_cloudwatch_metric_alarm" "optima_interval_errors" {
   period              = 3600 # 1 hour
   statistic           = "Sum"
   threshold           = 0
-  alarm_description   = "Optima interval exporter Lambda errors"
+  alarm_description   = "Optima NEM12 exporter Lambda errors"
 
   dimensions = {
-    FunctionName = aws_lambda_function.optima_interval_exporter.function_name
+    FunctionName = aws_lambda_function.optima_nem12_exporter.function_name
   }
 
   alarm_actions = [data.aws_sns_topic.sbm_alerts.arn]
@@ -352,4 +352,32 @@ resource "aws_cloudwatch_metric_alarm" "optima_billing_errors" {
 
 data "aws_sns_topic" "sbm_alerts" {
   name = "sbm-ingester-alerts"
+}
+
+# ================================
+# Terraform state moves (rename interval_exporter → nem12_exporter)
+# ================================
+moved {
+  from = aws_cloudwatch_log_group.optima_interval_exporter
+  to   = aws_cloudwatch_log_group.optima_nem12_exporter
+}
+
+moved {
+  from = aws_lambda_function.optima_interval_exporter
+  to   = aws_lambda_function.optima_nem12_exporter
+}
+
+moved {
+  from = aws_scheduler_schedule.optima_bunnings_interval
+  to   = aws_scheduler_schedule.optima_bunnings_nem12
+}
+
+moved {
+  from = aws_scheduler_schedule.optima_racv_interval
+  to   = aws_scheduler_schedule.optima_racv_nem12
+}
+
+moved {
+  from = aws_cloudwatch_metric_alarm.optima_interval_errors
+  to   = aws_cloudwatch_metric_alarm.optima_nem12_errors
 }

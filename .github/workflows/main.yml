@@ -165,7 +165,7 @@ jobs:
           cd build/glue_trigger && zip -r ../../glue-trigger.zip . && cd ../..
 
       # --------------------
-      # Build Optima Exporter Lambda (shared zip for interval + billing exporters)
+      # Build Optima Exporter Lambda (shared zip for nem12 + billing exporters)
       # --------------------
       - name: Build Optima Exporter Lambda
         if: steps.changes.outputs.optima_exporter == 'true'
@@ -173,7 +173,7 @@ jobs:
           mkdir -p build/optima_exporter
           cp -r build/deps/* build/optima_exporter/
           cp -r src/functions/optima_exporter/optima_shared build/optima_exporter/
-          cp -r src/functions/optima_exporter/interval_exporter build/optima_exporter/
+          cp -r src/functions/optima_exporter/nem12_exporter build/optima_exporter/
           cp -r src/functions/optima_exporter/billing_exporter build/optima_exporter/
           cd build/optima_exporter && zip -r ../../optima_exporter.zip . && cd ../..
 
@@ -246,7 +246,7 @@ jobs:
         run: |
           aws s3 cp optima_exporter.zip s3://gega-code-deployment-bucket/sbm-files-ingester/optima_exporter.zip
           aws lambda update-function-code \
-            --function-name optima-interval-exporter \
+            --function-name optima-nem12-exporter \
             --s3-bucket gega-code-deployment-bucket \
             --s3-key sbm-files-ingester/optima_exporter.zip \
             --publish

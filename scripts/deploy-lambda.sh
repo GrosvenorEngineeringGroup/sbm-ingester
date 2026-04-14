@@ -142,7 +142,7 @@ build_optima_exporter() {
 
     # Copy source (modular structure with shared code)
     cp -r src/functions/optima_exporter/optima_shared /tmp/lambda_build/
-    cp -r src/functions/optima_exporter/interval_exporter /tmp/lambda_build/
+    cp -r src/functions/optima_exporter/nem12_exporter /tmp/lambda_build/
     cp -r src/functions/optima_exporter/billing_exporter /tmp/lambda_build/
 
     rm -f optima_exporter.zip
@@ -203,7 +203,7 @@ deploy_optima_exporter() {
     log_info "Uploading optima_exporter.zip to s3://$S3_BUCKET/$s3_key..."
     aws s3 cp "optima_exporter.zip" "s3://$S3_BUCKET/$s3_key"
 
-    for func in optima-interval-exporter optima-billing-exporter; do
+    for func in optima-nem12-exporter optima-billing-exporter; do
         log_info "Updating Lambda function: $func..."
         local result=$(aws lambda update-function-code \
             --function-name "$func" \

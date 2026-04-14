@@ -1,4 +1,4 @@
-"""S3 upload utilities for interval data export."""
+"""S3 upload utilities for NEM12 export."""
 
 from typing import Any
 
@@ -6,7 +6,7 @@ import boto3
 from aws_lambda_powertools import Logger
 from optima_shared.config import S3_UPLOAD_BUCKET, S3_UPLOAD_PREFIX
 
-logger = Logger(service="optima-interval-exporter")
+logger = Logger(service="optima-nem12-exporter")
 
 # S3 client (lazy initialization)
 _s3_client = None

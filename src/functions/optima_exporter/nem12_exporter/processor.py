@@ -1,4 +1,4 @@
-"""Processing logic for interval data export."""
+"""Processing logic for NEM12 export."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, date, datetime, timedelta
@@ -9,10 +9,10 @@ from optima_shared.auth import login_bidenergy
 from optima_shared.config import MAX_WORKERS, OPTIMA_DAYS_BACK, S3_UPLOAD_PREFIX, get_project_config
 from optima_shared.dynamodb import get_site_by_nmi, get_sites_for_project
 
-from interval_exporter.downloader import download_csv
-from interval_exporter.uploader import upload_to_s3
+from nem12_exporter.downloader import download_csv
+from nem12_exporter.uploader import upload_to_s3
 
-logger = Logger(service="optima-interval-exporter")
+logger = Logger(service="optima-nem12-exporter")
 
 # Optima sites live under the "Optima_" namespace in Neptune mappings.
 # Applied to NMI fields in BidEnergy NEM12 responses by download_csv.
@@ -106,7 +106,7 @@ def process_export(
     end_date: str | None = None,
 ) -> dict[str, Any]:
     """
-    Process interval data export for a project.
+    Process NEM12 export for a project.
 
     Args:
         project: Project name (required)
@@ -131,7 +131,7 @@ def process_export(
         }
 
     logger.info(
-        "Starting interval export",
+        "Starting NEM12 export",
         extra={"project": project, "nmi": nmi, "start_date": start_date, "end_date": end_date},
     )
 

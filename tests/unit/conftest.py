@@ -8,7 +8,7 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-# Add optima_exporter to path for Lambda-style imports (shared, interval_exporter, billing_exporter)
+# Add optima_exporter to path for Lambda-style imports (shared, nem12_exporter, billing_exporter)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src" / "functions" / "optima_exporter"))
 
 # Now import everything else
