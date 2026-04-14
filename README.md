@@ -159,7 +159,7 @@ flowchart LR
 | `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
 | `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
 | `sbm-glue-trigger` | Python 3.13 | 128 MB | 30s | Hourly job - triggers Glue ETL when files ≥ threshold |
-| `optima-interval-exporter` | Python 3.13 | 256 MB | 900s | Daily export - downloads BidEnergy interval CSV data to S3 |
+| `optima-nem12-exporter` | Python 3.13 | 256 MB | 900s | Daily export - downloads BidEnergy NEM12 files to S3 |
 | `optima-billing-exporter` | Python 3.13 | 128 MB | 120s | Monthly export - triggers BidEnergy billing report (email delivery) |
 | `cim-report-exporter` | Python 3.13 | 1024 MB | 300s | Daily job (8 AM Sydney) - Playwright browser automation for CIM AFDD reports |
 

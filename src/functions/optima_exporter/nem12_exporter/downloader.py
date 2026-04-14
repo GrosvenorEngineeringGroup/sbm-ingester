@@ -1,4 +1,4 @@
-"""CSV download utilities for interval data export."""
+"""CSV download utilities for NEM12 export."""
 
 import re
 from datetime import datetime
@@ -8,7 +8,7 @@ import requests
 from aws_lambda_powertools import Logger
 from optima_shared.config import BIDENERGY_BASE_URL
 
-logger = Logger(service="optima-interval-exporter")
+logger = Logger(service="optima-nem12-exporter")
 
 # UTF-8 BOM + ASCII whitespace tolerated before the NEM12 100 header.
 # ASP.NET stacks may emit BOM after a server-side encoding-config change.

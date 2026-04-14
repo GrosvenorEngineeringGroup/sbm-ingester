@@ -1,7 +1,7 @@
 """
-Optima Interval Data Exporter Lambda
+Optima NEM12 Exporter Lambda
 
-Exports interval usage data from BidEnergy by downloading CSV reports
+Exports NEM12 files from BidEnergy by downloading CSV reports
 and uploading them to S3 for ingestion pipeline processing.
 
 Event parameters:
@@ -16,15 +16,15 @@ from typing import Any
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from interval_exporter.processor import process_export
+from nem12_exporter.processor import process_export
 
-logger = Logger(service="optima-interval-exporter")
+logger = Logger(service="optima-nem12-exporter")
 
 
 @logger.inject_lambda_context
 def lambda_handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     """
-    Lambda handler for interval data export.
+    Lambda handler for NEM12 export.
 
     Args:
         event: Lambda event with project (required), nmi, startDate, endDate (optional)

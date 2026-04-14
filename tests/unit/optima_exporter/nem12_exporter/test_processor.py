@@ -1,4 +1,4 @@
-"""Unit tests for interval_exporter/processor.py module.
+"""Unit tests for nem12_exporter/processor.py module.
 
 Tests date range calculation, site processing, and export orchestration.
 """
@@ -213,7 +213,7 @@ class TestProcessExport:
 
     def test_validates_project_required(self) -> None:
         """Test that project parameter is handled properly."""
-        from interval_exporter.processor import process_export
+        from nem12_exporter.processor import process_export
 
         # project is required and has no default - this tests the function behavior
         result = process_export(project="unknown_project")
@@ -245,7 +245,7 @@ class TestProcessExport:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
@@ -282,7 +282,7 @@ class TestProcessExport:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
@@ -316,7 +316,7 @@ class TestProcessExport:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
@@ -404,7 +404,7 @@ class TestProcessExport:
 
         processor_module = reload_processor_module()
 
-        with patch("interval_exporter.processor.login_bidenergy", return_value=None):
+        with patch("nem12_exporter.processor.login_bidenergy", return_value=None):
             result = processor_module.process_export(
                 project="bunnings",
                 nmi="NMI001",
@@ -446,7 +446,7 @@ class TestProcessExport:
             return {"success": False, "nmi": "NMI002", "error": "Failed"}
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site", side_effect=mock_process),
         ):
             result = processor_module.process_export(
@@ -482,7 +482,7 @@ class TestProcessExport:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True}
@@ -525,7 +525,7 @@ class TestPartialDateParameters:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
@@ -564,7 +564,7 @@ class TestPartialDateParameters:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI001"}
@@ -613,7 +613,7 @@ class TestParallelProcessing:
             return {"success": True, "nmi": nmi}
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site", side_effect=mock_process),
         ):
             result = processor_module.process_export(project="bunnings")
@@ -658,7 +658,7 @@ class TestParallelProcessing:
             return {"success": True, "nmi": nmi}
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site", side_effect=mock_process),
         ):
             result = processor_module.process_export(project="bunnings")
@@ -699,7 +699,7 @@ class TestParallelProcessing:
         processor_module = reload_processor_module()
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor_module, "process_site") as mock_process,
         ):
             mock_process.return_value = {"success": True, "nmi": "NMI"}
@@ -741,7 +741,7 @@ class TestDateRangeValidation:
     """Validation that startDate <= endDate."""
 
     def test_rejects_start_after_end(self) -> None:
-        from interval_exporter.processor import process_export
+        from nem12_exporter.processor import process_export
 
         result = process_export(
             project="bunnings",
@@ -761,7 +761,7 @@ class TestDateRangeValidation:
         from unittest.mock import patch
 
         import boto3
-        from interval_exporter import processor
+        from nem12_exporter import processor
 
         dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
         table = dynamodb.create_table(
@@ -780,7 +780,7 @@ class TestDateRangeValidation:
         table.put_item(Item={"project": "bunnings", "nmi": "NMI001", "siteIdStr": "site-guid-001"})
 
         with (
-            patch("interval_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
+            patch("nem12_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=token"),
             patch.object(processor, "process_site", return_value={"success": True, "nmi": "NMI001"}),
         ):
             result = processor.process_export(
@@ -795,7 +795,7 @@ class TestDateRangeValidation:
     def test_rejects_partial_date_that_resolves_to_inverted_range(self) -> None:
         """User supplies only future startDate; end resolves to yesterday => invalid."""
         import boto3
-        from interval_exporter.processor import process_export
+        from nem12_exporter.processor import process_export
 
         # Set up DynamoDB so get_sites_for_project succeeds and we reach date resolution
         dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
@@ -833,7 +833,7 @@ class TestProcessSitePassesNmiPrefix:
         from unittest.mock import patch
 
         import boto3
-        from interval_exporter import processor
+        from nem12_exporter import processor
 
         s3 = boto3.client("s3", region_name="ap-southeast-2")
         s3.create_bucket(
@@ -862,6 +862,6 @@ class TestProcessSitePassesNmiPrefix:
         assert kwargs.get("country") == "NZ"
 
     def test_optima_nmi_prefix_constant_value(self) -> None:
-        from interval_exporter.processor import OPTIMA_NMI_PREFIX
+        from nem12_exporter.processor import OPTIMA_NMI_PREFIX
 
         assert OPTIMA_NMI_PREFIX == "Optima_"

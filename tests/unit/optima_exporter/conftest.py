@@ -37,7 +37,7 @@ def reload_dynamodb_module() -> Any:
 
 def reload_uploader_module() -> Any:
     """Reload the uploader module with fresh environment."""
-    import interval_exporter.uploader as uploader_module
+    import nem12_exporter.uploader as uploader_module
 
     uploader_module._s3_client = None
     importlib.reload(uploader_module)
@@ -51,7 +51,7 @@ def reload_processor_module() -> Any:
 
     importlib.reload(config_module)
 
-    import interval_exporter.processor as processor_module
+    import nem12_exporter.processor as processor_module
 
     importlib.reload(processor_module)
     return processor_module
@@ -112,11 +112,11 @@ def reset_env() -> Generator[None]:
 
 @pytest.fixture
 def mock_lambda_context() -> MagicMock:
-    """Create mock Lambda context for interval exporter."""
+    """Create mock Lambda context for NEM12 exporter."""
     context = MagicMock()
-    context.function_name = "optima-interval-exporter"
+    context.function_name = "optima-nem12-exporter"
     context.memory_limit_in_mb = 256
-    context.invoked_function_arn = "arn:aws:lambda:ap-southeast-2:123456789012:function:optima-interval-exporter"
+    context.invoked_function_arn = "arn:aws:lambda:ap-southeast-2:123456789012:function:optima-nem12-exporter"
     context.aws_request_id = "test-request-id"
     return context
 
