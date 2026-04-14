@@ -19,10 +19,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-db = [
-    "sqlmodel>=0.0.37",
-    "psycopg2-binary>=2.9.11",
-]
 dev = [
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
