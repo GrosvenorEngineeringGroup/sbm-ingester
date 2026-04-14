@@ -309,3 +309,202 @@ def test_whitespace_only_unit_falls_back_to_default(_reset_mappings_cache, tmp_p
     assert "p:bunnings:peak,2026-03-01 00:00:00,100.00,kwh," in body
     # Spend row must have unit "aud" (default)
     assert "p:bunnings:spend,2026-03-01 00:00:00,50.00,aud," in body
+
+
+def _make_fixture(tmp_path, nmi: str, date: str, cells: dict[str, str]) -> Path:
+    """Build a minimal UTF-16 LE billing CSV with one data row."""
+    header_cols = [
+        "BuyerShortName",
+        "Country",
+        "Commodity",
+        "Identifier",
+        "IdentifierType",
+        "DistributorId",
+        "Site Name",
+        "Site Reference",
+        "Site Reference 2",
+        "Site Reference 3",
+        "Site Reference 4",
+        "Site Reference 5",
+        "Business Unit",
+        "Address",
+        "City",
+        "State",
+        "Postcode",
+        "Cost Code",
+        "GL Code",
+        "Tags",
+        "Site Move in Date",
+        "Status",
+        "Closed Date",
+        "Closed Reason",
+        "Date",
+        "Retailer",
+        "Peak",
+        "OffPeak",
+        "Shoulder",
+        "Total Usage",
+        "Total GreenPower",
+        "Estimated Peak",
+        "Estimated OffPeak",
+        "Estimated Shoulder",
+        "Total Estimated Usage",
+        "Total Estimated GreenPower",
+        "Usage Measurement Unit",
+        "Energy Charge",
+        "Total Network Charge",
+        "Environmental Charge",
+        "Metering Charge",
+        "Other Charge",
+        "Total Spend",
+        "GreenPower Spend",
+        "Estimated Energy Charge",
+        "Estimated Network Charge",
+        "Estimated Environmental Charge",
+        "Estimated Metering Charge",
+        "Estimated Other Charge",
+        "Total Estimated Spend",
+        "Spend Currency",
+    ]
+    defaults = dict.fromkeys(header_cols, "")
+    defaults.update(
+        {
+            "BuyerShortName": "Bunnings",
+            "Country": "AU",
+            "Commodity": "Electricity",
+            "Identifier": nmi,
+            "IdentifierType": "NMI",
+            "Date": date,
+            "Usage Measurement Unit": "kWh",
+            "Spend Currency": "AUD",
+        }
+    )
+    defaults.update(cells)
+    row = ",".join(defaults[c] for c in header_cols)
+    lines_txt = (
+        "\n".join(
+            [
+                'Commodities:,"Electricity"',
+                'Status:,"Active"',
+                "Country:, Australia",
+                "Start:,01 Jan 2026",
+                "End:,31 Dec 2026",
+                "",
+                "",
+                ",".join(header_cols),
+                row,
+            ]
+        )
+        + "\n"
+    )
+    data = b"\xff\xfe" + lines_txt.encode("utf-16-le")
+    dst = tmp_path / "20260414.000000-Bunnings-Usage and Spend Report.csv"
+    dst.write_bytes(data)
+    return dst
+
+
+def _setup_s3_with_mappings(mappings: dict) -> boto3.client:
+    s3 = boto3.client("s3", region_name="ap-southeast-2")
+    s3.create_bucket(
+        Bucket="sbm-file-ingester",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    s3.create_bucket(
+        Bucket="hudibucketsrc",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    s3.put_object(
+        Bucket="sbm-file-ingester",
+        Key="nem12_mappings.json",
+        Body=json.dumps(mappings).encode(),
+    )
+    return s3
+
+
+@mock_aws
+def test_missing_mapping_skipped(_reset_mappings_cache, tmp_path) -> None:
+    """Rows for NMIs not in nem12_mappings produce no output but do not error."""
+    s3 = _setup_s3_with_mappings({})  # empty mappings
+    src = _make_fixture(tmp_path, "UNKNOWN_NMI", "Mar 2026", {"Peak": "100.00"})
+    result = bp_mod.bunnings_usage_and_spend_parser(str(src), "dummy")
+    assert result == []
+    # No Hudi CSV should be written when zero rows map
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 0
+
+
+@mock_aws
+def test_blank_value_skipped(_reset_mappings_cache, tmp_path) -> None:
+    """Cells with empty string produce no Hudi row for that field."""
+    mappings = {
+        "VCCCLG0019-billing-peak-usage": "p:bunnings:peak",
+        "VCCCLG0019-billing-off-peak-usage": "p:bunnings:offpeak",
+    }
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00", "OffPeak": ""})
+    bp_mod.bunnings_usage_and_spend_parser(str(src), "dummy")
+    key = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")["Contents"][0]["Key"]
+    body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
+    assert "p:bunnings:peak,2026-03-01 00:00:00,100.00,kwh" in body
+    # The empty OffPeak cell must not produce a row:
+    assert "p:bunnings:offpeak" not in body
+
+
+@mock_aws
+def test_invalid_date_skipped(_reset_mappings_cache, tmp_path) -> None:
+    """Bogus Date string skips the row entirely (no partial writes)."""
+    mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "not-a-month", {"Peak": "100.00"})
+    bp_mod.bunnings_usage_and_spend_parser(str(src), "dummy")
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 0
+
+
+@mock_aws
+def test_unit_selection_in_output(_reset_mappings_cache, tmp_path) -> None:
+    """Usage fields use kWh; spend fields use AUD."""
+    mappings = {
+        "VCCCLG0019-billing-peak-usage": "p:bunnings:peak",
+        "VCCCLG0019-billing-total-spend": "p:bunnings:spend",
+    }
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(
+        tmp_path,
+        "VCCCLG0019",
+        "Mar 2026",
+        {"Peak": "100.00", "Total Spend": "1234.56"},
+    )
+    bp_mod.bunnings_usage_and_spend_parser(str(src), "dummy")
+    key = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")["Contents"][0]["Key"]
+    body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
+    assert "p:bunnings:peak,2026-03-01 00:00:00,100.00,kwh" in body
+    assert "p:bunnings:spend,2026-03-01 00:00:00,1234.56,aud" in body
+
+
+@mock_aws
+def test_zero_rows_skips_s3_put(_reset_mappings_cache, tmp_path) -> None:
+    """If every row is unmapped or blank, no Hudi CSV is uploaded."""
+    mappings: dict[str, str] = {}  # none match
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+    result = bp_mod.bunnings_usage_and_spend_parser(str(src), "dummy")
+    assert result == []
+    assert s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/").get("KeyCount", 0) == 0
+
+
+@mock_aws
+def test_s3_write_target_is_hudibucketsrc(_reset_mappings_cache, tmp_path) -> None:
+    """Explicit guard: we must write to hudibucketsrc/sensorDataFiles/, never elsewhere."""
+    mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+    bp_mod.bunnings_usage_and_spend_parser(str(src), "dummy")
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    keys = [o["Key"] for o in listed.get("Contents", [])]
+    assert len(keys) == 1
+    assert keys[0].startswith("sensorDataFiles/billing_export_")
+    assert keys[0].endswith(".csv")
+    # Length check: microsecond timestamp has 20 chars between the prefix and '.csv'
+    prefix = "sensorDataFiles/billing_export_"
+    assert len(keys[0]) == len(prefix) + 20 + len(".csv")
