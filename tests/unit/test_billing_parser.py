@@ -130,3 +130,67 @@ def test_get_nem12_mappings_loads_and_caches(_reset_mappings_cache) -> None:
     # boto3.client("s3") should have been called exactly once
     s3_calls = [c for c in spy.call_args_list if c.args and c.args[0] == "s3"]
     assert len(s3_calls) == 1, f"expected 1 s3 client call, got {len(s3_calls)}"
+
+
+@mock_aws
+def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -> None:
+    """Single Mar 2026 row for VCCCLG0019 produces the expected actual
+    (non-zero) and estimated (zero) Hudi sensor rows. VAAA000266 Mar row
+    only has estimated values; must also appear in the output."""
+    s3 = boto3.client("s3", region_name="ap-southeast-2")
+    s3.create_bucket(
+        Bucket="sbm-file-ingester",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    s3.create_bucket(
+        Bucket="hudibucketsrc",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    # Mappings must cover every NMI present in the fixture.
+    mappings: dict[str, str] = {}
+    for nmi in ("VCCCLG0019", "VAAA000266"):
+        for _, suffix, _unit_source in bp_mod.CSV_FIELD_MAPPING:
+            mappings[f"{nmi}-{suffix}"] = f"p:bunnings:mock-{nmi}-{suffix}"
+    s3.put_object(
+        Bucket="sbm-file-ingester",
+        Key="nem12_mappings.json",
+        Body=json.dumps(mappings).encode(),
+    )
+
+    src = FIXTURE_DIR / "bunnings_billing_sample.csv"
+    dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
+    dst.write_bytes(src.read_bytes())
+
+    result = bp_mod.bunnings_usage_and_spend_parser(str(dst), "dummy")
+    assert result == []
+
+    # Find the exported Hudi CSV
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    keys = [o["Key"] for o in listed.get("Contents", [])]
+    assert len(keys) == 1, f"expected one exported file, got: {keys}"
+    key = keys[0]
+    assert key.startswith("sensorDataFiles/billing_export_")
+    assert key.endswith(".csv")
+
+    body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
+    lines = body.strip().split("\n")
+    # Header + 3 source rows x up to 23 fields. Fixture values for VCCCLG0019
+    # Mar 2026 actual Peak = 31105.09 — must appear with usage unit kwh.
+    assert lines[0] == "sensorId,ts,val,unit,its,quality"
+    assert any(
+        "p:bunnings:mock-VCCCLG0019-billing-peak-usage,2026-03-01 00:00:00,31105.09,kwh" in line for line in lines[1:]
+    ), "expected VCCCLG0019 Mar actual Peak row not found"
+    # Mar 2026 estimated Peak = 0.00 (actual bill landed) — still emitted.
+    assert any(
+        "p:bunnings:mock-VCCCLG0019-billing-estimated-peak-usage,2026-03-01 00:00:00,0.00,kwh" in line
+        for line in lines[1:]
+    ), "expected VCCCLG0019 Mar estimated Peak (0) row not found"
+    # Total Spend in AUD
+    assert any(
+        "p:bunnings:mock-VCCCLG0019-billing-total-spend,2026-03-01 00:00:00,14566.59,aud" in line for line in lines[1:]
+    ), "expected VCCCLG0019 Mar Total Spend row not found"
+    # VAAA000266 Mar 2026 has Estimated Peak = 5000.00 (no actual yet)
+    assert any(
+        "p:bunnings:mock-VAAA000266-billing-estimated-peak-usage,2026-03-01 00:00:00,5000.00,kwh" in line
+        for line in lines[1:]
+    ), "expected VAAA000266 Mar estimated Peak row not found"

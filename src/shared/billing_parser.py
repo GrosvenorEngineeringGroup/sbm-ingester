@@ -11,7 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import boto3
@@ -24,6 +24,9 @@ ParserResult = list[tuple[str, pd.DataFrame]]
 
 MAPPINGS_BUCKET = "sbm-file-ingester"
 MAPPINGS_KEY = "nem12_mappings.json"
+
+HUDI_BUCKET = "hudibucketsrc"
+HUDI_PREFIX = "sensorDataFiles"
 
 _nem12_mappings_cache: dict | None = None
 
@@ -123,8 +126,62 @@ def _get_nem12_mappings() -> dict:
 
 
 def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
-    """Stub — real implementation arrives in Task 4/6."""
-    return 0
+    """Expand billing rows into Hudi sensor rows and write to S3.
+
+    Returns the number of rows written (excluding header). If zero rows
+    would be written, skips the S3 PUT entirely — Glue should never see a
+    header-only file (avoids upsert edge cases on empty inputs).
+    """
+    buf = io.StringIO()
+    buf.write("sensorId,ts,val,unit,its,quality\n")
+    rows_written = 0
+    unmapped_count = 0
+
+    for row in rows:
+        nmi = row.get("Identifier", "").strip()
+        ts = _billing_date_to_ts(row.get("Date", ""))
+        if not nmi or ts is None:
+            if not ts and row.get("Date"):
+                logger.warning(
+                    "bunnings_billing_skip_bad_date",
+                    extra={"nmi": nmi, "date": row.get("Date")},
+                )
+            continue
+
+        usage_unit = row.get("Usage Measurement Unit") or "kWh"
+        spend_currency = row.get("Spend Currency") or "AUD"
+
+        for csv_col, billing_suffix, _unit_source in CSV_FIELD_MAPPING:
+            sensor_id = mappings.get(f"{nmi}-{billing_suffix}")
+            if not sensor_id:
+                unmapped_count += 1
+                continue
+            raw_val = (row.get(csv_col) or "").strip()
+            if not raw_val:
+                continue
+            unit = _pick_unit(billing_suffix, usage_unit, spend_currency)
+            buf.write(f"{sensor_id},{ts},{raw_val},{unit},{ts},\n")
+            rows_written += 1
+
+    if rows_written == 0:
+        logger.warning(
+            "bunnings_billing_zero_mapped_rows",
+            extra={"source_rows": len(rows), "unmapped_count": unmapped_count},
+        )
+        return 0
+
+    ts_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    key = f"{HUDI_PREFIX}/billing_export_{ts_key}.csv"
+    boto3.client("s3").put_object(
+        Bucket=HUDI_BUCKET,
+        Key=key,
+        Body=buf.getvalue().encode(),
+    )
+    logger.info(
+        "bunnings_billing_written",
+        extra={"key": key, "rows_written": rows_written, "unmapped_count": unmapped_count},
+    )
+    return rows_written
 
 
 def bunnings_usage_and_spend_parser(file_name: str, error_file_path: str) -> ParserResult:
