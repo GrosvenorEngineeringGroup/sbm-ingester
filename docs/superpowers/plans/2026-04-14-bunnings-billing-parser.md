@@ -613,20 +613,44 @@ uv run pytest tests/unit/test_billing_parser.py::test_get_nem12_mappings_loads_a
 ```
 Expected: FAIL — either AttributeError on `_nem12_mappings_cache` or the stub still returns `{}`.
 
-- [ ] **Step 5.3: Implement the real cache**
+- [ ] **Step 5.3: Replace the stub + add required imports**
 
-In `src/shared/billing_parser.py`, replace the stub `_get_nem12_mappings`:
+Open `src/shared/billing_parser.py`. Make the module top look **exactly** like this (add missing imports, remove the old `_get_nem12_mappings` stub, leave `_process_rows_and_write` stub in place — Task 6 replaces it):
+
 ```python
+"""Bunnings BidEnergy "Usage and Spend Report" parser.
+
+Reads UTF-16 LE encoded monthly billing CSVs, looks up Neptune point IDs from
+the shared nem12_mappings.json, and writes Hudi-format sensor rows directly
+to the Hudi source bucket. Designed to slot into the existing non_nem_parsers
+dispatch chain: matches by filename, side-effects the Hudi CSV, returns [].
+"""
+
+from __future__ import annotations
+
+import csv
+import io
 import json
+from datetime import datetime
+from pathlib import Path
 
 import boto3
+import pandas as pd
+from aws_lambda_powertools import Logger
+
+logger = Logger(service="bunnings-billing-parser", child=True)
+
+ParserResult = list[tuple[str, pd.DataFrame]]
 
 MAPPINGS_BUCKET = "sbm-file-ingester"
 MAPPINGS_KEY = "nem12_mappings.json"
 
 _nem12_mappings_cache: dict | None = None
+```
 
+Then replace the old stub `_get_nem12_mappings` with the real implementation:
 
+```python
 def _get_nem12_mappings() -> dict:
     """Lazy-load nem12_mappings.json from S3 once per Lambda container.
 
@@ -643,7 +667,7 @@ def _get_nem12_mappings() -> dict:
     return _nem12_mappings_cache
 ```
 
-Also add `import json` and `import boto3` at the top if not already present. Delete the old stub.
+Everything else in the file (existing `CSV_FIELD_MAPPING`, `_billing_date_to_ts`, `_pick_unit`, `_decode_utf16_csv`, `_parse_billing_rows`, stub `_process_rows_and_write`, and `bunnings_usage_and_spend_parser`) stays unchanged.
 
 - [ ] **Step 5.4: Run test to verify it passes**
 
@@ -690,7 +714,8 @@ Append to `tests/unit/test_billing_parser.py`:
 @mock_aws
 def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -> None:
     """Single Mar 2026 row for VCCCLG0019 produces the expected actual
-    (non-zero) and estimated (zero) Hudi sensor rows."""
+    (non-zero) and estimated (zero) Hudi sensor rows. VAAA000266 Mar row
+    only has estimated values; must also appear in the output."""
     s3 = boto3.client("s3", region_name="ap-southeast-2")
     s3.create_bucket(
         Bucket="sbm-file-ingester",
@@ -700,10 +725,11 @@ def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -
         Bucket="hudibucketsrc",
         CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
     )
-    mappings = {
-        f"VCCCLG0019-{suffix}": f"p:bunnings:mock-{suffix}"
-        for _, suffix, _ in bp_mod.CSV_FIELD_MAPPING
-    }
+    # Mappings must cover every NMI present in the fixture.
+    mappings: dict[str, str] = {}
+    for nmi in ("VCCCLG0019", "VAAA000266"):
+        for _, suffix, _unit_source in bp_mod.CSV_FIELD_MAPPING:
+            mappings[f"{nmi}-{suffix}"] = f"p:bunnings:mock-{nmi}-{suffix}"
     s3.put_object(
         Bucket="sbm-file-ingester",
         Key="nem12_mappings.json",
@@ -731,22 +757,22 @@ def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -
     # Mar 2026 actual Peak = 31105.09 — must appear with usage unit kwh.
     assert lines[0] == "sensorId,ts,val,unit,its,quality"
     assert any(
-        "p:bunnings:mock-billing-peak-usage,2026-03-01 00:00:00,31105.09,kwh" in line
+        "p:bunnings:mock-VCCCLG0019-billing-peak-usage,2026-03-01 00:00:00,31105.09,kwh" in line
         for line in lines[1:]
     ), "expected VCCCLG0019 Mar actual Peak row not found"
     # Mar 2026 estimated Peak = 0.00 (actual bill landed) — still emitted.
     assert any(
-        "p:bunnings:mock-billing-estimated-peak-usage,2026-03-01 00:00:00,0.00,kwh" in line
+        "p:bunnings:mock-VCCCLG0019-billing-estimated-peak-usage,2026-03-01 00:00:00,0.00,kwh" in line
         for line in lines[1:]
     ), "expected VCCCLG0019 Mar estimated Peak (0) row not found"
     # Total Spend in AUD
     assert any(
-        "p:bunnings:mock-billing-total-spend,2026-03-01 00:00:00,14566.59,aud" in line
+        "p:bunnings:mock-VCCCLG0019-billing-total-spend,2026-03-01 00:00:00,14566.59,aud" in line
         for line in lines[1:]
     ), "expected VCCCLG0019 Mar Total Spend row not found"
     # VAAA000266 Mar 2026 has Estimated Peak = 5000.00 (no actual yet)
     assert any(
-        "p:bunnings:mock-billing-estimated-peak-usage,2026-03-01 00:00:00,5000.00,kwh" in line
+        "p:bunnings:mock-VAAA000266-billing-estimated-peak-usage,2026-03-01 00:00:00,5000.00,kwh" in line
         for line in lines[1:]
     ), "expected VAAA000266 Mar estimated Peak row not found"
 ```
@@ -1272,6 +1298,18 @@ Open `pyproject.toml`, locate the `dependencies` array (typically under `[projec
     "sqlmodel>=0.0.37",
     "psycopg2-binary>=2.9.11",
 ```
+
+- [ ] **Step 10.7b: Remove deleted scripts from any `[project.scripts]` / `[tool.*.scripts]` entry points**
+
+Script entry points in `pyproject.toml` referencing the deleted modules will cause `uv sync` to warn or fail. Check and clean:
+
+```bash
+grep -nE "billing_csv_to_hudi|import_billing_csv|export_billing_to_hudi|fetch_billing_point_ids|generate_billing_points_csv" pyproject.toml
+```
+
+If any line matches, open `pyproject.toml` and remove the offending `"name = module:function"` lines inside `[project.scripts]` (and any analogous `[tool.*.scripts]` section) that reference a deleted module. Re-run the grep to confirm zero matches.
+
+Expected when clean: `grep` returns nothing.
 
 - [ ] **Step 10.8: Regenerate lockfile**
 
