@@ -4,6 +4,7 @@ import boto3
 import pandas as pd
 from aws_lambda_powertools import Logger
 
+from shared.billing_parser import bunnings_usage_and_spend_parser
 from shared.noosa_solar_parser import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
@@ -192,7 +193,8 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
         envizi_vertical_parser_water,
         envizi_vertical_parser_electricity,
         racv_elec_parser,
-        optima_usage_and_spend_to_s3,
+        optima_usage_and_spend_to_s3,  # RACV — unchanged
+        bunnings_usage_and_spend_parser,  # NEW — Bunnings billing
         optima_parser,
         envizi_vertical_parser_water_bulk,
         green_square_private_wire_schneider_comx_parser,

@@ -508,3 +508,39 @@ def test_s3_write_target_is_hudibucketsrc(_reset_mappings_cache, tmp_path) -> No
     # Length check: microsecond timestamp has 20 chars between the prefix and '.csv'
     prefix = "sensorDataFiles/billing_export_"
     assert len(keys[0]) == len(prefix) + 20 + len(".csv")
+
+
+@mock_aws
+def test_dispatcher_routes_bunnings_file(_reset_mappings_cache, tmp_path) -> None:
+    """End-to-end: get_non_nem_df should route a Bunnings billing file to
+    bunnings_usage_and_spend_parser and return []."""
+    from shared.non_nem_parsers import get_non_nem_df
+
+    mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
+    _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+
+    result = get_non_nem_df(str(src), "dummy")
+    assert result == []
+
+
+@mock_aws
+def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache, tmp_path) -> None:
+    """Regression guard: RACV files must still hit optima_usage_and_spend_to_s3,
+    not the new Bunnings parser."""
+    from shared.non_nem_parsers import get_non_nem_df
+
+    s3 = boto3.client("s3", region_name="ap-southeast-2")
+    s3.create_bucket(
+        Bucket="gegoptimareports",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    dst = tmp_path / "20260414.024550-RACV-Usage and Spend Report.csv"
+    dst.write_bytes(b"dummy content")
+
+    result = get_non_nem_df(str(dst), "dummy")
+    assert result == []  # RACV parser also returns []
+
+    # RACV parser copies to gegoptimareports — verify we hit it, not ours
+    obj = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")
+    assert obj["Body"].read() == b"dummy content"
