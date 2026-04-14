@@ -148,8 +148,8 @@ def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
                 )
             continue
 
-        usage_unit = row.get("Usage Measurement Unit") or "kWh"
-        spend_currency = row.get("Spend Currency") or "AUD"
+        usage_unit = (row.get("Usage Measurement Unit") or "").strip() or "kWh"
+        spend_currency = (row.get("Spend Currency") or "").strip() or "AUD"
 
         for csv_col, billing_suffix, _unit_source in CSV_FIELD_MAPPING:
             sensor_id = mappings.get(f"{nmi}-{billing_suffix}")

@@ -194,3 +194,118 @@ def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -
         "p:bunnings:mock-VAAA000266-billing-estimated-peak-usage,2026-03-01 00:00:00,5000.00,kwh" in line
         for line in lines[1:]
     ), "expected VAAA000266 Mar estimated Peak row not found"
+
+
+@mock_aws
+def test_whitespace_only_unit_falls_back_to_default(_reset_mappings_cache, tmp_path) -> None:
+    """Whitespace-only Usage Measurement Unit / Spend Currency must fall
+    back to defaults (kwh/aud), not pass through as a garbage unit."""
+    s3 = boto3.client("s3", region_name="ap-southeast-2")
+    s3.create_bucket(
+        Bucket="sbm-file-ingester",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    s3.create_bucket(
+        Bucket="hudibucketsrc",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    mappings = {
+        "VCCCLG0019-billing-peak-usage": "p:bunnings:peak",
+        "VCCCLG0019-billing-total-spend": "p:bunnings:spend",
+    }
+    s3.put_object(
+        Bucket="sbm-file-ingester",
+        Key="nem12_mappings.json",
+        Body=json.dumps(mappings).encode(),
+    )
+
+    # Build a minimal UTF-16 LE fixture with whitespace-only unit columns
+    header_cols = [
+        "BuyerShortName",
+        "Country",
+        "Commodity",
+        "Identifier",
+        "IdentifierType",
+        "DistributorId",
+        "Site Name",
+        "Site Reference",
+        "Site Reference 2",
+        "Site Reference 3",
+        "Site Reference 4",
+        "Site Reference 5",
+        "Business Unit",
+        "Address",
+        "City",
+        "State",
+        "Postcode",
+        "Cost Code",
+        "GL Code",
+        "Tags",
+        "Site Move in Date",
+        "Status",
+        "Closed Date",
+        "Closed Reason",
+        "Date",
+        "Retailer",
+        "Peak",
+        "OffPeak",
+        "Shoulder",
+        "Total Usage",
+        "Total GreenPower",
+        "Estimated Peak",
+        "Estimated OffPeak",
+        "Estimated Shoulder",
+        "Total Estimated Usage",
+        "Total Estimated GreenPower",
+        "Usage Measurement Unit",
+        "Energy Charge",
+        "Total Network Charge",
+        "Environmental Charge",
+        "Metering Charge",
+        "Other Charge",
+        "Total Spend",
+        "GreenPower Spend",
+        "Estimated Energy Charge",
+        "Estimated Network Charge",
+        "Estimated Environmental Charge",
+        "Estimated Metering Charge",
+        "Estimated Other Charge",
+        "Total Estimated Spend",
+        "Spend Currency",
+    ]
+    cells = dict.fromkeys(header_cols, "")
+    cells["Identifier"] = "VCCCLG0019"
+    cells["Date"] = "Mar 2026"
+    cells["Peak"] = "100.00"
+    cells["Total Spend"] = "50.00"
+    cells["Usage Measurement Unit"] = "   "  # whitespace only
+    cells["Spend Currency"] = "   "  # whitespace only
+    row = ",".join(cells[c] for c in header_cols)
+    lines_txt = (
+        "\n".join(
+            [
+                'Commodities:,"Electricity"',
+                'Status:,"Active"',
+                "Country:, Australia",
+                "Start:,01 Jan 2026",
+                "End:,31 Dec 2026",
+                "",
+                "",
+                ",".join(header_cols),
+                row,
+            ]
+        )
+        + "\n"
+    )
+    data = b"\xff\xfe" + lines_txt.encode("utf-16-le")
+    dst = tmp_path / "20260414.000000-Bunnings-Usage and Spend Report.csv"
+    dst.write_bytes(data)
+
+    bp_mod.bunnings_usage_and_spend_parser(str(dst), "dummy")
+
+    key = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")["Contents"][0]["Key"]
+    body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
+    # Usage row must have unit "kwh" (default) not whitespace
+    assert "p:bunnings:peak,2026-03-01 00:00:00,100.00,kwh," in body
+    # Spend row must have unit "aud" (default)
+    assert "p:bunnings:spend,2026-03-01 00:00:00,50.00,aud," in body
