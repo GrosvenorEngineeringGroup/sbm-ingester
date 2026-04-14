@@ -202,7 +202,7 @@ resource "aws_scheduler_schedule" "optima_racv_nem12" {
 # EventBridge Scheduler: Billing (Monthly)
 # ================================
 
-# Bunnings Billing - Monthly 1st 7:00 AM Sydney
+# Bunnings Billing - Monthly 7th 7:00 AM Sydney
 resource "aws_scheduler_schedule" "optima_bunnings_billing" {
   name       = "optima-bunnings-billing-monthly"
   group_name = "default"
@@ -211,7 +211,7 @@ resource "aws_scheduler_schedule" "optima_bunnings_billing" {
     mode = "OFF"
   }
 
-  schedule_expression          = "cron(0 7 1 * ? *)"
+  schedule_expression          = "cron(0 7 7 * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
