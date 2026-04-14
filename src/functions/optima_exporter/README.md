@@ -52,7 +52,7 @@ Lambda (optima-nem12-exporter)
     │
     ├─→ BidEnergy Login ─→ Get session cookie
     │
-    ├─→ For each site (parallel, max 10 workers):
+    ├─→ For each site (parallel, max 20 workers):
     │       │
     │       ├─→ Download CSV from BidEnergy API
     │       │       (/BuyerReportRead/Intervalread)
@@ -113,7 +113,7 @@ Lambda (optima-billing-exporter)
 }
 ```
 
-If `startDate`/`endDate` are not provided, defaults to the past 7 days (configurable via `OPTIMA_DAYS_BACK`).
+If `startDate`/`endDate` are not provided, defaults to yesterday only (1 day back; configurable via `OPTIMA_DAYS_BACK`).
 
 ### Billing Exporter
 
@@ -143,8 +143,8 @@ If `startDate`/`endDate` are not provided, defaults to the past 12 months (confi
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPTIMA_DAYS_BACK` | Days of data to export | `7` |
-| `OPTIMA_MAX_WORKERS` | Parallel download threads | `10` |
+| `OPTIMA_DAYS_BACK` | Days of data to export (end_date - days + 1 through end_date) | `1` |
+| `OPTIMA_MAX_WORKERS` | Parallel download threads | `20` |
 
 ### Billing Exporter Configuration
 
@@ -223,19 +223,21 @@ aws lambda invoke \
 
 ## Testing
 
-Tests are located in `tests/unit/optima_exporter/` with 82 tests covering all modules:
+Tests are located in `tests/unit/optima_exporter/` with 122 tests covering all modules:
 
 ```
 tests/unit/optima_exporter/
 ├── conftest.py                    # Shared fixtures
+├── test_e2e_full_chain.py         # 1 test - E2E: BidEnergy → Hudi source
 ├── optima_shared/
 │   ├── test_auth.py               # 6 tests
 │   ├── test_config.py             # 13 tests
-│   └── test_dynamodb.py           # 13 tests
+│   └── test_dynamodb.py           # 14 tests
 ├── nem12_exporter/
 │   ├── test_app.py                # 2 tests
-│   ├── test_downloader.py         # 11 tests
-│   ├── test_processor.py          # 20 tests
+│   ├── test_downloader.py         # 38 tests - CSV download, date format, NEM12 prefix rewrite
+│   ├── test_processor.py          # 29 tests
+│   ├── test_prefix_scoping.py     # 2 tests - NMI prefix scoping
 │   └── test_uploader.py           # 7 tests
 └── billing_exporter/
     ├── test_app.py                # 2 tests
