@@ -202,8 +202,8 @@ Configured via EventBridge Scheduler in Terraform (`terraform/optima_exporter.tf
 
 | Schedule | Lambda | Description |
 |----------|--------|-------------|
-| `cron(0 13 * * ? *)` | nem12-exporter | Daily at 13:00 UTC (midnight AEDT) |
-| `cron(0 13 1 * ? *)` | billing-exporter | 1st of each month at 13:00 UTC |
+| `cron(0 14 * * ? *)` (Australia/Sydney) | nem12-exporter | Daily at 14:00 Sydney time |
+| `cron(0 7 1 * ? *)` (Australia/Sydney) | billing-exporter | 1st of each month at 07:00 Sydney time |
 
 ### Manual Invocation
 
@@ -258,5 +258,5 @@ uv run pytest tests/unit/optima_exporter/ --cov=src/functions/optima_exporter
 ## Related Files
 
 - **Terraform:** `terraform/optima_exporter.tf` - Lambda, DynamoDB, EventBridge Scheduler
-- **Deployment:** `.github/workflows/deploy.yml` - CI/CD pipeline (builds `optima_exporter.zip`)
+- **Deployment:** `.github/workflows/main.yml` - CI/CD pipeline (builds `optima_exporter.zip`)
 - **Config Import:** `scripts/import_optima_config_to_dynamodb.py` - Site configuration loader
