@@ -10,15 +10,22 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from datetime import datetime
 from pathlib import Path
 
+import boto3
 import pandas as pd
 from aws_lambda_powertools import Logger
 
 logger = Logger(service="bunnings-billing-parser", child=True)
 
 ParserResult = list[tuple[str, pd.DataFrame]]
+
+MAPPINGS_BUCKET = "sbm-file-ingester"
+MAPPINGS_KEY = "nem12_mappings.json"
+
+_nem12_mappings_cache: dict | None = None
 
 
 # (CSV column name, billing suffix used in nem12_mappings key, unit source)
@@ -100,8 +107,19 @@ def _parse_billing_rows(file_path: str) -> list[dict[str, str]]:
 
 
 def _get_nem12_mappings() -> dict:
-    """Stub — real implementation arrives in Task 5."""
-    return {}
+    """Lazy-load nem12_mappings.json from S3 once per Lambda container.
+
+    Cached at module level; lives for the container's warm lifetime. Cold
+    starts pay one ~1 MB S3 GET. Mapping refresh happens hourly via the
+    sbm-files-ingester-nem12-mappings-to-s3 Lambda — stale containers simply
+    miss new NMIs until they recycle, which is acceptable because new NMIs
+    skip silently and catch up on the next monthly run.
+    """
+    global _nem12_mappings_cache
+    if _nem12_mappings_cache is None:
+        obj = boto3.client("s3").get_object(Bucket=MAPPINGS_BUCKET, Key=MAPPINGS_KEY)
+        _nem12_mappings_cache = json.loads(obj["Body"].read())
+    return _nem12_mappings_cache
 
 
 def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
