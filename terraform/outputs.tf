@@ -40,3 +40,29 @@ output "aurora_connection_url" {
   description = "Full Aurora PostgreSQL connection URL."
   sensitive   = true
 }
+
+# -----------------------------
+# CI/CD Policy Drift Guard
+# -----------------------------
+# The AWS IAM managed policy `sbm-ingester-cicd-policy` (attached to IAM user
+# `sbm-ingester-github-actions`) grants `lambda:UpdateFunctionCode` on a
+# hard-coded list of Lambda ARNs. That policy is managed MANUALLY (not in
+# Terraform) to avoid policy-version churn and accidental permission loss.
+#
+# This output surfaces the CANONICAL set of ARNs that policy SHOULD contain.
+# Whenever a Lambda is renamed / added / removed in Terraform, run
+# `scripts/check_cicd_policy_drift.sh` to compare this list against the live
+# IAM policy and patch the policy manually if they diverge.
+output "cicd_managed_lambda_arns" {
+  description = "Lambda ARNs the sbm-ingester-cicd-policy IAM policy must allow lambda:UpdateFunctionCode on. Keep the live policy in sync with this list (scripts/check_cicd_policy_drift.sh)."
+  value = sort([
+    aws_lambda_function.sbm_files_ingester.arn,
+    aws_lambda_function.sbm_files_ingester_redrive.arn,
+    aws_lambda_function.sbm_files_ingester_nem12_mappings.arn,
+    aws_lambda_function.weekly_archiver.arn,
+    aws_lambda_function.glue_trigger.arn,
+    aws_lambda_function.optima_nem12_exporter.arn,
+    aws_lambda_function.optima_billing_exporter.arn,
+    aws_lambda_function.cim_report_exporter.arn,
+  ])
+}

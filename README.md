@@ -415,6 +415,19 @@ terraform plan
 terraform apply
 ```
 
+### CI/CD IAM Policy (manual sync)
+
+The GitHub Actions IAM user `sbm-ingester-github-actions` holds the managed policy `sbm-ingester-cicd-policy`, which hard-codes `lambda:UpdateFunctionCode` permission on a list of Lambda ARNs. The policy is managed **manually** (not by Terraform) to keep long-lived credentials out of state and avoid the AWS 5-version cap on managed policies.
+
+Whenever you **rename, add, or remove a Lambda** in Terraform, also update the IAM policy. The `cicd_managed_lambda_arns` Terraform output is the canonical source of truth; `scripts/check_cicd_policy_drift.sh` compares that output to the live policy and reports drift.
+
+```bash
+# After renaming/adding Lambdas and running `terraform apply`:
+./scripts/check_cicd_policy_drift.sh
+```
+
+If drift is reported, follow the remediation message printed by the script.
+
 ## API
 
 ### GET /nem12-mappings
