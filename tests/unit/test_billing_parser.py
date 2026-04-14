@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from shared.billing_parser import bunnings_usage_and_spend_parser
+from shared.billing_parser import (
+    CSV_FIELD_MAPPING,
+    _billing_date_to_ts,
+    _pick_unit,
+    bunnings_usage_and_spend_parser,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -48,3 +53,38 @@ def test_utf16_decoding_and_row_parsing(tmp_path, monkeypatch) -> None:
     assert captured[0]["Peak"] == "31105.09"
     assert captured[2]["Identifier"] == "VAAA000266"
     assert captured[2]["Estimated Peak"] == "5000.00"
+
+
+def test_date_conversion_valid() -> None:
+    assert _billing_date_to_ts("Mar 2026") == "2026-03-01 00:00:00"
+    assert _billing_date_to_ts("Jan 2025") == "2025-01-01 00:00:00"
+    assert _billing_date_to_ts("Dec 2024") == "2024-12-01 00:00:00"
+
+
+def test_date_conversion_invalid_returns_none() -> None:
+    assert _billing_date_to_ts("bogus") is None
+    assert _billing_date_to_ts("") is None
+    assert _billing_date_to_ts("2026-03") is None
+
+
+def test_unit_selection() -> None:
+    # usage suffix → usage unit
+    assert _pick_unit("billing-peak-usage", "kWh", "AUD") == "kwh"
+    assert _pick_unit("billing-total-greenpower-usage", "kWh", "AUD") == "kwh"
+    assert _pick_unit("billing-estimated-peak-usage", "kWh", "AUD") == "kwh"
+    # spend / charge suffix → spend unit
+    assert _pick_unit("billing-energy-charge", "kWh", "AUD") == "aud"
+    assert _pick_unit("billing-total-spend", "kWh", "AUD") == "aud"
+    assert _pick_unit("billing-greenpower-spend", "kWh", "AUD") == "aud"
+    assert _pick_unit("billing-estimated-metering-charge", "kWh", "AUD") == "aud"
+
+
+def test_csv_field_mapping_has_23_entries() -> None:
+    """Lock the mapping size; new fields require a deliberate change."""
+    assert len(CSV_FIELD_MAPPING) == 23
+    # Spot-check a few well-known entries
+    csv_cols = {entry[0] for entry in CSV_FIELD_MAPPING}
+    assert "Peak" in csv_cols
+    assert "Estimated Peak" in csv_cols
+    assert "Total Spend" in csv_cols
+    assert "Total Estimated Spend" in csv_cols

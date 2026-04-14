@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -18,6 +19,61 @@ from aws_lambda_powertools import Logger
 logger = Logger(service="bunnings-billing-parser", child=True)
 
 ParserResult = list[tuple[str, pd.DataFrame]]
+
+
+# (CSV column name, billing suffix used in nem12_mappings key, unit source)
+# unit_source: "usage" → Usage Measurement Unit, "spend" → Spend Currency
+CSV_FIELD_MAPPING: list[tuple[str, str, str]] = [
+    ("Peak", "billing-peak-usage", "usage"),
+    ("OffPeak", "billing-off-peak-usage", "usage"),
+    ("Shoulder", "billing-shoulder-usage", "usage"),
+    ("Total Usage", "billing-total-usage", "usage"),
+    ("Total GreenPower", "billing-total-greenpower-usage", "usage"),
+    ("Estimated Peak", "billing-estimated-peak-usage", "usage"),
+    ("Estimated OffPeak", "billing-estimated-off-peak-usage", "usage"),
+    ("Estimated Shoulder", "billing-estimated-shoulder-usage", "usage"),
+    ("Total Estimated Usage", "billing-total-estimated-usage", "usage"),
+    ("Total Estimated GreenPower", "billing-total-estimated-greenpower-usage", "usage"),
+    ("Energy Charge", "billing-energy-charge", "spend"),
+    ("Total Network Charge", "billing-network-charge", "spend"),
+    ("Environmental Charge", "billing-environmental-charge", "spend"),
+    ("Metering Charge", "billing-metering-charge", "spend"),
+    ("Other Charge", "billing-other-charge", "spend"),
+    ("Total Spend", "billing-total-spend", "spend"),
+    ("GreenPower Spend", "billing-greenpower-spend", "spend"),
+    ("Estimated Energy Charge", "billing-estimated-energy-charge", "spend"),
+    ("Estimated Network Charge", "billing-estimated-network-charge", "spend"),
+    ("Estimated Environmental Charge", "billing-estimated-environmental-charge", "spend"),
+    ("Estimated Metering Charge", "billing-estimated-metering-charge", "spend"),
+    ("Estimated Other Charge", "billing-estimated-other-charge", "spend"),
+    ("Total Estimated Spend", "billing-total-estimated-spend", "spend"),
+]
+
+
+def _billing_date_to_ts(date_str: str) -> str | None:
+    """Convert 'Mmm YYYY' (e.g. 'Mar 2026') to 'YYYY-MM-01 00:00:00'.
+
+    Returns None if the string does not parse; callers skip such rows.
+    """
+    if not date_str:
+        return None
+    try:
+        dt = datetime.strptime(date_str.strip(), "%b %Y")
+    except ValueError:
+        return None
+    return dt.strftime("%Y-%m-01 00:00:00")
+
+
+def _pick_unit(billing_suffix: str, usage_unit: str, spend_currency: str) -> str:
+    """Choose the Hudi unit string based on the billing-field suffix.
+
+    Spend/charge fields use the Spend Currency column (e.g. AUD); everything
+    else uses Usage Measurement Unit (e.g. kWh). Returned lowercased to match
+    existing Hudi rows (e.g. 'kwh').
+    """
+    if "charge" in billing_suffix or "spend" in billing_suffix:
+        return (spend_currency or "aud").lower()
+    return (usage_unit or "kwh").lower()
 
 
 def _decode_utf16_csv(file_path: str) -> list[str]:
