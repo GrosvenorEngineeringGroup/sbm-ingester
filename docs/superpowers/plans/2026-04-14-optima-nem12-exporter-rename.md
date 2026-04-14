@@ -167,7 +167,7 @@ Expected: no output.
 
 Run: `git mv tests/unit/optima_exporter/interval_exporter tests/unit/optima_exporter/nem12_exporter`
 
-Expected: 5 files renamed (`__init__.py`, `test_app.py`, `test_app.py`, `test_downloader.py`, `test_processor.py`, `test_uploader.py`).
+Expected: 5 files renamed (`__init__.py`, `test_app.py`, `test_downloader.py`, `test_processor.py`, `test_uploader.py`).
 
 - [ ] **Step 2: Verify**
 
@@ -403,7 +403,7 @@ resource "aws_lambda_function" "optima_nem12_exporter" {
 }
 ```
 
-(Preserve `runtime`, `timeout`, `memory_size`, `s3_bucket`, `s3_key`, `tracing_config` lines verbatim.)
+**Preserve all other fields (`runtime`, `timeout`, `memory_size`, `s3_bucket`, `s3_key`, `tracing_config`) verbatim. Only change the lines explicitly listed in the diff above: `resource` address, `function_name`, `description`, `handler`, the `POWERTOOLS_SERVICE_NAME` env var, the comment above `OPTIMA_DAYS_BACK`, and the `depends_on` reference.**
 
 - [ ] **Step 4: Update section header comment**
 
@@ -523,6 +523,8 @@ resource "aws_cloudwatch_metric_alarm" "optima_nem12_errors" {
   ...
 }
 ```
+
+**Preserve all other fields (`comparison_operator`, `evaluation_periods`, `metric_name`, `namespace`, `period`, `statistic`, `threshold`, `alarm_actions`, `ok_actions`, `tags`) verbatim. Only change the lines explicitly listed above.**
 
 - [ ] **Step 11: Add `moved {}` blocks at end of file**
 
@@ -710,7 +712,7 @@ Expected: no files need formatting.
 
 - [ ] **Step 1: Initialize and plan**
 
-Run: `cd terraform && terraform init -upgrade && terraform plan -out=/tmp/rename.tfplan 2>&1 | tee /tmp/rename.tfplan.txt && cd ..`
+Run: `cd terraform && terraform init && terraform plan -out=/tmp/rename.tfplan 2>&1 | tee /tmp/rename.tfplan.txt && cd ..`
 
 - [ ] **Step 2: Verify expected changes**
 
@@ -805,9 +807,10 @@ Terraform will:
 
 Run:
 ```bash
+echo '{"project":"bunnings","nmi":"Optima_QB13041223","startDate":"2026-04-13","endDate":"2026-04-13"}' > /tmp/payload.json
 aws lambda invoke \
   --function-name optima-nem12-exporter \
-  --payload "$(echo -n '{"project":"bunnings","nmi":"Optima_QB13041223","startDate":"2026-04-13","endDate":"2026-04-13"}' | base64)" \
+  --payload fileb:///tmp/payload.json \
   --region ap-southeast-2 \
   /tmp/out.json && cat /tmp/out.json
 ```
