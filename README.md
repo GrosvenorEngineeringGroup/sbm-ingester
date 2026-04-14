@@ -154,7 +154,7 @@ flowchart LR
 
 | Function | Runtime | Memory | Timeout | Purpose |
 |----------|---------|--------|---------|---------|
-| `sbm-files-ingester` | Python 3.13 | 512 MB | 300s | Main processor - parses files, maps NMIs, writes to data lake |
+| `sbm-files-ingester` | Python 3.13 | 512 MB | 900s | Main processor - parses files, maps NMIs, writes to data lake |
 | `sbm-files-ingester-redrive` | Python 3.13 | 128 MB | 600s | Re-triggers stuck files in `newTBP/` |
 | `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
 | `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
@@ -237,7 +237,7 @@ sbm-ingester/
 │   ├── functions/
 │   │   ├── file_processor/      # Main ingester Lambda
 │   │   │   └── app.py
-│   │   ├── nem12_exporter/      # NEM12 mappings Lambda
+│   │   ├── nem12_exporter/      # NEM12 → Neptune mappings exporter Lambda
 │   │   │   └── app.py
 │   │   ├── redrive_handler/     # Redrive Lambda
 │   │   │   └── app.py
@@ -245,8 +245,10 @@ sbm-ingester/
 │   │   │   └── app.py
 │   │   ├── glue_trigger/        # Glue trigger Lambda
 │   │   │   └── app.py
-│   │   ├── optima_exporter/     # Optima/BidEnergy data exporter
-│   │   │   └── app.py
+│   │   ├── optima_exporter/     # Optima/BidEnergy exporter (2 Lambdas)
+│   │   │   ├── optima_shared/   # Auth, config, DynamoDB
+│   │   │   ├── nem12_exporter/  # NEM12 CSV download Lambda
+│   │   │   └── billing_exporter/ # Billing report trigger Lambda
 │   │   └── cim_exporter/        # CIM AFDD report exporter (Docker)
 │   │       ├── Dockerfile
 │   │       ├── requirements.txt
@@ -264,13 +266,22 @@ sbm-ingester/
 │   └── unit/
 │       ├── conftest.py          # Shared fixtures
 │       ├── fixtures/            # Test data files
-│       └── test_*.py            # Test modules (255 tests)
+│       └── test_*.py            # Test modules (525 tests)
 ├── scripts/
-│   ├── migrate_archives_to_weekly.py       # One-time migration script
 │   ├── process_nem12_locally.py            # Local NEM12 processing
 │   ├── import_optima_config_to_dynamodb.py # Import Optima site config
-│   ├── deploy-lambda.sh                    # Local Lambda deployment
-│   └── deploy.sh                           # Full deployment script
+│   ├── backfill_country_to_dynamodb.py     # Backfill country field in DynamoDB
+│   ├── billing_csv_to_hudi.py              # Convert Optima billing CSV → Hudi
+│   ├── export_billing_to_hudi.py           # Export billing data to Hudi
+│   ├── import_billing_csv.py               # Import billing CSV files
+│   ├── import_billing_points.py            # Import billing point IDs
+│   ├── fetch_billing_point_ids.py          # Fetch billing point IDs from Neptune
+│   ├── generate_billing_points_csv.py      # Generate billing points CSV
+│   ├── billing_neptune_helper.py           # Neptune query helpers for billing
+│   ├── deploy.sh                           # Full deployment script
+│   ├── deploy-lambda.sh                    # Local Lambda zip deployment
+│   ├── deploy-cim-exporter.sh              # CIM Docker image deployment
+│   └── setup-lefthook.sh                   # Git hooks setup
 ├── terraform/
 │   ├── ingester.tf              # Lambda functions
 │   ├── glue.tf                  # Glue job and trigger
@@ -316,27 +327,6 @@ uv run scripts/process_nem12_locally.py /path/to/file.csv --dry-run
 uv run scripts/process_nem12_locally.py /path/to/file.csv
 ```
 
-### Migrate Archives to Weekly
-
-One-time migration script to convert existing monthly archives (`2025-08/`) to weekly format (`2025-W32/`).
-
-```bash
-# Preview changes (dry-run)
-uv run scripts/migrate_archives_to_weekly.py --dry-run
-
-# Run migration with default 50 workers
-uv run scripts/migrate_archives_to_weekly.py
-
-# Run with custom worker count
-uv run scripts/migrate_archives_to_weekly.py --workers 100
-```
-
-**Options:**
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--dry-run` | Preview without executing | `False` |
-| `--workers` | Parallel S3 operations | `50` |
-
 ## Configuration
 
 ### Environment Variables
@@ -344,7 +334,7 @@ uv run scripts/migrate_archives_to_weekly.py --workers 100
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `BUCKET_NAME` | Input S3 bucket | `sbm-file-ingester` |
-| `BATCH_SIZE` | DataFrames to buffer before S3 write | `50` |
+| `BATCH_SIZE` | Rows to buffer before flushing to S3 CSV | `50000` |
 
 ### CloudWatch Log Groups
 
@@ -360,7 +350,7 @@ uv run scripts/migrate_archives_to_weekly.py --workers 100
 
 - **Region:** ap-southeast-2
 - **S3 Buckets:** `sbm-file-ingester` (input), `hudibucketsrc` (output)
-- **SQS:** `sbm-files-ingester-queue` (300s visibility), `sbm-files-ingester-dlq` (14 day retention)
+- **SQS:** `sbm-files-ingester-queue` (900s visibility), `sbm-files-ingester-dlq` (14 day retention)
 - **DynamoDB:** `sbm-ingester-idempotency` (duplicate prevention, 24h TTL)
 - **Neptune:** NEM12 ID → sensor ID mappings
 - **SNS:** `sbm-ingester-alerts` (error notifications)
@@ -368,7 +358,7 @@ uv run scripts/migrate_archives_to_weekly.py --workers 100
 
 ## Testing
 
-Tests use pytest with moto for AWS mocking. **Total: 356 tests.**
+Tests use pytest with moto for AWS mocking. **Total: 525 tests.**
 
 ```bash
 # Run all tests
@@ -386,13 +376,7 @@ uv run pytest --cov=src --cov-report=html
 
 ### Test Coverage
 
-| Module | Coverage |
-|--------|----------|
-| `functions/file_processor/app.py` | 100% |
-| `functions/optima_exporter/app.py` | 100% |
-| `shared/nem_adapter.py` | 100% |
-| `shared/non_nem_parsers.py` | 100% |
-| `shared/common.py` | 100% |
+Coverage target: **≥90%** (enforced via lefthook pre-push). Run `uv run pytest --cov=src --cov-report=term-missing` for the latest per-file breakdown.
 
 ## Deployment
 
