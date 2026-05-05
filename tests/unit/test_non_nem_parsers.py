@@ -15,38 +15,6 @@ from conftest import (
 )
 
 
-class TestEnviziVerticalParserElectricity:
-    """Tests for envizi_vertical_parser_electricity function."""
-
-    def test_parses_electricity_data_correctly(self, temp_directory: str) -> None:
-        """Test that electricity data is parsed correctly."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import envizi_vertical_parser_electricity
-
-            filepath = str(Path(temp_directory) / "elec_data.csv")
-            create_envizi_electricity_csv(filepath, serial_numbers=["E001"], rows_per_meter=5)
-
-            result = envizi_vertical_parser_electricity(filepath, "error_log")
-
-            assert isinstance(result, list)
-            assert len(result) == 1
-
-            nmi, df = result[0]
-            assert nmi == "Envizi_E001"
-            assert "E1_kWh" in df.columns
-
-    def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
-        """Test that OptimaGenerationData files are rejected."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import envizi_vertical_parser_electricity
-
-            filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
-            create_envizi_electricity_csv(filepath, serial_numbers=["E001"])
-
-            with pytest.raises(Exception, match="Not Relevant Parser"):
-                envizi_vertical_parser_electricity(filepath, "error_log")
-
-
 class TestGetNonNemDf:
     """Tests for get_non_nem_df dispatcher function."""
 
@@ -149,10 +117,8 @@ class TestDataFrameOutputFormat:
     def test_all_parsers_return_t_start_column(self, temp_directory: str) -> None:
         """Test that all parsers return DataFrames with t_start."""
         with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import (
-                envizi_vertical_parser_electricity,
-                envizi_vertical_parser_water,
-            )
+            from shared.non_nem_parsers import envizi_vertical_parser_water
+            from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity
             from shared.parsers.optima.interval import interval_parser
 
             # Test Envizi water
