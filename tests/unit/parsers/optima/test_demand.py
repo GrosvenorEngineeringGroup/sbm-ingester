@@ -1,7 +1,10 @@
 """Tests for shared.parsers.optima.demand.demand_parser."""
 
+from unittest.mock import patch
+
 import pytest
 
+from shared.parsers import _mappings as mappings_mod
 from shared.parsers.optima.demand import demand_parser
 
 
@@ -62,3 +65,106 @@ class TestEmptyData:
         path = write_demand_csv(filename="Bunnings_Demand_Profile.csv", rows=[])
         result = demand_parser(str(path), "/tmp/err.log")
         assert result == []
+
+
+@pytest.fixture
+def _reset_mappings_cache():
+    """Clear the shared mappings cache before and after each test."""
+    mappings_mod._cache = None
+    yield
+    mappings_mod._cache = None
+
+
+class TestMappingLookupAndHudiWrite:
+    def test_writes_kw_kva_pf_with_correct_sensor_ids(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # Arrange: synthetic mappings for the test NMI
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:test-kw-id",
+            "Optima_4001260599-demand-kva": "p:bunnings:test-kva-id",
+            "Optima_4001260599-demand-pf": "p:bunnings:test-pf-id",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        captured = {}
+
+        def fake_put_object(**kwargs):
+            captured["bucket"] = kwargs["Bucket"]
+            captured["key"] = kwargs["Key"]
+            captured["body"] = kwargs["Body"].decode()
+            return {"ETag": "fake-etag"}
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object = fake_put_object
+            path = write_demand_csv()
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        # Assert: parser returned [] (signals dispatcher to not flow DataFrames)
+        assert result == []
+
+        # Assert: S3 PUT happened to the right place
+        assert captured["bucket"] == "hudibucketsrc"
+        assert captured["key"].startswith("sensorDataFiles/demand_export_")
+        assert captured["key"].endswith(".csv")
+
+        # Assert: 3 rows of input x 3 columns each = 9 Hudi rows
+        body_lines = captured["body"].strip().split("\n")
+        assert body_lines[0] == "sensorId,ts,val,unit,its,quality"
+        data_lines = body_lines[1:]
+        assert len(data_lines) == 9
+
+        # Assert: each sensor ID appears 3 times (one per input row)
+        assert sum(1 for L in data_lines if L.startswith("p:bunnings:test-kw-id,")) == 3
+        assert sum(1 for L in data_lines if L.startswith("p:bunnings:test-kva-id,")) == 3
+        assert sum(1 for L in data_lines if L.startswith("p:bunnings:test-pf-id,")) == 3
+
+    def test_pf_unit_is_empty_string(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        captured_body = []
+
+        def fake_put_object(**kwargs):
+            captured_body.append(kwargs["Body"].decode())
+            return {"ETag": "fake-etag"}
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object = fake_put_object
+            path = write_demand_csv()
+            demand_parser(str(path), "/tmp/err.log")
+
+        body = captured_body[0]
+        # Find a PF row: its unit field (4th CSV column) must be empty
+        pf_lines = [L for L in body.split("\n") if L.startswith("p:bunnings:pf,")]
+        assert len(pf_lines) == 3
+        for line in pf_lines:
+            fields = line.split(",")
+            # CSV: sensorId, ts, val, unit, its, quality
+            assert fields[3] == "", f"PF unit should be empty string, got {fields[3]!r}"
+
+    def test_unmapped_nmis_skipped_silently(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # Mappings only contain kw — kva and pf will be unmapped
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:only-kw",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        captured_body = []
+
+        def fake_put_object(**kwargs):
+            captured_body.append(kwargs["Body"].decode())
+            return {"ETag": "fake-etag"}
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object = fake_put_object
+            path = write_demand_csv()
+            demand_parser(str(path), "/tmp/err.log")
+
+        body = captured_body[0]
+        data_lines = [L for L in body.strip().split("\n")[1:] if L]
+        # 3 input rows x 1 mapped column = 3 Hudi rows
+        assert len(data_lines) == 3
+        assert all(L.startswith("p:bunnings:only-kw,") for L in data_lines)
