@@ -256,3 +256,166 @@ class TestDownloadDemandCsvNoDataSentinel:
         # An info log mentioning the no-data outcome was emitted
         info_messages = [call.args[0] for call in mock_info.call_args_list]
         assert any("no data" in m.lower() for m in info_messages)
+
+
+class TestDownloadDemandCsvErrors:
+    @responses.activate
+    def test_html_error_page_returns_none(self) -> None:
+        from demand_exporter.downloader import download_demand_csv
+
+        html = b"<!DOCTYPE html><html><body>Server error</body></html>"
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=200,
+            body=html,
+            content_type="text/html",
+        )
+
+        result = download_demand_csv(
+            cookies=".ASPXAUTH=tok",
+            site_id_str="site-abc",
+            start_date="2026-04-29",
+            end_date="2026-04-29",
+            project="racv",
+            nmi="Optima_X",
+        )
+        assert result is None
+
+    @responses.activate
+    def test_401_returns_none(self) -> None:
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=401,
+            body=b"Unauthorized",
+        )
+
+        assert (
+            download_demand_csv(
+                cookies=".ASPXAUTH=expired",
+                site_id_str="site",
+                start_date="2026-04-29",
+                end_date="2026-04-29",
+                project="racv",
+                nmi="Optima_X",
+            )
+            is None
+        )
+
+    @responses.activate
+    def test_403_returns_none(self) -> None:
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=403,
+            body=b"Forbidden",
+        )
+
+        assert (
+            download_demand_csv(
+                cookies=".ASPXAUTH=tok",
+                site_id_str="site",
+                start_date="2026-04-29",
+                end_date="2026-04-29",
+                project="racv",
+                nmi="Optima_X",
+            )
+            is None
+        )
+
+    @responses.activate
+    def test_404_returns_none(self) -> None:
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=404,
+            body=b"Not found",
+        )
+
+        assert (
+            download_demand_csv(
+                cookies=".ASPXAUTH=tok",
+                site_id_str="bad-site",
+                start_date="2026-04-29",
+                end_date="2026-04-29",
+                project="racv",
+                nmi="Optima_X",
+            )
+            is None
+        )
+
+    @responses.activate
+    def test_500_returns_none(self) -> None:
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=500,
+            body=b"Server error",
+        )
+
+        assert (
+            download_demand_csv(
+                cookies=".ASPXAUTH=tok",
+                site_id_str="site",
+                start_date="2026-04-29",
+                end_date="2026-04-29",
+                project="racv",
+                nmi="Optima_X",
+            )
+            is None
+        )
+
+    @responses.activate
+    def test_timeout_returns_none(self) -> None:
+        import requests as req_lib
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            body=req_lib.Timeout("request timed out"),
+        )
+
+        assert (
+            download_demand_csv(
+                cookies=".ASPXAUTH=tok",
+                site_id_str="site",
+                start_date="2026-04-29",
+                end_date="2026-04-29",
+                project="racv",
+                nmi="Optima_X",
+            )
+            is None
+        )
+
+    @responses.activate
+    def test_connection_error_returns_none(self) -> None:
+        import requests as req_lib
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            body=req_lib.ConnectionError("connection refused"),
+        )
+
+        assert (
+            download_demand_csv(
+                cookies=".ASPXAUTH=tok",
+                site_id_str="site",
+                start_date="2026-04-29",
+                end_date="2026-04-29",
+                project="racv",
+                nmi="Optima_X",
+            )
+            is None
+        )
