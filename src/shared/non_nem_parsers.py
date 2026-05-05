@@ -1,6 +1,8 @@
-import pandas as pd
+"""Dispatcher for non-NEM file parsers."""
+
 from aws_lambda_powertools import Logger
 
+from shared.parsers import ParserResult
 from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity
 from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk
@@ -13,20 +15,15 @@ from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
 
-# Type alias for parser return type
-ParserResult = list[tuple[str, pd.DataFrame]]
-
-# ---------------------- Dispatcher ---------------------- #
-
 
 def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
     parsers = [
-        noosa_solar_parser,  # Must be first — checks filename, fast rejection
+        noosa_solar_parser,
         envizi_vertical_parser_water,
         envizi_vertical_parser_electricity,
         racv_elec_parser,
-        racv_billing_parser,  # RACV — unchanged
-        bunnings_billing_parser,  # NEW — Bunnings billing
+        racv_billing_parser,
+        bunnings_billing_parser,
         interval_parser,
         envizi_vertical_parser_water_bulk,
         green_square_private_wire_schneider_comx_parser,
@@ -38,6 +35,5 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
         except Exception as e:
             logger.debug("Parser failed", extra={"parser": parser.__name__, "file": file_name, "error": str(e)})
 
-    # If no parser succeeded, log the error and raise an exception
     logger.error("No valid parser found", extra={"file": file_name})
     raise Exception(f"get_non_nem_df: {file_name}: No Valid Parser Found")
