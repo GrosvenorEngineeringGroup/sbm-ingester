@@ -95,10 +95,26 @@ def reload_demand_uploader_module() -> Any:
 
 
 def reload_demand_processor_module() -> Any:
-    """Reload the demand_exporter processor module with fresh environment."""
+    """Reload the demand_exporter processor module with fresh environment.
+
+    Resets the DynamoDB and S3 module-level singletons before reload so
+    moto's mocked clients are picked up cleanly between tests. The existing
+    nem12 helper does NOT reset these — but tests that interleave real
+    boto and mocked boto require this discipline.
+    """
     import optima_shared.config as config_module
 
     importlib.reload(config_module)
+
+    import optima_shared.dynamodb as dynamodb_module
+
+    dynamodb_module._dynamodb = None
+    importlib.reload(dynamodb_module)
+
+    import demand_exporter.uploader as uploader_module
+
+    uploader_module._s3_client = None
+    importlib.reload(uploader_module)
 
     import demand_exporter.processor as processor_module
 
@@ -741,7 +757,7 @@ git commit -m "feat: add demand_exporter downloader with happy-path CSV download
 **Files:**
 - Test: `tests/unit/optima_exporter/demand_exporter/test_downloader.py` (extend)
 
-The downloader code already supports the sentinel branch (added in Task 3). This task adds explicit regression tests so the audit-upload behaviour is locked in.
+> **TDD note (regression-lock, not Red-Green):** The sentinel-handling branch was already implemented in Task 3 (`if b"No data found" in response.content` in `download_demand_csv`) for architectural completeness — the audit-upload requirement is a high-stakes contract that should be expressed as one cohesive code block, not split across two tasks. Task 4's tests therefore PASS on first run, locking that behaviour in as a regression test rather than driving new code. This is an explicit, deliberate exception to strict Red-Green-Commit. Do NOT attempt to revert Task 3's sentinel branch in order to make Task 4's tests fail first.
 
 - [ ] **Step 4.1: Add regression tests for the no-data sentinel**
 
@@ -1334,16 +1350,26 @@ Expected: ERRORS (`AttributeError: module 'demand_exporter.processor' has no att
 
 - [ ] **Step 7.3: Add `process_site` to `processor.py`**
 
-Append to `src/functions/optima_exporter/demand_exporter/processor.py` (do NOT replace existing content):
+First, **REPLACE the entire top-of-file imports block** (everything from `"""Processing logic for demand profile export."""` down to the line `logger = Logger(service="optima-demand-exporter")` inclusive) with the consolidated form below. This keeps imports correct and ruff-isort happy across both Task 7 and Task 8 additions:
 
 ```python
+"""Processing logic for demand profile export."""
+
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from aws_lambda_powertools import Logger
+from optima_shared.config import OPTIMA_DAYS_BACK, S3_UPLOAD_PREFIX
 
 from demand_exporter.downloader import download_demand_csv
 from demand_exporter.uploader import upload_to_s3
-from optima_shared.config import S3_UPLOAD_PREFIX
 
+logger = Logger(service="optima-demand-exporter")
+```
 
+Then **append** (do NOT replace existing `get_date_range` from Task 6) the new function:
+
+```python
 def process_site(
     cookies: str,
     nmi: str,
@@ -1396,19 +1422,7 @@ def process_site(
     return result
 ```
 
-Add the imports at the top of the file (collected with the existing imports):
-
-```python
-# Top of file imports — final state should be:
-from datetime import UTC, datetime, timedelta
-from typing import Any
-
-from aws_lambda_powertools import Logger
-from optima_shared.config import OPTIMA_DAYS_BACK, S3_UPLOAD_PREFIX
-
-from demand_exporter.downloader import download_demand_csv
-from demand_exporter.uploader import upload_to_s3
-```
+After this step, the top of `processor.py` should match the consolidated imports block shown earlier in Step 7.3, and the file should contain `get_date_range` followed by `process_site`. Run `uv run ruff check src/functions/optima_exporter/demand_exporter/processor.py` to confirm no duplicate-import or unused-import errors before moving to the test step.
 
 - [ ] **Step 7.4: Run tests to verify they pass**
 
@@ -1686,17 +1700,29 @@ Expected: ERRORS (`AttributeError: module 'demand_exporter.processor' has no att
 
 - [ ] **Step 8.3: Add `process_export` to `processor.py`**
 
-Append to `src/functions/optima_exporter/demand_exporter/processor.py`:
+First, **REPLACE the entire top-of-file imports block** (everything from `"""Processing logic for demand profile export."""` down to `logger = Logger(service="optima-demand-exporter")` inclusive — i.e. the block established in Step 7.3) with the new consolidated form below. This merges the new `concurrent.futures`, `date`, `login_bidenergy`, `MAX_WORKERS`/`get_project_config`, and DynamoDB imports without creating duplicate `from datetime import ...` lines:
 
 ```python
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+"""Processing logic for demand profile export."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
+
+from aws_lambda_powertools import Logger
 from optima_shared.auth import login_bidenergy
-from optima_shared.config import MAX_WORKERS, get_project_config
+from optima_shared.config import MAX_WORKERS, OPTIMA_DAYS_BACK, S3_UPLOAD_PREFIX, get_project_config
 from optima_shared.dynamodb import get_site_by_nmi, get_sites_for_project
 
+from demand_exporter.downloader import download_demand_csv
+from demand_exporter.uploader import upload_to_s3
 
+logger = Logger(service="optima-demand-exporter")
+```
+
+Then **append** (do NOT replace existing `get_date_range` and `process_site`) the new function:
+
+```python
 def process_export(
     project: str,
     nmi: str | None = None,
@@ -1865,25 +1891,7 @@ def process_export(
     }
 ```
 
-The full top-of-file imports for `processor.py` should now be (consolidate any duplicate imports added in earlier tasks):
-
-```python
-"""Processing logic for demand profile export."""
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, date, datetime, timedelta
-from typing import Any
-
-from aws_lambda_powertools import Logger
-from optima_shared.auth import login_bidenergy
-from optima_shared.config import MAX_WORKERS, OPTIMA_DAYS_BACK, S3_UPLOAD_PREFIX, get_project_config
-from optima_shared.dynamodb import get_site_by_nmi, get_sites_for_project
-
-from demand_exporter.downloader import download_demand_csv
-from demand_exporter.uploader import upload_to_s3
-
-logger = Logger(service="optima-demand-exporter")
-```
+After this step, run `uv run ruff check src/functions/optima_exporter/demand_exporter/processor.py` to confirm no duplicate-import or unused-import errors. The top of the file must match the consolidated imports block already shown at the start of Step 8.3.
 
 - [ ] **Step 8.4: Run tests to verify they pass**
 
@@ -2075,7 +2083,7 @@ Expected: 3 tests PASSED.
 uv run pytest tests/unit/optima_exporter/demand_exporter/ --cov=src/functions/optima_exporter/demand_exporter -v
 ```
 
-Expected: 27 tests PASSED total (4 uploader + 17 downloader + 16 processor was 16? — let me recount: 3 date-range + 5 process_site + 8 process_export = 16 + 3 app = total 40). Coverage on `demand_exporter/` ≥ 90%.
+Expected: 40 tests PASSED (4 uploader + 17 downloader + 16 processor + 3 app). Coverage on `src/functions/optima_exporter/demand_exporter/` ≥ 90%.
 
 - [ ] **Step 9.6: Run the full project test suite to confirm no regressions**
 
@@ -2224,7 +2232,7 @@ resource "aws_cloudwatch_metric_alarm" "optima_demand_errors" {
 
 - [ ] **Step 10.2: Update `optima_scheduler_invoke_lambda` policy to include the new Lambda**
 
-In `terraform/optima_exporter.tf`, find the `aws_iam_role_policy.optima_scheduler_invoke_lambda` resource (around line 290–305). Replace its `Resource` list:
+In `terraform/optima_exporter.tf`, search for the resource `aws_iam_role_policy.optima_scheduler_invoke_lambda` by name (do NOT use line numbers — they shift after Step 10.1's insertion). Replace its `Resource` list:
 
 ```hcl
 # Find this block:
@@ -2267,12 +2275,24 @@ cd ..
 
 Expected: `Success! The configuration is valid.` from `validate`. `fmt` may reformat lines — that's fine.
 
-- [ ] **Step 10.4: Run `terraform plan` (sanity check, no apply)**
+- [ ] **Step 10.4: Initialize Terraform (if needed) and run `terraform plan`**
 
 ```bash
 cd terraform
-terraform plan
+# Required if .terraform/ does not exist or backend changed since last apply.
+# Safe to re-run idempotently — exits fast if already initialized.
+terraform init
+terraform plan -no-color > /tmp/tfplan.txt 2>&1
+grep -E "^(Plan:|Error:)" /tmp/tfplan.txt
 cd ..
+```
+
+Expected from grep: `Plan: 5 to add, 1 to change, 0 to destroy.` (no `Error:` lines).
+
+Then inspect the additions list:
+
+```bash
+grep -E "^  # aws_" /tmp/tfplan.txt
 ```
 
 Expected (plan should show ONLY additions/changes for the new resources, no destroys):
@@ -2320,10 +2340,10 @@ git commit -m "feat: add optima-demand-exporter Lambda + 14:30 daily schedules +
 
 - [ ] **Step 11.1: Add the build step `cp -r` line**
 
-In `.github/workflows/main.yml`, find the optima_exporter build block (around line 171–178). The current state is:
+In `.github/workflows/main.yml`, find the optima_exporter build block by searching for the step name `Build Optima Exporter Lambda`. The current state is:
 
 ```yaml
-- name: Build Optima Exporter
+- name: Build Optima Exporter Lambda
   if: steps.changes.outputs.optima_exporter == 'true'
   run: |
     mkdir -p build/optima_exporter
@@ -2344,7 +2364,7 @@ Add a new line just before the `cd build/optima_exporter` zip line (so all `cp -
 
 - [ ] **Step 11.2: Add the deploy step `update-function-code` block**
 
-In `.github/workflows/main.yml`, find the `Upload Optima Exporter & Refresh` block (around line 244–257). The current state is:
+In `.github/workflows/main.yml`, find the block by searching for the step name `Upload Optima Exporter & Refresh`. The current state is:
 
 ```yaml
 - name: Upload Optima Exporter & Refresh
@@ -2591,10 +2611,16 @@ Wait ~30 seconds, then:
 
 ```bash
 aws logs tail /aws/lambda/sbm-files-ingester --since 2m --region ap-southeast-2 \
-  | grep -E "demand_written|demand_no_rows"
+  | grep -E "demand_written|demand_no_rows_written|demand_no_rows_to_process"
 ```
 
-Expected: `demand_written` log entry mentioning the new S3 key.
+Expected: ONE of these three log keys appears, mentioning the new S3 key. Interpret the outcome:
+
+| Log key | Meaning | Action |
+|---|---|---|
+| `demand_written` | Real demand data → Hudi rows uploaded successfully | ✅ All good. Proceed to Step 14.8. |
+| `demand_no_rows_written` | CSV had data rows but **none** mapped to a Neptune sensor ID (mappings missing for this NMI's `Optima_<NMI>-demand-{kw,kva,pf}` keys) | ⚠️ Run `scripts/import_demand_points.py` for RACV NMIs (it currently only imports Bunnings) before re-running the smoke test, or pick a Bunnings NMI from `data/demand_points.csv` for the smoke test instead. |
+| `demand_no_rows_to_process` | CSV body was the BidEnergy "No data found" sentinel | ⚠️ This NMI has no demand meter — pick a different NMI from DynamoDB and retry. |
 
 - [ ] **Step 14.8: Verify the source CSV moved to `newP/` or `newIrrevFiles/`**
 
@@ -2609,10 +2635,17 @@ Expected: file listed in `newIrrevFiles/` (because `demand_parser` returns `[]` 
 
 - [ ] **Step 14.9: Trigger Glue + verify Hudi data**
 
-After waiting (or invoking Glue manually), query Athena for the three demand sensor IDs of NMI `Optima_3117512760`. Look up the IDs first:
+> **Note on RACV vs Bunnings:** The committed `data/demand_points.csv` contains **Bunnings NMIs only** — the import script (`scripts/import_demand_points.py`) was previously run only for Bunnings. So `grep "Optima_3117512760" data/demand_points.csv` returns nothing. For end-to-end verification, two options:
+>
+> - **(a) Easier:** Pick a Bunnings NMI from `data/demand_points.csv` for the smoke test instead of `Optima_3117512760`. Re-run Steps 14.4–14.8 with that NMI. Then look up its three sensor IDs from the CSV directly.
+> - **(b) Complete:** Run `scripts/import_demand_points.py` adapted for RACV (see `scripts/generate_demand_points.py` for the Neptune walking pattern), commit the resulting RACV rows to `data/demand_points.csv`, and proceed.
+>
+> Pick (a) for the smoke test in this PR; defer (b) to a follow-up so RACV demand exports actually flow into Hudi after deploy. Without (b), RACV CSVs upload to S3, parse fine, but produce 0 Hudi rows (`demand_no_rows_written` log).
+
+After waiting (or invoking Glue manually), query Athena for the three demand sensor IDs of the NMI you used for the smoke test. Look up the IDs:
 
 ```bash
-grep "Optima_3117512760" data/demand_points.csv
+grep "<smoke-test-NMI>" data/demand_points.csv
 ```
 
 Then run an Athena query (substitute the three sensor IDs from the grep output):
