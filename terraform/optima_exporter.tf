@@ -202,16 +202,16 @@ resource "aws_scheduler_schedule" "optima_racv_nem12" {
 # EventBridge Scheduler: Billing (Monthly)
 # ================================
 
-# Bunnings Billing - Monthly 7th 7:00 AM Sydney
+# Bunnings Billing - Weekly Saturday 7:00 AM Sydney
 resource "aws_scheduler_schedule" "optima_bunnings_billing" {
-  name       = "optima-bunnings-billing-monthly"
+  name       = "optima-bunnings-billing-weekly"
   group_name = "default"
 
   flexible_time_window {
     mode = "OFF"
   }
 
-  schedule_expression          = "cron(0 7 7 * ? *)"
+  schedule_expression          = "cron(0 7 ? * SAT *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
@@ -221,16 +221,16 @@ resource "aws_scheduler_schedule" "optima_bunnings_billing" {
   }
 }
 
-# RACV Billing - Monthly 1st 7:00 AM Sydney
+# RACV Billing - Weekly Saturday 7:00 AM Sydney
 resource "aws_scheduler_schedule" "optima_racv_billing" {
-  name       = "optima-racv-billing-monthly"
+  name       = "optima-racv-billing-weekly"
   group_name = "default"
 
   flexible_time_window {
     mode = "OFF"
   }
 
-  schedule_expression          = "cron(0 7 1 * ? *)"
+  schedule_expression          = "cron(0 7 ? * SAT *)"
   schedule_expression_timezone = "Australia/Sydney"
 
   target {
@@ -299,6 +299,7 @@ resource "aws_iam_role_policy" "optima_scheduler_invoke_lambda" {
       Resource = [
         aws_lambda_function.optima_nem12_exporter.arn,
         aws_lambda_function.optima_billing_exporter.arn,
+        aws_lambda_function.optima_demand_exporter.arn,
       ]
     }]
   })
@@ -342,6 +343,113 @@ resource "aws_cloudwatch_metric_alarm" "optima_billing_errors" {
 
   dimensions = {
     FunctionName = aws_lambda_function.optima_billing_exporter.function_name
+  }
+
+  alarm_actions = [data.aws_sns_topic.sbm_alerts.arn]
+  ok_actions    = [data.aws_sns_topic.sbm_alerts.arn]
+
+  tags = local.common_tags
+}
+
+# ================================
+# Lambda 3: Demand Exporter
+# ================================
+
+resource "aws_cloudwatch_log_group" "optima_demand_exporter" {
+  name              = "/aws/lambda/optima-demand-exporter"
+  retention_in_days = var.log_retention_days
+
+  tags = local.common_tags
+}
+
+resource "aws_lambda_function" "optima_demand_exporter" {
+  function_name = "optima-demand-exporter"
+  description   = "Exports Optima Demand Profile CSVs to S3 for ingestion pipeline"
+  role          = data.aws_iam_role.ingester_role.arn
+  handler       = "demand_exporter.app.lambda_handler"
+  runtime       = "python3.13"
+  timeout       = 900
+  memory_size   = 256
+  s3_bucket     = var.deployment_bucket
+  s3_key        = "${local.lambda_s3_prefix}/optima_exporter.zip"
+
+  environment {
+    variables = merge(local.optima_common_env, {
+      POWERTOOLS_SERVICE_NAME = "optima-demand-exporter"
+
+      # S3 upload configuration
+      S3_UPLOAD_BUCKET = "sbm-file-ingester"
+      S3_UPLOAD_PREFIX = "newTBP/"
+
+      # Demand export configuration
+      OPTIMA_DAYS_BACK   = "1"
+      OPTIMA_MAX_WORKERS = "20"
+    })
+  }
+
+  tracing_config {
+    mode = "PassThrough"
+  }
+
+  depends_on = [aws_cloudwatch_log_group.optima_demand_exporter]
+
+  tags = local.common_tags
+}
+
+# ================================
+# EventBridge Scheduler: Demand (Daily, 14:30 Sydney — staggered 30min after nem12)
+# ================================
+
+resource "aws_scheduler_schedule" "optima_bunnings_demand" {
+  name       = "optima-bunnings-demand-daily"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(30 14 * * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_demand_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "bunnings" })
+  }
+}
+
+resource "aws_scheduler_schedule" "optima_racv_demand" {
+  name       = "optima-racv-demand-daily"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(30 14 * * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_demand_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "racv" })
+  }
+}
+
+# CloudWatch alarm — mirror existing optima_nem12_errors alarm
+resource "aws_cloudwatch_metric_alarm" "optima_demand_errors" {
+  alarm_name          = "optima-demand-exporter-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 3600 # 1 hour — matches optima_nem12_errors
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Optima demand exporter Lambda errors"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.optima_demand_exporter.function_name
   }
 
   alarm_actions = [data.aws_sns_topic.sbm_alerts.arn]

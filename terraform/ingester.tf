@@ -97,7 +97,7 @@ resource "aws_iam_role_policy" "idempotency_access" {
 resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
   name                       = "sbm-files-ingester-dlq"
   message_retention_seconds  = 1209600 # 14 days
-  visibility_timeout_seconds = 900 # Match Lambda timeout
+  visibility_timeout_seconds = 900     # Match Lambda timeout
 
   tags = {
     Name = "sbm-files-ingester-dlq"
