@@ -1,6 +1,7 @@
 import pandas as pd
 from aws_lambda_powertools import Logger
 
+from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 from shared.parsers.optima.bunnings_billing import bunnings_billing_parser
 from shared.parsers.optima.interval import interval_parser
 from shared.parsers.optima.racv_billing import racv_billing_parser
@@ -13,36 +14,6 @@ logger = Logger(service="non-nem-parsers", child=True)
 ParserResult = list[tuple[str, pd.DataFrame]]
 
 # ---------------------- Parsers ---------------------- #
-
-
-def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> ParserResult:
-    if "OptimaGenerationData" in file_name:
-        raise Exception("Not Relevant Parser For File")
-
-    raw_df = pd.read_csv(file_name)
-    raw_df["Interval_Start"] = pd.to_datetime(raw_df["Interval_Start"])
-    raw_df["Serial_No"] = raw_df["Serial_No"].astype(str)
-
-    dfs: ParserResult = []
-    for name in sorted(raw_df["Serial_No"].unique()):
-        buf_df = raw_df.loc[
-            raw_df["Serial_No"] == name, ["Interval_Start", "Interval_End", "Consumption", "Consumption Unit"]
-        ]
-
-        unit_count = buf_df["Consumption Unit"].nunique()
-        if unit_count != 1:
-            logger.error(
-                "envizi_vertical_parser_water: Multiple units", extra={"file": file_name, "unit_count": unit_count}
-            )
-
-        unit = buf_df["Consumption Unit"].iloc[0]
-        buf_df = buf_df[["Interval_Start", "Consumption"]].rename(
-            columns={"Interval_Start": "t_start", "Consumption": f"E1_{unit}"}
-        )
-        buf_df = buf_df.set_index("t_start")
-        dfs.append((f"Envizi_{name}", buf_df))
-
-    return dfs
 
 
 def envizi_vertical_parser_water_bulk(file_name: str, error_file_path: str) -> ParserResult:
