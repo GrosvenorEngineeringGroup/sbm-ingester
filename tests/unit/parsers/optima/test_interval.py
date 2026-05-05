@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from conftest import create_optima_csv
 
 
@@ -92,3 +93,28 @@ class TestIntervalParser:
             assert nmi == "Optima_METER001"
             assert "E1_kWh" in df.columns
             assert "B1_kWh" not in df.columns  # No Generation column in source
+
+    def test_interval_parser_persists_both_usage_and_generation(self, tmp_path) -> None:
+        """Both Usage→E1_kWh and Generation→B1_kWh must be produced when present.
+
+        Regression guard: if a future change to interval_parser drops one of the
+        Usage or Generation channels, this test breaks.
+        """
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.parsers.optima.interval import interval_parser
+
+            csv_path = tmp_path / "Bunnings-AU-Electricity-TEST-NMI-ENERGYAP.csv"
+            csv_path.write_text(
+                "BuyerShortName,Country,Commodity,Identifier,IdentifierType,DistributorId,"
+                "Date,Start Time,Usage,Generation,DemandKva,Reactive\n"
+                '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:00,1.5,0.8,3.0,0.0\n'
+                '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:30,1.7,0.9,3.4,0.0\n'
+            )
+            result = interval_parser(str(csv_path), str(tmp_path / "err.log"))
+            assert len(result) == 1
+            nmi_key, df = result[0]
+            assert nmi_key == "Optima_TEST"
+            assert "E1_kWh" in df.columns
+            assert "B1_kWh" in df.columns
+            assert df["E1_kWh"].sum() == pytest.approx(3.2)  # 1.5 + 1.7
+            assert df["B1_kWh"].sum() == pytest.approx(1.7)  # 0.8 + 0.9 — Generation persists
