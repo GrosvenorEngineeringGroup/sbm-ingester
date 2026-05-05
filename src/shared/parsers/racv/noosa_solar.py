@@ -3,10 +3,9 @@ from pathlib import Path
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-logger = Logger(service="noosa-solar-parser", child=True)
+from shared.parsers import ParserResult
 
-# Type alias — defined locally to avoid circular import with non_nem_parsers.py
-ParserResult = list[tuple[str, pd.DataFrame]]
+logger = Logger(service="noosa-solar-parser", child=True)
 
 # Fronius inverter operating mode → numeric code
 FRONIUS_MODE_MAP: dict[str, int] = {

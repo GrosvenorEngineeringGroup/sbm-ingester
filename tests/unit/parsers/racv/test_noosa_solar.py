@@ -69,8 +69,8 @@ class TestParseNumericColumns:
             columns={"p:racv:r:sensor1": ["10.5", "20.0", "30.5"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -98,8 +98,8 @@ class TestParseStatusColumns:
             },
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -118,8 +118,8 @@ class TestRejectsNonMatchingFile:
         filepath = str(tmp_path / "some_other_file.csv")
         _create_noosa_csv(filepath)
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             with pytest.raises(Exception, match="Not a Noosa Solar file"):
                 noosa_solar_parser(filepath, "error_log")
@@ -137,8 +137,8 @@ class TestTimestampParsing:
             columns={"p:racv:r:s1": ["5.0"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -164,8 +164,8 @@ class TestTimezoneWarning:
         )
 
         mock_log = MagicMock()
-        with patch("shared.noosa_solar_parser.logger", mock_log):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger", mock_log):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -194,8 +194,8 @@ class TestNanValuesDropped:
             columns={"p:racv:r:s1": ["1.0", "nan", "3.0", "nan"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -220,8 +220,8 @@ class TestMixedEmptyAndNanValues:
         )
         Path(filepath).write_text(content, encoding="utf-8-sig")
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -249,8 +249,8 @@ class TestUnknownStatusWarning:
         )
 
         mock_log = MagicMock()
-        with patch("shared.noosa_solar_parser.logger", mock_log):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger", mock_log):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -283,8 +283,8 @@ class TestAllColumnsReturnTStart:
             },
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -311,8 +311,8 @@ class TestSensorIdFormat:
             },
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -331,8 +331,8 @@ class TestStripParenthesizedSuffix:
             columns={"p:racv:r:abc-123 (kW-hr)": ["10.0", "20.0", "30.0"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -352,8 +352,8 @@ class TestStripParenthesizedSuffix:
             },
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -370,8 +370,8 @@ class TestStripParenthesizedSuffix:
             columns={"p:racv:r:xyz (some unit)": ["Normal Operation", "Standby", "Off"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -388,8 +388,8 @@ class TestEmptyFile:
         content = "timestamp,p:racv:r:s1\n"
         Path(filepath).write_text(content, encoding="utf-8-sig")
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             with pytest.raises(Exception, match="No valid data"):
                 noosa_solar_parser(filepath, "error_log")
@@ -404,8 +404,8 @@ class TestMissingTimestampColumn:
         content = "wrong_header,p:racv:r:s1\n31-Mar-26 8:00 AM AEST,1.0\n"
         Path(filepath).write_text(content, encoding="utf-8-sig")
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             with pytest.raises(Exception, match="Missing timestamp column"):
                 noosa_solar_parser(filepath, "error_log")
@@ -425,8 +425,8 @@ class TestAllNanColumnSkipped:
             },
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -447,8 +447,8 @@ class TestAllZeroColumnPreserved:
             columns={"p:racv:r:zeros": ["0", "0", "0"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -497,8 +497,8 @@ class TestMultipleStatusValues:
             columns={"p:racv:r:all_statuses": statuses},
         )
 
-        with patch("shared.noosa_solar_parser.logger"):
-            from shared.noosa_solar_parser import noosa_solar_parser
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             result = noosa_solar_parser(filepath, "error_log")
 
@@ -520,7 +520,7 @@ class TestDispatcherIntegration:
             columns={"p:racv:r:s1": ["10.0", "20.0", "30.0"]},
         )
 
-        with patch("shared.noosa_solar_parser.logger"), patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.racv.noosa_solar.logger"), patch("shared.non_nem_parsers.logger"):
             from shared.non_nem_parsers import get_non_nem_df
 
             result = get_non_nem_df(filepath, "error_log")

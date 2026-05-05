@@ -5,7 +5,7 @@ import pandas as pd
 from aws_lambda_powertools import Logger
 
 from shared.billing_parser import bunnings_usage_and_spend_parser
-from shared.noosa_solar_parser import noosa_solar_parser
+from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
 
