@@ -229,14 +229,26 @@ def _parse_demand_rows(file_path: str) -> list[dict[str, str]]:
       Row 1-6: metadata key:value pairs (Commodities/Sites/Status/Country/Start/End)
       Row 7-8: blank
       Row 9: column header
-      Row 10+: data
+      Row 10+: data    OR a single "No data found" sentinel line
+
+    Returns [] if the file is the empty-data sentinel form.
     """
     with open(file_path, encoding="utf-8") as f:
         lines = f.read().splitlines()
+
+    # Empty-data sentinel: BidEnergy returns "No data found" instead of column
+    # header + data rows when a site has no demand profile data for the
+    # requested date range. Verified against NZ Bunnings sites that have
+    # meter records but no electricity time series.
+    if any("No data found" in line for line in lines):
+        return []
+
     data_section = "\n".join(lines[8:])  # row 9 onward (0-indexed 8)
     reader = csv.DictReader(io.StringIO(data_section))
     return [row for row in reader if row.get("Identifier")]
 ```
+
+The parser's main body then short-circuits: if `_parse_demand_rows` returns `[]`, log `demand_no_data` and return `[]` without writing S3.
 
 ### Per-row processing
 
@@ -396,10 +408,12 @@ At minimum 7 tests; mirror the structure of `tests/unit/parsers/optima/test_bunn
 
 | Test | Verifies |
 |---|---|
-| `test_filename_gate_rejects_non_demand_files` | Filename without "Demand Profile" → raises |
+| `test_filename_gate_rejects_non_demand_files` | Filename without "demand profile" (case-insensitive) → raises |
+| `test_filename_gate_accepts_lowercase_user_download` | `Bunnings demand profile.csv` (lowercase) is accepted |
 | `test_content_gate_rejects_files_without_commodities_header` | Filename matches but first line wrong → raises |
 | `test_parses_kw_kva_pf_to_correct_sensor_ids` | All three measurements written with correct sensor IDs and units |
 | `test_unmapped_nmis_skipped_with_log` | Mapping returns None for some sensors → those rows skipped, others written |
+| `test_no_data_found_sentinel_skips_s3_put` | BidEnergy "No data found" body → no S3 PUT, returns `[]`, no exception |
 | `test_empty_data_skips_s3_put` | Header-only file → no S3 PUT, returns `[]` |
 | `test_pf_unit_is_empty_string` | Power Factor row's unit field is `""` |
 | `test_dispatcher_routes_demand_file` | End-to-end through `get_non_nem_df` |
@@ -443,12 +457,42 @@ def write_demand_csv(tmp_path):
 
 Promote to `tests/unit/fixtures/` only if a real-shape file is needed for richer scenarios.
 
+## Verified BidEnergy endpoint (informational, for future Step 4)
+
+Confirmed 2026-05-05 by driving a browser session against the BidEnergy production UI (account `optimaBunningsEnergy@verdeos.com`):
+
+```
+GET https://app.bidenergy.com/BuyerReport/DemandProfilePartial
+  ?isCsv=true
+  &start=<dd MMM yyyy>          # e.g. "01 May 2026"
+  &end=<dd MMM yyyy>
+  &filter.SiteIdStr=<site GUID>
+  &filter.SiteStatus=Active
+  &filter.commodities=Electricity
+  &filter.countrystr=AU|NZ
+```
+
+**Response:**
+- Content-Type: `application/vnd.csv` (**plain CSV, not zipped** — different from the interval endpoint which returns ZIP)
+- Content-Disposition: `attachment; filename="<Buyer> demand profile.csv"`
+- Body: 6-row metadata block + 2 blank rows + 9-column header (`Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVa,Power Factor,Site Name`) + N data rows. OR the empty-data sentinel `"No data found"` line.
+
+**AU vs NZ behaviour observed:**
+
+| Test | Status | Body |
+|---|---|---|
+| AU site (Forbes), 3 days | 200 | Real data (`Bunnings demand profile.csv`, ~14 KB) |
+| NZ site (Tokoroa, Auckland, Gisborne), 3 days or 1 month | 200 | `No data found` sentinel (157 B) |
+
+The endpoint accepts NZ siteIds but BidEnergy has no demand profile data for any tested NZ Bunnings site (matches the parallel finding for interval data). This is why the parser must handle the `No data found` sentinel — Step 4's exporter will produce these files in volume for NZ sites until BidEnergy populates the data (if ever).
+
+**`filter.countrystr` is a metadata tag, not a lookup filter:** mismatching `countrystr=AU` with an NZ siteId still resolves the site by GUID and returns its data; only the CSV's `Country:` header line reflects the passed value. Step 4 should pass the correct country for clean metadata, but the parser does not depend on it.
+
 ## Open Questions / Filed for Step 4
 
-1. **Exact downloaded filename pattern.** When the demand_exporter Lambda is built (Step 4), confirm the filename it produces and tighten the parser's filename gate accordingly (e.g., `"Bunnings-AU-Demand_Profile-<NMI>.csv"`).
-2. **Header tolerance for filename casing.** `"Demand Profile"` substring works for `Bunnings demand profile.csv` if we lowercase before matching. Decide whether to match case-insensitively or require the exporter to use a specific casing.
-3. **DemandKva NEM ambiguity.** The interval parser already discards `DemandKva` from the *interval* CSV. After demand_parser is in place, the `DemandKva` column in interval data could in principle be promoted to the same `Optima_<NMI>-demand-kva` sensor — but this would create dual write paths for the same sensor. Out of scope for this spec; flagged for future consideration.
-4. **RACV demand support.** This PR creates points for Bunnings only. RACV's 55 AU NMIs would need a parallel data preparation step (not just adding to the same script — RACV has its own DynamoDB project, BidEnergy account, and Neptune namespace conventions).
+1. **Exporter filename convention.** Step 4's Lambda will produce files like `<Buyer>-<Country>-Demand_Profile-<NMI>.csv` (matching the interval exporter pattern). Confirmed: BidEnergy returns `Bunnings demand profile.csv` literally as the suggested filename — Step 4 must rename to a per-NMI pattern before uploading to S3, otherwise files overwrite each other in `newTBP/`.
+2. **DemandKva NEM ambiguity.** The interval parser already discards `DemandKva` from the *interval* CSV. After demand_parser is in place, the `DemandKva` column in interval data could in principle be promoted to the same `Optima_<NMI>-demand-kva` sensor — but this would create dual write paths for the same sensor. Out of scope for this spec; flagged for future consideration.
+3. **RACV demand support.** This PR creates points for Bunnings only. RACV's 55 AU NMIs would need a parallel data preparation step (not just adding to the same script — RACV has its own DynamoDB project, BidEnergy account, and Neptune namespace conventions).
 
 ## Affected Surface (summary)
 
