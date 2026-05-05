@@ -5,6 +5,7 @@ import pandas as pd
 from aws_lambda_powertools import Logger
 
 from shared.parsers.optima.bunnings_billing import bunnings_billing_parser
+from shared.parsers.optima.interval import interval_parser
 from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
@@ -128,33 +129,6 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserResult:
     raise Exception(f"No Valid Data in file: {file_name}")
 
 
-def optima_parser(file_name: str, error_file_path: str) -> ParserResult:
-    raw_df = pd.read_csv(file_name)
-    raw_df["Interval_Start"] = pd.to_datetime(raw_df["Date"] + " " + raw_df["Start Time"])
-    raw_df["Identifier"] = raw_df["Identifier"].astype(str)
-
-    dfs: ParserResult = []
-    for name in sorted(raw_df["Identifier"].unique()):
-        base_df = raw_df.loc[raw_df["Identifier"] == name].copy()
-
-        # Build output DataFrame with t_start as index
-        output_df = base_df[["Interval_Start"]].copy()
-        output_df = output_df.rename(columns={"Interval_Start": "t_start"})
-
-        # Add Usage column as E1_kWh if present
-        if "Usage" in raw_df.columns:
-            output_df["E1_kWh"] = base_df["Usage"].values
-
-        # Add Generation column as B1_kWh if present
-        if "Generation" in raw_df.columns:
-            output_df["B1_kWh"] = base_df["Generation"].values
-
-        output_df = output_df.set_index("t_start")
-        dfs.append((f"Optima_{name}", output_df))
-
-    return dfs
-
-
 def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_path: str) -> ParserResult:
     first_rows = pd.read_csv(file_name, header=None, nrows=2)
     if first_rows.iloc[1, 0] != "ComX510_Green_Square":
@@ -195,7 +169,7 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
         racv_elec_parser,
         optima_usage_and_spend_to_s3,  # RACV — unchanged
         bunnings_billing_parser,  # NEW — Bunnings billing
-        optima_parser,
+        interval_parser,
         envizi_vertical_parser_water_bulk,
         green_square_private_wire_schneider_comx_parser,
     ]
