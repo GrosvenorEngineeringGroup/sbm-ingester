@@ -162,17 +162,19 @@ def download_demand_csv(
 Differences vs `nem12_exporter/downloader.py:download_csv`:
 
 - URL: `f"{BIDENERGY_BASE_URL}/BuyerReport/DemandProfilePartial"`
-- Params: drops `nmi` (no per-NMI param on demand endpoint); rest identical
-- Body validation: accepts response if `Content-Type` contains `csv` **or** body starts with `Commodities:` (UTF-8 sniff after BOM strip). Rejects HTML error pages the same way nem12 does.
+- Query params: drops the URL `nmi=""` parameter (the demand endpoint has no per-NMI URL param). The Python `nmi` argument is **kept** in the function signature — used only to construct the output filename, never sent in the URL.
+- Body validation: primary check is `body.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"Commodities:")` (BOM-tolerant content sniff). Falls back to `Content-Type` containing `csv` only when the sniff is inconclusive. Rejects HTML error pages exactly the same way nem12 does — `b"<!doctype" in content_start or b"<html" in content_start`.
 - **No** `_prefix_nmi_in_nem12` rewrite branch.
 - Filename: `f"optima_{project.lower()}_demand_profile_NMI#{nmi.upper()}_{start_date}_{end_date}_{timestamp}.csv"`
 - **No-data handling:** if body contains `b"No data found"`, log `demand_no_data_in_response` at INFO and **return the bytes anyway** (caller uploads them; sentinel CSV is the audit artefact).
 
-Date-format helper `format_date_for_url` is identical to nem12's; can be either imported from `nem12_exporter.downloader` or duplicated for module independence (see *Open Questions* below).
+Date-format helper `format_date_for_url` is identical to nem12's; can be either imported from `nem12_exporter.downloader` or duplicated for module independence (see *Open Questions* below). Carries the same locale caveat as `_build_hudi_csv` in `demand.py:69` — `%b` is locale-dependent and assumes the Lambda runtime locale resolves to `en_US.UTF-8` / `C.UTF-8` (it does on AWS Lambda).
 
 ### `uploader.py`
 
-Identical to `nem12_exporter/uploader.py:upload_to_s3` — `boto3.client("s3").put_object(Bucket=S3_UPLOAD_BUCKET, Key=f"{S3_UPLOAD_PREFIX}{filename}", Body=csv_bytes)`. Returns `bool`. Likely thin enough to share with the nem12 module via `optima_shared/`, but keeping a copy keeps each Lambda module self-contained — same pattern nem12 currently follows.
+**Copy `src/functions/optima_exporter/nem12_exporter/uploader.py` verbatim** — same `upload_to_s3()` signature, same lazy `_s3_client` singleton with `region_name="ap-southeast-2"`, same `ContentType="text/csv"` header, same logger formatting, same return type. Only change: rename the `Logger(service="optima-nem12-exporter")` to `Logger(service="optima-demand-exporter")` so log lines are routed to the correct CloudWatch log group.
+
+Promoting this to `optima_shared/` is a follow-up cleanup task — keeping a copy keeps each Lambda module self-contained, matching nem12's current pattern.
 
 ## Data Flow
 
@@ -203,7 +205,7 @@ Identical to `nem12_exporter/uploader.py:upload_to_s3` — `boto3.client("s3").p
                 → existing Glue job picks up Hudi CSV
 ```
 
-For sites with no demand meter installed, the CSV body is the BidEnergy "No data found" sentinel form. `demand_parser` detects this sentinel and returns `[]` without raising; the file still ends up in `newIrrevFiles/` and the Hudi PUT is skipped — exactly the existing demand_parser code path. Audit retention is provided by the file's presence in `newIrrevFiles/` (and its weekly archive).
+For sites with no demand meter installed, the CSV body is the BidEnergy "No data found" sentinel form. `demand_parser` detects this sentinel at `src/shared/parsers/optima/demand.py:57-58` and returns `[]` without raising. With an empty `file_neptune_ids` set, `file_processor/app.py:512-513` then routes the source CSV to `IRREVFILES_DIR` (`newIrrevFiles/`) — verified against `src/shared/common.py:9-11` and `src/functions/file_processor/app.py:507-514`. Audit retention is provided by the file's presence in `newIrrevFiles/` (and its weekly `archived/<ISO-week>/` rollup by `sbm-weekly-archiver`).
 
 ## Error Handling
 
@@ -243,7 +245,9 @@ OPTIMA_DAYS_BACK        = 1
 OPTIMA_MAX_WORKERS      = 20
 ```
 
-**Explicitly NOT set:** `OPTIMA_<PROJECT>_COUNTRIES` (per-site `country` from DynamoDB instead).
+`OPTIMA_DAYS_BACK` and `OPTIMA_MAX_WORKERS` are set explicitly even though `optima_shared/config.py` already defaults them to `"1"` and `"20"` respectively — kept in the Terraform block for parity with nem12 and to make per-Lambda tuning visible in IaC without editing source.
+
+**Explicitly NOT set:** `OPTIMA_<PROJECT>_COUNTRIES` (per-site `country` from DynamoDB instead, mirroring `nem12_exporter`).
 
 ### DynamoDB schema (no change)
 
@@ -287,7 +291,7 @@ Existing tests reused unchanged: `optima_shared/test_auth.py`, `optima_shared/te
 
 1. Trigger one ad-hoc invoke: `aws lambda invoke --function-name optima-demand-exporter --payload '{"project":"racv","nmi":"Optima_3117512760"}' /tmp/out.json`
 2. Verify CloudWatch log shows `demand_csv_download_successful` and `demand_uploaded_to_s3`.
-3. Verify the file lands at `s3://sbm-file-ingester/newTBP/optima_racv_demand_profile_NMI#OPTIMA_3117512760_*.csv`.
+3. Verify the file lands at `s3://sbm-file-ingester/newTBP/optima_racv_demand_profile_NMI#OPTIMA_3117512760_*.csv`. (Note: the DynamoDB `nmi` field is stored mixed-case as `Optima_3117512760`; the filename pattern applies `nmi.upper()` → `OPTIMA_3117512760`. The event payload uses the mixed-case DynamoDB key.)
 4. Wait for `sbm-files-ingester` to consume → look for `demand_written` CloudWatch log line in `sbm-files-ingester` log group.
 5. After Glue job runs: Athena query `SELECT sensorid, COUNT(*) FROM sensordata_default WHERE sensorid IN ('<kw>','<kva>','<pf>') GROUP BY sensorid` using the three sensor IDs from `data/demand_points.csv` for that NMI; expect ~48 rows each (1 day × 48 half-hour intervals).
 
@@ -330,10 +334,14 @@ resource "aws_lambda_function" "optima_demand_exporter" {
 }
 
 resource "aws_scheduler_schedule" "optima_bunnings_demand" {
-  name                         = "optima-bunnings-demand-daily"
+  name       = "optima-bunnings-demand-daily"
+  group_name = "default"
+
+  flexible_time_window { mode = "OFF" }
+
   schedule_expression          = "cron(30 14 * * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
-  flexible_time_window { mode = "OFF" }
+
   target {
     arn      = aws_lambda_function.optima_demand_exporter.arn
     role_arn = aws_iam_role.optima_scheduler_role.arn
@@ -342,10 +350,14 @@ resource "aws_scheduler_schedule" "optima_bunnings_demand" {
 }
 
 resource "aws_scheduler_schedule" "optima_racv_demand" {
-  name                         = "optima-racv-demand-daily"
+  name       = "optima-racv-demand-daily"
+  group_name = "default"
+
+  flexible_time_window { mode = "OFF" }
+
   schedule_expression          = "cron(30 14 * * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
-  flexible_time_window { mode = "OFF" }
+
   target {
     arn      = aws_lambda_function.optima_demand_exporter.arn
     role_arn = aws_iam_role.optima_scheduler_role.arn
@@ -353,24 +365,48 @@ resource "aws_scheduler_schedule" "optima_racv_demand" {
   }
 }
 
-# CloudWatch alarm — mirror existing optima_nem12_exporter alarm
-resource "aws_cloudwatch_metric_alarm" "optima_demand_exporter_errors" {
+# CloudWatch alarm — mirror existing optima_nem12_errors alarm exactly
+# (period=3600, both alarm_actions and ok_actions wired to the shared SNS topic).
+resource "aws_cloudwatch_metric_alarm" "optima_demand_errors" {
   alarm_name          = "optima-demand-exporter-errors"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = "Errors"
   namespace           = "AWS/Lambda"
-  period              = 86400
+  period              = 3600 # 1 hour — matches optima_nem12_errors
   statistic           = "Sum"
   threshold           = 0
-  alarm_actions       = [aws_sns_topic.alerts.arn]
+  alarm_description   = "Optima demand exporter Lambda errors"
+
   dimensions = {
     FunctionName = aws_lambda_function.optima_demand_exporter.function_name
   }
+
+  alarm_actions = [data.aws_sns_topic.sbm_alerts.arn]
+  ok_actions    = [data.aws_sns_topic.sbm_alerts.arn]
+
+  tags = local.common_tags
 }
 ```
 
-Update `aws_iam_role_policy.optima_scheduler_invoke_lambda` to include the new Lambda ARN in `Resource`.
+Update `aws_iam_role_policy.optima_scheduler_invoke_lambda` (currently at `terraform/optima_exporter.tf:290-305`) to include the new Lambda ARN. Replace the existing `Resource` list:
+
+```hcl
+# Before:
+Resource = [
+  aws_lambda_function.optima_nem12_exporter.arn,
+  aws_lambda_function.optima_billing_exporter.arn,
+]
+
+# After:
+Resource = [
+  aws_lambda_function.optima_nem12_exporter.arn,
+  aws_lambda_function.optima_billing_exporter.arn,
+  aws_lambda_function.optima_demand_exporter.arn,
+]
+```
+
+Failure mode if skipped: EventBridge fires the schedule but `lambda:InvokeFunction` returns AccessDenied; CloudWatch shows 100% scheduler invocation failures with zero Lambda invocations — silent (no alarms unless one is added on scheduler `InvocationsFailedToBeSentToDeadLetterCount`).
 
 ### CI/CD policy update (manual step)
 
@@ -378,13 +414,13 @@ Add `arn:aws:lambda:ap-southeast-2:318396632821:function:optima-demand-exporter`
 
 ### GitHub Actions workflow update
 
-`.github/workflows/deploy.yml`:
+The single workflow file is `.github/workflows/main.yml` (not `deploy.yml`). Use string-search anchors (line numbers drift):
 
-1. In the `optima_exporter` build step (around line 173), add:
+1. In the `optima_exporter` build step (search for `mkdir -p build/optima_exporter`), add a `cp -r` line for the new module alongside the existing `optima_shared`, `nem12_exporter`, and `billing_exporter` copies:
    ```yaml
    cp -r src/functions/optima_exporter/demand_exporter build/optima_exporter/
    ```
-2. In the `optima_exporter` deploy step (around line 245), add:
+2. In the `optima_exporter` deploy step (search for `update-function-code --function-name optima-nem12-exporter`), add a third `update-function-code` block alongside the existing nem12 and billing ones:
    ```yaml
    aws lambda update-function-code \
      --function-name optima-demand-exporter \
