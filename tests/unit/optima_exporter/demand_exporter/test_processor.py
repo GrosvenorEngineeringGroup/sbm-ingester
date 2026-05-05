@@ -4,11 +4,11 @@ Tests date range calculation, single-site processing, and full-export orchestrat
 """
 
 import os
-from typing import Any  # noqa: F401  (used by Task 8 tests)
-from unittest.mock import MagicMock, patch  # noqa: F401  (used by Task 8 tests)
+from typing import Any
+from unittest.mock import MagicMock, patch  # noqa: F401  (MagicMock reserved for future tests)
 
 import boto3
-import pytest  # noqa: F401  (used by Task 8 tests)
+import pytest  # noqa: F401  (reserved for future tests)
 import responses
 from freezegun import freeze_time
 from moto import mock_aws
@@ -213,3 +213,234 @@ class TestProcessSite:
 
         params = parse_qs(urlparse(responses.calls[0].request.url).query)
         assert params["filter.countrystr"] == ["NZ"]
+
+
+class TestProcessExport:
+    @freeze_time("2026-04-30 10:00:00")
+    @mock_aws
+    @responses.activate
+    def test_happy_path_processes_all_sites(self) -> None:
+        # Set up DynamoDB
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table = dynamodb.Table("sbm-optima-config")
+        table.put_item(Item={"project": "racv", "nmi": "Optima_1", "siteIdStr": "site-1", "country": "AU"})
+        table.put_item(Item={"project": "racv", "nmi": "Optima_2", "siteIdStr": "site-2", "country": "NZ"})
+
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=200,
+            body=SAMPLE_CSV_BODY,
+            content_type="application/vnd.csv",
+        )
+
+        processor_module = reload_demand_processor_module()
+        with patch("demand_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=cookies"):
+            result = processor_module.process_export(project="racv")
+
+        assert result["statusCode"] == 200
+        assert result["body"]["success_count"] == 2
+        assert result["body"]["error_count"] == 0
+        listing = s3.list_objects_v2(Bucket="sbm-file-ingester", Prefix="newTBP/")
+        assert listing["KeyCount"] == 2
+
+    @mock_aws
+    def test_missing_project_credentials_returns_400(self) -> None:
+        for var in ("OPTIMA_RACV_USERNAME", "OPTIMA_RACV_PASSWORD", "OPTIMA_RACV_CLIENT_ID"):
+            os.environ.pop(var, None)
+
+        processor_module = reload_demand_processor_module()
+        result = processor_module.process_export(project="racv")
+
+        assert result["statusCode"] == 400
+        assert "credentials" in result["body"].lower()
+
+    @mock_aws
+    def test_no_sites_returns_404(self) -> None:
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        processor_module = reload_demand_processor_module()
+        result = processor_module.process_export(project="racv")
+
+        assert result["statusCode"] == 404
+        assert "no sites" in result["body"].lower()
+
+    @mock_aws
+    def test_login_failure_returns_401(self) -> None:
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.Table("sbm-optima-config").put_item(
+            Item={"project": "racv", "nmi": "Optima_1", "siteIdStr": "site-1", "country": "AU"}
+        )
+
+        processor_module = reload_demand_processor_module()
+        with patch("demand_exporter.processor.login_bidenergy", return_value=None):
+            result = processor_module.process_export(project="racv")
+
+        assert result["statusCode"] == 401
+        assert "authenticate" in result["body"].lower()
+
+    def test_inverted_date_range_returns_400(self) -> None:
+        processor_module = reload_demand_processor_module()
+        result = processor_module.process_export(
+            project="racv",
+            start_date="2026-04-30",
+            end_date="2026-04-29",
+        )
+
+        assert result["statusCode"] == 400
+        assert "invalid range" in result["body"].lower()
+
+    @freeze_time("2026-04-30 10:00:00")
+    @mock_aws
+    @responses.activate
+    def test_single_nmi_mode_processes_only_that_site(self) -> None:
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table = dynamodb.Table("sbm-optima-config")
+        table.put_item(Item={"project": "racv", "nmi": "Optima_1", "siteIdStr": "site-1", "country": "AU"})
+        table.put_item(Item={"project": "racv", "nmi": "Optima_2", "siteIdStr": "site-2", "country": "AU"})
+
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=200,
+            body=SAMPLE_CSV_BODY,
+            content_type="application/vnd.csv",
+        )
+
+        processor_module = reload_demand_processor_module()
+        with patch("demand_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=cookies"):
+            result = processor_module.process_export(project="racv", nmi="Optima_1")
+
+        assert result["statusCode"] == 200
+        assert result["body"]["success_count"] == 1
+        listing = s3.list_objects_v2(Bucket="sbm-file-ingester", Prefix="newTBP/")
+        assert listing["KeyCount"] == 1
+        assert "OPTIMA_1" in listing["Contents"][0]["Key"]
+
+    @mock_aws
+    def test_single_nmi_not_found_returns_404(self) -> None:
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        processor_module = reload_demand_processor_module()
+        result = processor_module.process_export(project="racv", nmi="Optima_DOES_NOT_EXIST")
+
+        assert result["statusCode"] == 404
+        assert "not found" in result["body"].lower()
+
+    @freeze_time("2026-04-30 10:00:00")
+    @mock_aws
+    @responses.activate
+    def test_partial_failure_returns_207(self) -> None:
+        dynamodb = boto3.resource("dynamodb", region_name="ap-southeast-2")
+        dynamodb.create_table(
+            TableName="sbm-optima-config",
+            KeySchema=[
+                {"AttributeName": "project", "KeyType": "HASH"},
+                {"AttributeName": "nmi", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "project", "AttributeType": "S"},
+                {"AttributeName": "nmi", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table = dynamodb.Table("sbm-optima-config")
+        table.put_item(Item={"project": "racv", "nmi": "Optima_OK", "siteIdStr": "site-ok", "country": "AU"})
+        table.put_item(Item={"project": "racv", "nmi": "Optima_BAD", "siteIdStr": "site-bad", "country": "AU"})
+
+        s3 = boto3.client("s3", region_name="ap-southeast-2")
+        s3.create_bucket(
+            Bucket="sbm-file-ingester",
+            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+        )
+
+        def callback(request: Any) -> tuple[int, dict, bytes]:
+            if "site-ok" in request.url:
+                return 200, {"Content-Type": "application/vnd.csv"}, SAMPLE_CSV_BODY
+            return 500, {}, b"err"
+
+        responses.add_callback(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            callback=callback,
+        )
+
+        processor_module = reload_demand_processor_module()
+        with patch("demand_exporter.processor.login_bidenergy", return_value=".ASPXAUTH=cookies"):
+            result = processor_module.process_export(project="racv")
+
+        assert result["statusCode"] == 207
+        assert result["body"]["success_count"] == 1
+        assert result["body"]["error_count"] == 1
