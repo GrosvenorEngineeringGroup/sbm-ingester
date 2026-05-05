@@ -15,10 +15,95 @@
 **Pre-flight check before starting:**
 ```bash
 cd /Users/zeyu/Desktop/GEG/sbm/sbm-ingester
-git status --short          # confirm a clean baseline (existing uncommitted work in src/functions/optima_exporter/interval_exporter/ and terraform/ should NOT be touched by this plan)
+git status --short          # confirm baseline state
 uv sync --all-extras
 uv run pytest --cov=src     # establish baseline: 525+ tests pass, coverage ≥90%
 ```
+
+There is pre-existing uncommitted work in `src/functions/optima_exporter/interval_exporter/` and `terraform/optima_exporter.tf` that this plan must NOT touch. **Stash it before starting** so the working tree is clean:
+```bash
+git stash push -u -m "pre-parsers-refactor" -- src/functions/optima_exporter/interval_exporter/ terraform/optima_exporter.tf .gitignore
+```
+Pop it back at the end with `git stash pop`. This protects the unrelated WIP from being swept into the refactor's commits.
+
+---
+
+## Critical Execution Rules (apply to every task)
+
+These rules override any per-task instruction that contradicts them. Read once before starting; refer back when each task feels ambiguous.
+
+### R1: Extraction step order — never break the dispatcher mid-task
+
+For Tasks 4–10 (extracting parsers from the bundled `non_nem_parsers.py`), execute in this order to keep the dispatcher importable AND callable at every checkpoint:
+
+1. **Create** the new `src/shared/parsers/<X>/<Y>.py` with the function copied verbatim + `Logger` declaration + `from shared.parsers import ParserResult`.
+2. **Add** the new `from shared.parsers.<X>.<Y> import <new_name>` import to `src/shared/non_nem_parsers.py`. **Swap** the bare name in the `parsers = [...]` list (so the list now references the new name, which resolves to the import you just added).
+3. **Then delete** the old function body from `non_nem_parsers.py`.
+
+Doing 3 before 2 leaves the dispatcher's `parsers = [...]` list referencing a name that doesn't resolve — `get_non_nem_df()` raises `NameError` at call time even though the module imports fine.
+
+### R2: Mock-path migration — only the parser that LOGS gets its patches rewritten
+
+Of the 7 parsers being extracted, **only `envizi_vertical_parser_water` calls `logger.<level>` from inside its body** (line 34 of the original `non_nem_parsers.py`). The other 6 parsers don't log — they just `raise`.
+
+Tests for parsers that don't log themselves often `patch("shared.non_nem_parsers.logger")` to silence the **dispatcher's** swallow-all-failures debug log. Those patches target the dispatcher's logger, NOT the parser's. After moving the parser, those patches must STAY pointing at `shared.non_nem_parsers.logger` (the dispatcher hasn't moved).
+
+Per-task rule:
+- **Task 7 (envizi_vertical_parser_water):** Rewrite `shared.non_nem_parsers.logger` patches to `shared.parsers.envizi.vertical_water.logger` ONLY for tests that assert on log calls (`mock_logger.error.assert_called_once`, etc.). Leave dispatcher-silencing patches alone.
+- **All other extraction tasks (4, 5, 6, 8, 9, 10):** Do NOT rewrite `shared.non_nem_parsers.logger` patches. Leave them pointing at the dispatcher's logger.
+
+When in doubt, check what each `with patch(...)` block does:
+- Asserts on the mock (`mock_log.error.assert_called`, etc.) → patches the parser's own logger → migrate to new path
+- Just suppresses (no assertion on the mock object) → patches the dispatcher's logger → leave alone
+
+### R3: Locate test extractions by function name, not by line number
+
+Hard-coded line numbers go stale as earlier extractions delete content above them. Instead of "cut lines X–Y", use:
+
+```bash
+# Find the line ranges of test functions to extract (re-run before EACH task)
+grep -nE "^def test_<func_name>|^class Test<Func>" tests/unit/test_non_nem_parsers.py
+grep -nE "^def test_<func_name>|^class Test<Func>" tests/unit/test_non_nem_parsers_edge_cases.py
+```
+
+For each parser-extraction task, the test function names to find are predictable — they typically share the parser name as a substring. E.g., for `optima_parser`, grep for `test_optima_parser` (and any test class named `TestOptimaParser`). After locating, copy the relevant blocks (including any decorators and helper fixtures they reference) into the new test file.
+
+### R4: Use explicit `git add <paths>`, never `git add -A`
+
+The pre-flight check stashes unrelated WIP, so a stray `git add -A` would no longer sweep it. But to be safe — and because explicit adds also make the commit's intent visible — use explicit paths in every commit:
+
+```bash
+git add src/shared/parsers/<X>/<Y>.py \
+        src/shared/non_nem_parsers.py \
+        tests/unit/parsers/<X>/test_<Y>.py \
+        tests/unit/test_non_nem_parsers.py \
+        tests/unit/test_non_nem_parsers_edge_cases.py
+git commit -m "..."
+```
+
+For `git mv` operations (Tasks 2, 3), `git add -A` is fine because the mv already staged the rename — no other changes can sneak in.
+
+### R5: Handle multi-line imports
+
+`tests/unit/test_non_nem_parsers.py:385` has a parenthesised multi-line import:
+```python
+from shared.non_nem_parsers import (
+    envizi_vertical_parser_electricity,
+    envizi_vertical_parser_water,
+    optima_parser,
+    ...
+)
+```
+
+Before each extraction task that involves a name in this multi-line block, manually update the block — sed will not handle it cleanly. Replace each removed name with its new import path (potentially splitting the multi-line into multiple single-line imports if the names now come from different modules).
+
+### R6: Do not `git push` until Task 13 completes
+
+The lefthook pre-push hook enforces ≥90% coverage. Mid-refactor states may transiently dip if a parser's tests are temporarily orphaned during a step transition. Push only after Task 13 verifies the final state is clean.
+
+### R7: When migrating standalone files, replace local `ParserResult` definition with subpackage import
+
+Both `billing_parser.py` AND `noosa_solar_parser.py` define their own `ParserResult` at module scope (a duplicate of what `parsers/__init__.py` exports). When git-mv'ing each file, replace the local `ParserResult = list[tuple[str, pd.DataFrame]]` line with `from shared.parsers import ParserResult`. This avoids two parallel type aliases that could drift apart.
 
 ---
 
@@ -117,7 +202,22 @@ git mv src/shared/noosa_solar_parser.py src/shared/parsers/racv/noosa_solar.py
 git mv tests/unit/test_noosa_solar_parser.py tests/unit/parsers/racv/test_noosa_solar.py
 ```
 
-- [ ] **Step 2: Update the dispatcher's import in `src/shared/non_nem_parsers.py`**
+- [ ] **Step 2: Replace the local `ParserResult` definition in the moved source file** (per R7)
+
+In `src/shared/parsers/racv/noosa_solar.py`, find:
+```python
+# Type alias — defined locally to avoid circular import with non_nem_parsers.py
+ParserResult = list[tuple[str, pd.DataFrame]]
+```
+
+Replace with:
+```python
+from shared.parsers import ParserResult
+```
+
+(The accompanying comment about circular imports no longer applies — `parsers/__init__.py` is the canonical source now.)
+
+- [ ] **Step 3: Update the dispatcher's import in `src/shared/non_nem_parsers.py`**
 
 Find the existing line:
 ```python
@@ -129,7 +229,7 @@ Replace with:
 from shared.parsers.racv.noosa_solar import noosa_solar_parser
 ```
 
-- [ ] **Step 3: Update mock patch paths in `tests/unit/parsers/racv/test_noosa_solar.py`**
+- [ ] **Step 4: Update mock patch paths in `tests/unit/parsers/racv/test_noosa_solar.py`**
 
 In the moved test file, run a search-and-replace:
 - `shared.noosa_solar_parser.logger` → `shared.parsers.racv.noosa_solar.logger`
@@ -140,19 +240,23 @@ Use `sed` (or your editor):
 sed -i '' 's|shared\.noosa_solar_parser|shared.parsers.racv.noosa_solar|g' tests/unit/parsers/racv/test_noosa_solar.py
 ```
 
+Note: noosa parser DOES log itself (it has its own `logger` and uses it), so all 17 `patch("shared.noosa_solar_parser.logger")` patches DO need to be rewritten — handled by the sed above.
+
 The cross-module patch on line ~523 (`patch("shared.non_nem_parsers.logger")`) STAYS UNCHANGED — that one targets the dispatcher's logger, which has not moved.
 
-- [ ] **Step 4: Verify the moved tests pass**
+- [ ] **Step 5: Verify the moved tests pass**
 
 Run: `uv run pytest tests/unit/parsers/racv/test_noosa_solar.py -v`
 Expected: PASS — all noosa solar tests (count should match the original test_noosa_solar_parser.py count, ~20 tests).
 
-- [ ] **Step 5: Verify the full suite still passes**
+- [ ] **Step 6: Verify the full suite still passes**
 
 Run: `uv run pytest --tb=short -q`
 Expected: PASS, same total count as baseline.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
+
+`git add -A` is acceptable here because all tracked changes belong to this task (the pre-flight stash protected unrelated WIP):
 
 ```bash
 git add -A
@@ -313,13 +417,9 @@ def interval_parser(file_name: str, error_file_path: str) -> ParserResult:
     return dfs
 ```
 
-- [ ] **Step 2: Remove `optima_parser` from `src/shared/non_nem_parsers.py`**
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-Delete the function definition (currently lines 131-155, the block starting with `def optima_parser(...)` through its closing `return dfs`).
-
-- [ ] **Step 3: Update dispatcher imports + parsers list in `src/shared/non_nem_parsers.py`**
-
-Add this import alongside the other parser imports (alphabetic position):
+In `src/shared/non_nem_parsers.py`, add this import alongside the other parser imports (alphabetic position):
 ```python
 from shared.parsers.optima.interval import interval_parser
 ```
@@ -333,9 +433,44 @@ Replace with:
 interval_parser,
 ```
 
-- [ ] **Step 4: Create `tests/unit/parsers/optima/test_interval.py`** (extract from bundled file)
+⚠️ Also handle the multi-line import at `tests/unit/test_non_nem_parsers.py:385` per R5 — it lists `optima_parser` among other parser names. Update that one block manually now (replace `optima_parser` with the new import path; sed won't handle the multi-line form):
 
-Cut lines 130-218 from `tests/unit/test_non_nem_parsers.py` (the `optima_parser` test cases — names like `test_optima_parser_*`). Copy them into the new file. The new file should have:
+```python
+# Before:
+from shared.non_nem_parsers import (
+    envizi_vertical_parser_electricity,
+    envizi_vertical_parser_water,
+    optima_parser,
+    ...
+)
+# After (split into two import statements since optima_parser now comes from a different module):
+from shared.non_nem_parsers import (
+    envizi_vertical_parser_electricity,
+    envizi_vertical_parser_water,
+    ...
+)
+from shared.parsers.optima.interval import interval_parser
+```
+
+After this step, the dispatcher is callable end-to-end via the new module. The old `optima_parser` definition still exists in `non_nem_parsers.py` but is no longer imported by anything.
+
+- [ ] **Step 3: NOW delete the old function body from `src/shared/non_nem_parsers.py`** (per R1)
+
+Locate the function by content (not by line number — the file has been edited above):
+```bash
+grep -n "^def optima_parser" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition (the block starting with `def optima_parser(...)` through its closing `return dfs`).
+
+- [ ] **Step 4: Create `tests/unit/parsers/optima/test_interval.py`** (extract from bundled file, per R3)
+
+Locate the test functions by name, not by line number:
+```bash
+grep -nE "^def test_optima_parser|^class TestOptimaParser" tests/unit/test_non_nem_parsers.py
+```
+
+Cut the located test blocks from `tests/unit/test_non_nem_parsers.py` (typically 5 test functions — names like `test_optima_parser_*`). Copy them into the new file:
 
 ```python
 """Tests for shared.parsers.optima.interval.interval_parser."""
@@ -350,11 +485,11 @@ import pytest
 
 After pasting, also preserve any module-level imports the extracted tests depend on (e.g., a fixture path constant). Inspect the original file's top-of-file imports and copy whatever the moved tests reference.
 
-After pasting and applying the replacements, run sed to catch anything missed:
+⚠️ **Apply mock-path migration per R2:** `optima_parser` does NOT log itself (only the dispatcher does). Any `patch("shared.non_nem_parsers.logger")` in the extracted tests targets the dispatcher's logger — leave them unchanged. The sed below does NOT touch logger paths:
+
 ```bash
 sed -i '' \
   -e 's|optima_parser|interval_parser|g' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.optima.interval.logger|g' \
   -e 's|from shared\.non_nem_parsers import interval_parser|from shared.parsers.optima.interval import interval_parser|g' \
   tests/unit/parsers/optima/test_interval.py
 ```
@@ -363,12 +498,12 @@ sed -i '' \
 
 - [ ] **Step 5: Remove the extracted tests from `tests/unit/test_non_nem_parsers.py`**
 
-Delete the same lines (130-218) you just copied. Verify the file's class structure remains valid (no orphaned `class TestX:` headers or trailing fixtures with no consumers).
+Delete the same test functions/classes you just copied. Use the same grep from Step 4 to locate them by name (line numbers will have shifted from any earlier task's deletions). Verify the file's class structure remains valid (no orphaned `class TestX:` headers or trailing fixtures with no consumers).
 
 - [ ] **Step 6: Verify the new test file passes in isolation**
 
 Run: `uv run pytest tests/unit/parsers/optima/test_interval.py -v`
-Expected: PASS — same number of test cases as were in lines 130-218 of the original (~5 tests).
+Expected: PASS — same number of test cases as were in the original (typically ~5 tests for `optima_parser`).
 
 - [ ] **Step 7: Verify the full suite still passes**
 
@@ -438,13 +573,9 @@ def racv_billing_parser(file_name: str, error_file_path: str) -> ParserResult:
     return []
 ```
 
-- [ ] **Step 2: Remove `optima_usage_and_spend_to_s3` from `src/shared/non_nem_parsers.py`**
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-Delete the function definition (currently lines 84-100).
-
-- [ ] **Step 3: Update dispatcher in `src/shared/non_nem_parsers.py`**
-
-Add import:
+In `src/shared/non_nem_parsers.py`, add import:
 ```python
 from shared.parsers.optima.racv_billing import racv_billing_parser
 ```
@@ -457,6 +588,17 @@ Replace with:
 ```python
 racv_billing_parser,
 ```
+
+(`optima_usage_and_spend_to_s3` is not in the multi-line import at line 385 of the test file, so no R5 handling needed for this task.)
+
+- [ ] **Step 3: NOW delete the old function from `src/shared/non_nem_parsers.py`** (per R1)
+
+Locate by content:
+```bash
+grep -n "^def optima_usage_and_spend_to_s3" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/optima/test_racv_billing.py`** (extract from edge_cases bundled file)
 
@@ -475,16 +617,16 @@ import pytest
 # - All occurrences of `from shared.non_nem_parsers import optima_usage_and_spend_to_s3` → `from shared.parsers.optima.racv_billing import racv_billing_parser`
 ```
 
-Apply mechanical replacements:
+⚠️ **Apply mock-path migration per R2:** `optima_usage_and_spend_to_s3` does NOT log itself — `patch("shared.non_nem_parsers.logger")` patches in extracted tests target the dispatcher's logger; leave them unchanged. The sed below only changes function name + import path:
+
 ```bash
 sed -i '' \
   -e 's|optima_usage_and_spend_to_s3|racv_billing_parser|g' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.optima.racv_billing.logger|g' \
   -e 's|from shared\.non_nem_parsers import racv_billing_parser|from shared.parsers.optima.racv_billing import racv_billing_parser|g' \
   tests/unit/parsers/optima/test_racv_billing.py
 ```
 
-If any test patches `shared.non_nem_parsers.boto3.client`, change to `shared.parsers.optima.racv_billing.boto3.client`.
+If any test patches `shared.non_nem_parsers.boto3.client` (the function does call `boto3.client("s3")` — check this), update to `shared.parsers.optima.racv_billing.boto3.client`. boto3 IS used by the parser body, so a `boto3.client` patch must follow the parser to the new module path.
 
 - [ ] **Step 5: Remove the extracted tests from `tests/unit/test_non_nem_parsers_edge_cases.py`**
 
@@ -571,18 +713,24 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserResult:
     raise Exception(f"No Valid Data in file: {file_name}")
 ```
 
-- [ ] **Step 2: Remove `racv_elec_parser` from `src/shared/non_nem_parsers.py`**
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-Delete the function definition (currently lines 103-128).
-
-- [ ] **Step 3: Update dispatcher import in `src/shared/non_nem_parsers.py`**
-
-Add:
+In `src/shared/non_nem_parsers.py`, add:
 ```python
 from shared.parsers.racv.elec import racv_elec_parser
 ```
 
-The name in the `parsers = [...]` list stays `racv_elec_parser` — no rename for this one.
+The name in the `parsers = [...]` list stays `racv_elec_parser` — no rename for this one. The new import shadows the local definition (still present in the file) — Python's name resolution uses the import.
+
+(`racv_elec_parser` is not in the multi-line import at line 385 of the test file, so no R5 handling needed.)
+
+- [ ] **Step 3: NOW delete the old function from `src/shared/non_nem_parsers.py`** (per R1)
+
+```bash
+grep -n "^def racv_elec_parser" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/racv/test_elec.py`** (extract from BOTH bundled files)
 
@@ -603,10 +751,9 @@ import pytest
 # ... (paste both blocks of test functions here)
 ```
 
-Apply mechanical replacements:
+⚠️ **Apply mock-path migration per R2:** `racv_elec_parser` does NOT log itself. Leave `patch("shared.non_nem_parsers.logger")` patches alone. Only update import path:
 ```bash
 sed -i '' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.racv.elec.logger|g' \
   -e 's|from shared\.non_nem_parsers import racv_elec_parser|from shared.parsers.racv.elec import racv_elec_parser|g' \
   tests/unit/parsers/racv/test_elec.py
 ```
@@ -687,16 +834,28 @@ def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> Parser
     return dfs
 ```
 
-- [ ] **Step 2: Remove `envizi_vertical_parser_water` from `src/shared/non_nem_parsers.py`**
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-Delete the function definition (currently lines 18-45).
-
-- [ ] **Step 3: Update dispatcher import in `src/shared/non_nem_parsers.py`**
-
-Add:
+In `src/shared/non_nem_parsers.py`, add:
 ```python
 from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 ```
+
+⚠️ Also handle the multi-line import at `tests/unit/test_non_nem_parsers.py:385` per R5 — `envizi_vertical_parser_water` is in that block. Update manually:
+
+```python
+# Add separately:
+from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
+# Remove envizi_vertical_parser_water from the multi-line block.
+```
+
+- [ ] **Step 3: NOW delete the old function from `src/shared/non_nem_parsers.py`** (per R1)
+
+```bash
+grep -n "^def envizi_vertical_parser_water" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/envizi/test_vertical_water.py`** (extract from bundled file)
 
@@ -713,13 +872,20 @@ import pytest
 # ... (paste extracted test functions)
 ```
 
-Apply mechanical replacements:
+⚠️ **Apply mock-path migration per R2:** `envizi_vertical_parser_water` IS the one parser that calls `logger.error` itself (line 34 of original). Tests that ASSERT on the logger (e.g., `mock_log.error.assert_called_once`) target the parser's own logger and MUST be migrated. Tests that just suppress logger output (no assertion on the mock) target the dispatcher's logger and must be LEFT ALONE.
+
+Audit each `with patch("shared.non_nem_parsers.logger"...) as mock_log:` (or similar) block in the extracted tests:
+- Does the test body reference `mock_log` (e.g., `mock_log.error.assert_called`)? → Rewrite to `patch("shared.parsers.envizi.vertical_water.logger")`
+- Just `with patch("shared.non_nem_parsers.logger"):` with no body reference? → Leave it (dispatcher logger silence)
+
+Apply import-path replacement (safe — no logger paths touched):
 ```bash
 sed -i '' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.envizi.vertical_water.logger|g' \
   -e 's|from shared\.non_nem_parsers import envizi_vertical_parser_water|from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water|g' \
   tests/unit/parsers/envizi/test_vertical_water.py
 ```
+
+Then manually rewrite the asserting-on-logger patches per the audit above.
 
 - [ ] **Step 5: Remove the extracted tests from `tests/unit/test_non_nem_parsers.py`**
 
@@ -784,14 +950,22 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
     return dfs
 ```
 
-- [ ] **Step 2: Remove function from `src/shared/non_nem_parsers.py`** (currently lines 66-81)
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-- [ ] **Step 3: Update dispatcher import in `src/shared/non_nem_parsers.py`**
-
-Add:
+In `src/shared/non_nem_parsers.py`, add:
 ```python
 from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity
 ```
+
+⚠️ Also handle the multi-line import at `tests/unit/test_non_nem_parsers.py:385` per R5 — `envizi_vertical_parser_electricity` is in that block. Update manually as in Task 7.
+
+- [ ] **Step 3: NOW delete the old function from `src/shared/non_nem_parsers.py`** (per R1)
+
+```bash
+grep -n "^def envizi_vertical_parser_electricity" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/envizi/test_vertical_electricity.py`**
 
@@ -802,10 +976,9 @@ Extract tests for `envizi_vertical_parser_electricity` from `tests/unit/test_non
 # ... (paste extracted test functions)
 ```
 
-Apply replacements:
+⚠️ **Apply mock-path migration per R2:** `envizi_vertical_parser_electricity` does NOT log itself. Leave `patch("shared.non_nem_parsers.logger")` patches alone. Only update import path:
 ```bash
 sed -i '' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.envizi.vertical_electricity.logger|g' \
   -e 's|from shared\.non_nem_parsers import envizi_vertical_parser_electricity|from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity|g' \
   tests/unit/parsers/envizi/test_vertical_electricity.py
 ```
@@ -871,14 +1044,22 @@ def envizi_vertical_parser_water_bulk(file_name: str, error_file_path: str) -> P
     return dfs
 ```
 
-- [ ] **Step 2: Remove function from `src/shared/non_nem_parsers.py`** (currently lines 48-63)
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-- [ ] **Step 3: Update dispatcher import in `src/shared/non_nem_parsers.py`**
-
-Add:
+In `src/shared/non_nem_parsers.py`, add:
 ```python
 from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk
 ```
+
+(`envizi_vertical_parser_water_bulk` is NOT in the multi-line import at line 385 of the test file — verify with `grep -n envizi_vertical_parser_water_bulk tests/unit/test_non_nem_parsers.py`.)
+
+- [ ] **Step 3: NOW delete the old function from `src/shared/non_nem_parsers.py`** (per R1)
+
+```bash
+grep -n "^def envizi_vertical_parser_water_bulk" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/envizi/test_vertical_water_bulk.py`**
 
@@ -889,10 +1070,9 @@ Extract tests from `tests/unit/test_non_nem_parsers_edge_cases.py` (lines ~21-69
 # ... (paste extracted test functions)
 ```
 
-Apply replacements:
+⚠️ **Apply mock-path migration per R2:** `envizi_vertical_parser_water_bulk` does NOT log itself. Leave `patch("shared.non_nem_parsers.logger")` patches alone. Only update import path:
 ```bash
 sed -i '' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.envizi.vertical_water_bulk.logger|g' \
   -e 's|from shared\.non_nem_parsers import envizi_vertical_parser_water_bulk|from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk|g' \
   tests/unit/parsers/envizi/test_vertical_water_bulk.py
 ```
@@ -969,14 +1149,22 @@ def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_p
     return [(f"GPWComX_{site_name}", buf_df)]
 ```
 
-- [ ] **Step 2: Remove function from `src/shared/non_nem_parsers.py`** (currently lines 158-184)
+- [ ] **Step 2: Wire the dispatcher to the new module FIRST** (per R1)
 
-- [ ] **Step 3: Update dispatcher import in `src/shared/non_nem_parsers.py`**
-
-Add:
+In `src/shared/non_nem_parsers.py`, add:
 ```python
 from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 ```
+
+(Not in the multi-line import block — verify with `grep -n green_square_private tests/unit/test_non_nem_parsers.py`.)
+
+- [ ] **Step 3: NOW delete the old function from `src/shared/non_nem_parsers.py`** (per R1)
+
+```bash
+grep -n "^def green_square_private_wire_schneider_comx_parser" src/shared/non_nem_parsers.py
+```
+
+Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/green_square/test_comx.py`** (extract from BOTH bundled files)
 
@@ -984,10 +1172,9 @@ Combine:
 - `tests/unit/test_non_nem_parsers.py` lines ~335-388 (3 test functions)
 - `tests/unit/test_non_nem_parsers_edge_cases.py` lines ~213-263 + ~363 (4 test functions)
 
-Apply replacements:
+⚠️ **Apply mock-path migration per R2:** `green_square_private_wire_schneider_comx_parser` does NOT log itself. Leave `patch("shared.non_nem_parsers.logger")` patches alone. Only update import path:
 ```bash
 sed -i '' \
-  -e 's|shared\.non_nem_parsers\.logger|shared.parsers.green_square.comx.logger|g' \
   -e 's|from shared\.non_nem_parsers import green_square_private_wire_schneider_comx_parser|from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser|g' \
   tests/unit/parsers/green_square/test_comx.py
 ```
@@ -1090,14 +1277,23 @@ import pytest
 
 The patch path `shared.non_nem_parsers.logger` STAYS UNCHANGED in this file — it targets the dispatcher's own logger, which has not moved.
 
-- [ ] **Step 3: Delete the bundled test files (now empty or near-empty)**
+- [ ] **Step 3: Verify the bundled test files contain only dispatcher tests, then delete**
+
+Before `git rm`, audit each file for orphaned tests:
+
+```bash
+grep -nE "^def test_|^class Test" tests/unit/test_non_nem_parsers.py
+grep -nE "^def test_|^class Test" tests/unit/test_non_nem_parsers_edge_cases.py
+```
+
+Expected output: **only** functions/classes whose names contain `get_non_nem_df` or `Dispatcher` — i.e., the dispatcher tests you cut into `test_dispatcher.py` in Step 2. If you see any other test name (e.g., `test_optima_parser_*`, `test_envizi_*`), STOP — that test was missed in an earlier task. Route it to the correct new test file before continuing.
+
+Once verified empty of non-dispatcher tests:
 
 ```bash
 git rm tests/unit/test_non_nem_parsers.py
 git rm tests/unit/test_non_nem_parsers_edge_cases.py
 ```
-
-If either file still has any leftover test functions that you didn't extract or move, STOP — investigate and route them to the right new test file before deleting.
 
 - [ ] **Step 4: Run dispatcher tests**
 
@@ -1125,12 +1321,14 @@ git commit -m "refactor: shrink non_nem_parsers.py to dispatcher-only and move i
 
 ---
 
-## Task 12: Add Usage + Generation regression test
+## Task 12: Add Usage + Generation regression-lock test
+
+**Note:** This is a **regression lock**, not a TDD red-green cycle. The behaviour being asserted (both `Usage→E1_kWh` and `Generation→B1_kWh` are produced) already works — the test exists to prevent future regressions. It will pass on the first run; that's expected and correct for this kind of test.
 
 **Files:**
 - Modify: `tests/unit/parsers/optima/test_interval.py` (add new test)
 
-- [ ] **Step 1: Write the failing test (TDD)**
+- [ ] **Step 1: Add the regression test**
 
 Append to `tests/unit/parsers/optima/test_interval.py`:
 
@@ -1160,12 +1358,12 @@ def test_interval_parser_persists_both_usage_and_generation(tmp_path):
 
 (Make sure `pytest` is imported at the top of the file; it should already be from extracted tests.)
 
-- [ ] **Step 2: Run the test to verify it passes against existing code**
+- [ ] **Step 2: Run the new test — expected PASS on first run**
 
 Run: `uv run pytest tests/unit/parsers/optima/test_interval.py::test_interval_parser_persists_both_usage_and_generation -v`
-Expected: PASS — `interval_parser` already implements both channels (the implementation has not changed in this refactor; the test is a regression lock).
+Expected: PASS — `interval_parser` already implements both channels (the implementation has not changed in this refactor).
 
-If the test FAILS, stop — there is a bug somewhere in Task 4's extraction (the function copy must be byte-identical to the original logic).
+If the test FAILS, that means the function body extracted in Task 4 is not byte-identical to the original. Stop and diff Task 4's `src/shared/parsers/optima/interval.py` against the original `optima_parser` in `non_nem_parsers.py` (use `git show <pre-Task-4-commit>:src/shared/non_nem_parsers.py` to retrieve the original).
 
 - [ ] **Step 3: Run full suite**
 
