@@ -145,6 +145,47 @@ class TestMappingLookupAndHudiWrite:
             # CSV: sensorId, ts, val, unit, its, quality
             assert fields[3] == "", f"PF unit should be empty string, got {fields[3]!r}"
 
+    def test_preserves_source_value_precision(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # Source CSV uses 4-decimal precision (e.g. "0.8800", "1.0000").
+        # Hudi rows should preserve the raw string representation rather
+        # than collapsing via float() (which would give "0.88", "1.0").
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        captured_body = []
+
+        def fake_put_object(**kwargs):
+            captured_body.append(kwargs["Body"].decode())
+            return {"ETag": "fake-etag"}
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object = fake_put_object
+            # Use values that would lose precision via float() round-trip
+            rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000")]
+            path = write_demand_csv(rows=rows)
+            demand_parser(str(path), "/tmp/err.log")
+
+        body = captured_body[0]
+        # 1 input row x 3 mapped columns = 3 Hudi rows
+        data_lines = [L for L in body.strip().split("\n")[1:] if L]
+        assert len(data_lines) == 3
+
+        # kW row: val field (index 2) should be "10.4800" not "10.48"
+        kw_line = next(L for L in data_lines if L.startswith("p:bunnings:kw,"))
+        assert kw_line.split(",")[2] == "10.4800", f"kW precision lost: {kw_line!r}"
+
+        # kVa row: val field should be "10.4800"
+        kva_line = next(L for L in data_lines if L.startswith("p:bunnings:kva,"))
+        assert kva_line.split(",")[2] == "10.4800", f"kVa precision lost: {kva_line!r}"
+
+        # PF row: val field should be "1.0000"
+        pf_line = next(L for L in data_lines if L.startswith("p:bunnings:pf,"))
+        assert pf_line.split(",")[2] == "1.0000", f"PF precision lost: {pf_line!r}"
+
     def test_unmapped_nmis_skipped_silently(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
         # Mappings only contain kw — kva and pf will be unmapped
         fake_mappings = {

@@ -91,8 +91,12 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict) -> tuple[str, in
             raw_val = (row.get(csv_col) or "").strip()
             if not raw_val:
                 continue
+            # Validate as numeric but persist the raw string — preserves
+            # source precision (e.g. "0.8800" stays "0.8800" instead of
+            # collapsing to "0.88"). Matches bunnings_billing_parser's
+            # raw-pass-through behaviour. Hudi stores as double either way.
             try:
-                val = float(raw_val)
+                float(raw_val)
             except ValueError:
                 continue
 
@@ -102,7 +106,9 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict) -> tuple[str, in
                 continue
 
             # Hudi format: sensorId,ts,val,unit,its,quality
-            buf.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str},\n")
+            # unit/quality fields are constants from CSV_FIELD_MAPPING
+            # (kw/kva/"") so no comma-injection sanitisation needed.
+            buf.write(f"{sensor_id},{ts_str},{raw_val},{unit},{ts_str},\n")
             rows_written += 1
 
     return buf.getvalue(), rows_written, unmapped_count
