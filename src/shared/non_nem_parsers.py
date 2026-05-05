@@ -4,6 +4,7 @@ from aws_lambda_powertools import Logger
 from shared.parsers.optima.bunnings_billing import bunnings_billing_parser
 from shared.parsers.optima.interval import interval_parser
 from shared.parsers.optima.racv_billing import racv_billing_parser
+from shared.parsers.racv.elec import racv_elec_parser
 from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
@@ -78,34 +79,6 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
         dfs.append((f"Envizi_{name}", buf_df))
 
     return dfs
-
-
-def racv_elec_parser(file_name: str, error_file_path: str) -> ParserResult:
-    if "OptimaGenerationData" in file_name:
-        raise Exception("Not Relevant Parser For File")
-
-    raw_df = pd.read_csv(file_name, skiprows=[0, 1])
-    cols = [x for x in raw_df.columns if "kWh" in x or x in ["Date", "Start Time"]]
-    meter_cols = [x for x in cols if "kWh" in x]
-
-    raw_df["Interval_Start"] = pd.to_datetime(raw_df["Date"] + " " + raw_df["Start Time"])
-
-    dfs: ParserResult = []
-    for mn in meter_cols:
-        buf_df = raw_df[["Interval_Start", mn]].rename(columns={"Interval_Start": "t_start", mn: "E1_kWh"})
-        buf_df = buf_df.set_index("t_start")
-
-        # Daily aggregation to filter out invalid days
-        daily_sum = buf_df.resample("D").sum(numeric_only=True)
-        non_zero_dates = daily_sum[daily_sum["E1_kWh"] != 0].index
-        buf_df = buf_df[buf_df.index.normalize().isin(non_zero_dates)]
-
-        if not non_zero_dates.empty:
-            dfs.append((f"Optima_{mn.split(' ')[0]}", buf_df))
-
-    if dfs:
-        return dfs
-    raise Exception(f"No Valid Data in file: {file_name}")
 
 
 def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_path: str) -> ParserResult:

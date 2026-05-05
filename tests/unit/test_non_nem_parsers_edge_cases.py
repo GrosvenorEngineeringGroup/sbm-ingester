@@ -90,55 +90,6 @@ class TestEnviziVerticalParserWaterBulk:
             assert nmis == ["Envizi_111", "Envizi_222", "Envizi_333"]
 
 
-class TestRacvElecParserEdgeCases:
-    """Edge case tests for racv_elec_parser function."""
-
-    def test_raises_exception_when_all_zeros(self, temp_directory: str) -> None:
-        """Test that racv_elec_parser raises exception when all data is zero."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import racv_elec_parser
-
-            # Create file with all zeros - no valid data
-            filepath = str(Path(temp_directory) / "all_zeros.csv")
-            content = """Header Row 1
-Header Row 2
-Date,Start Time,Meter1 kWh
-2024-01-01,00:00,0.0
-2024-01-01,00:30,0.0
-2024-01-02,00:00,0.0
-2024-01-02,00:30,0.0
-"""
-            with Path(filepath).open("w") as f:
-                f.write(content)
-
-            with pytest.raises(Exception, match="No Valid Data"):
-                racv_elec_parser(filepath, "error_log")
-
-    def test_handles_mixed_zero_nonzero_meters(self, temp_directory: str) -> None:
-        """Test that racv_elec_parser handles files with some zero and some non-zero meters."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import racv_elec_parser
-
-            filepath = str(Path(temp_directory) / "mixed_meters.csv")
-            content = """Header Row 1
-Header Row 2
-Date,Start Time,ZeroMeter kWh,NonZeroMeter kWh
-2024-01-01,00:00,0.0,10.0
-2024-01-01,00:30,0.0,11.0
-2024-01-02,00:00,0.0,12.0
-2024-01-02,00:30,0.0,13.0
-"""
-            with Path(filepath).open("w") as f:
-                f.write(content)
-
-            result = racv_elec_parser(filepath, "error_log")
-
-            # Should only have nonzero meter
-            assert len(result) == 1
-            nmi, _ = result[0]
-            assert "NonZeroMeter" in nmi
-
-
 class TestGreenSquareComXParserEdgeCases:
     """Edge case tests for green_square_private_wire_schneider_comx_parser function."""
 
