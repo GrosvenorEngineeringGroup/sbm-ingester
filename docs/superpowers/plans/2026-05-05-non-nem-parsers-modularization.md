@@ -602,7 +602,11 @@ Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/optima/test_racv_billing.py`** (extract from edge_cases bundled file)
 
-Cut the test cases for `optima_usage_and_spend_to_s3` from `tests/unit/test_non_nem_parsers_edge_cases.py` (currently around lines 100-141 — approximately 3 test functions). Copy into the new file with this header:
+Locate the test functions by name (per R3):
+```bash
+grep -nE "^def test_optima_usage_and_spend|^class TestOptimaUsageAndSpend" tests/unit/test_non_nem_parsers_edge_cases.py
+```
+Cut the located test blocks (~3 test functions). Copy into the new file with this header:
 
 ```python
 """Tests for shared.parsers.optima.racv_billing.racv_billing_parser."""
@@ -734,11 +738,11 @@ Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/racv/test_elec.py`** (extract from BOTH bundled files)
 
-Two extraction sources:
-- `tests/unit/test_non_nem_parsers.py` lines ~264-314 (3 racv_elec_parser test cases)
-- `tests/unit/test_non_nem_parsers_edge_cases.py` lines ~164-185 (2 edge case tests)
-
-Combine both blocks into the new file with this header:
+Locate the test functions by name (per R3) — they live in BOTH bundled files:
+```bash
+grep -nE "^def test_racv_elec|^class TestRacvElec" tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py
+```
+Expect ~3 cases in `test_non_nem_parsers.py` and ~2 in `test_non_nem_parsers_edge_cases.py`. Cut both sets and combine into the new file with this header:
 
 ```python
 """Tests for shared.parsers.racv.elec.racv_elec_parser."""
@@ -760,8 +764,7 @@ sed -i '' \
 
 - [ ] **Step 5: Remove extracted tests from both bundled files**
 
-Delete lines 264-314 from `tests/unit/test_non_nem_parsers.py`.
-Delete lines 164-185 from `tests/unit/test_non_nem_parsers_edge_cases.py`.
+Re-run the grep from Step 4 to relocate the test functions (their line numbers may have shifted from earlier tasks' deletions). Delete those test blocks from both files.
 
 - [ ] **Step 6: Verify the new test file passes**
 
@@ -859,7 +862,11 @@ Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/envizi/test_vertical_water.py`** (extract from bundled file)
 
-Cut lines 25-98 from `tests/unit/test_non_nem_parsers.py` (the `envizi_vertical_parser_water` test cases — typically 4 tests). Paste into the new file with appropriate header:
+Locate by name (per R3):
+```bash
+grep -nE "^def test_envizi_vertical_parser_water\b|^class TestEnviziVerticalParserWater\b" tests/unit/test_non_nem_parsers.py
+```
+(The trailing `\b` excludes `_water_bulk` — that one belongs to Task 9.) Cut the located test blocks (~4 tests). Paste into the new file with appropriate header:
 
 ```python
 """Tests for shared.parsers.envizi.vertical_water.envizi_vertical_parser_water."""
@@ -889,7 +896,7 @@ Then manually rewrite the asserting-on-logger patches per the audit above.
 
 - [ ] **Step 5: Remove the extracted tests from `tests/unit/test_non_nem_parsers.py`**
 
-Delete the same lines (25-98).
+Re-run the grep from Step 4 to relocate (line numbers shift). Delete the located blocks.
 
 - [ ] **Step 6: Run new test file**
 
@@ -969,7 +976,11 @@ Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/envizi/test_vertical_electricity.py`**
 
-Extract tests for `envizi_vertical_parser_electricity` from `tests/unit/test_non_nem_parsers.py` (lines ~98-130 — 2 test functions). Use the same pattern as Task 7 Step 4:
+Locate by name (per R3):
+```bash
+grep -nE "^def test_envizi_vertical_parser_electricity|^class TestEnviziVerticalParserElectricity" tests/unit/test_non_nem_parsers.py
+```
+Cut the located test blocks (~2 tests). Use the same pattern as Task 7 Step 4:
 
 ```python
 """Tests for shared.parsers.envizi.vertical_electricity.envizi_vertical_parser_electricity."""
@@ -984,6 +995,8 @@ sed -i '' \
 ```
 
 - [ ] **Step 5: Remove extracted tests from `tests/unit/test_non_nem_parsers.py`**
+
+Re-run the grep from Step 4 to relocate (line numbers shift). Delete the located blocks.
 
 - [ ] **Step 6: Run new test file**
 
@@ -1063,7 +1076,11 @@ Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/envizi/test_vertical_water_bulk.py`**
 
-Extract tests from `tests/unit/test_non_nem_parsers_edge_cases.py` (lines ~21-69 + ~343 — multiple test cases). Combine into the new file:
+Locate by name (per R3) — `envizi_vertical_parser_water_bulk` tests appear in TWO chunks of the same edge_cases file:
+```bash
+grep -nE "^def test_envizi_vertical_parser_water_bulk|^class TestEnviziVerticalParserWaterBulk" tests/unit/test_non_nem_parsers_edge_cases.py
+```
+Cut all located blocks (~4 tests across the two chunks). Combine into the new file:
 
 ```python
 """Tests for shared.parsers.envizi.vertical_water_bulk.envizi_vertical_parser_water_bulk."""
@@ -1078,6 +1095,8 @@ sed -i '' \
 ```
 
 - [ ] **Step 5: Remove extracted tests from `tests/unit/test_non_nem_parsers_edge_cases.py`**
+
+Re-run the grep from Step 4 to relocate (line numbers shift). Delete the located blocks.
 
 - [ ] **Step 6: Run new test file**
 
@@ -1168,9 +1187,11 @@ Delete the function definition.
 
 - [ ] **Step 4: Create `tests/unit/parsers/green_square/test_comx.py`** (extract from BOTH bundled files)
 
-Combine:
-- `tests/unit/test_non_nem_parsers.py` lines ~335-388 (3 test functions)
-- `tests/unit/test_non_nem_parsers_edge_cases.py` lines ~213-263 + ~363 (4 test functions)
+Locate by name (per R3) — green_square tests appear in BOTH bundled files (and in two chunks of edge_cases):
+```bash
+grep -nE "^def test_green_square|^class TestGreenSquare" tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py
+```
+Cut all located blocks (~3 in `test_non_nem_parsers.py`, ~4 across two chunks of `test_non_nem_parsers_edge_cases.py`). Combine into the new file.
 
 ⚠️ **Apply mock-path migration per R2:** `green_square_private_wire_schneider_comx_parser` does NOT log itself. Leave `patch("shared.non_nem_parsers.logger")` patches alone. Only update import path:
 ```bash
@@ -1180,6 +1201,8 @@ sed -i '' \
 ```
 
 - [ ] **Step 5: Remove extracted tests from both bundled files**
+
+Re-run the grep from Step 4 to relocate (line numbers shift). Delete the located blocks from both files.
 
 - [ ] **Step 6: Run new test file**
 
@@ -1259,9 +1282,11 @@ If anything beyond this remains (orphaned imports like `boto3`, `Path`, `pandas`
 
 - [ ] **Step 2: Create `tests/unit/test_dispatcher.py`** by combining the dispatcher tests from both bundled files
 
-Cut the `get_non_nem_df` test classes/functions from:
-- `tests/unit/test_non_nem_parsers.py` (lines ~213-264 — `TestGetNonNemDf` class with 3 tests)
-- `tests/unit/test_non_nem_parsers_edge_cases.py` (lines ~286-340 — class `TestGetNonNemDfEdgeCases` or similar)
+Locate the dispatcher test classes/functions by name (per R3) — by this point in the plan, both bundled files have shrunk substantially as Tasks 4-10 extracted parser-specific tests:
+```bash
+grep -nE "^def test_.*get_non_nem_df|^class TestGetNonNemDf|^class TestDispatcher" tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py
+```
+Cut the located test blocks from both files (typically ~3 tests in `test_non_nem_parsers.py` and ~3 in `test_non_nem_parsers_edge_cases.py`).
 
 Combine into the new file:
 
