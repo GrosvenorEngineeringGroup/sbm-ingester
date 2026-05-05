@@ -13,14 +13,15 @@ import io
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import boto3
-import pandas as pd
 from aws_lambda_powertools import Logger
 
-logger = Logger(service="bunnings-billing-parser", child=True)
+if TYPE_CHECKING:
+    from shared.parsers import ParserResult
 
-ParserResult = list[tuple[str, pd.DataFrame]]
+logger = Logger(service="bunnings-billing-parser", child=True)
 
 MAPPINGS_BUCKET = "sbm-file-ingester"
 MAPPINGS_KEY = "nem12_mappings.json"
@@ -184,7 +185,7 @@ def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
     return rows_written
 
 
-def bunnings_usage_and_spend_parser(file_name: str, error_file_path: str) -> ParserResult:
+def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserResult:
     """Parse Bunnings billing CSV and write Hudi sensor rows to S3.
 
     Args:
