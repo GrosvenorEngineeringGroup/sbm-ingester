@@ -8,6 +8,7 @@ from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk
 from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 from shared.parsers.optima.bunnings_billing import bunnings_billing_parser
+from shared.parsers.optima.demand import demand_parser
 from shared.parsers.optima.interval import interval_parser
 from shared.parsers.optima.racv_billing import racv_billing_parser
 from shared.parsers.racv.elec import racv_elec_parser
@@ -24,6 +25,7 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
         racv_elec_parser,
         racv_billing_parser,
         bunnings_billing_parser,
+        demand_parser,
         interval_parser,
         envizi_vertical_parser_water_bulk,
         green_square_private_wire_schneider_comx_parser,

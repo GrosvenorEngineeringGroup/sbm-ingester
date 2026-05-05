@@ -168,3 +168,26 @@ class TestMappingLookupAndHudiWrite:
         # 3 input rows x 1 mapped column = 3 Hudi rows
         assert len(data_lines) == 3
         assert all(L.startswith("p:bunnings:only-kw,") for L in data_lines)
+
+
+class TestDispatcherIntegration:
+    def test_dispatcher_routes_demand_file(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        from shared.non_nem_parsers import get_non_nem_df
+
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
+            path = write_demand_csv()
+            result = get_non_nem_df(str(path), "/tmp/err.log")
+
+        # Demand parser returns [], so the dispatcher returns [] too
+        assert result == []
+        # And the parser actually fired (not just dispatcher's no-parser-found path):
+        # the boto3 mock was called means demand_parser ran.
+        assert mock_client.called
