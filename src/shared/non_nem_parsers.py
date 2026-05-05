@@ -1,11 +1,9 @@
-from pathlib import Path
-
-import boto3
 import pandas as pd
 from aws_lambda_powertools import Logger
 
 from shared.parsers.optima.bunnings_billing import bunnings_billing_parser
 from shared.parsers.optima.interval import interval_parser
+from shared.parsers.optima.racv_billing import racv_billing_parser
 from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
@@ -82,25 +80,6 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
     return dfs
 
 
-def optima_usage_and_spend_to_s3(file_name: str, error_file_path: str) -> ParserResult:
-    if "OptimaGenerationData" in file_name:
-        raise Exception("Not Relevant Parser For File")
-
-    if "RACV-Usage and Spend Report" not in file_name:
-        raise Exception("Not Valid Optima Usage And Spend File")
-
-    # boto3 will use IAM role or env vars — no hardcoding creds
-    s3 = boto3.client("s3")
-    S3_BUCKET = "gegoptimareports"
-    S3_KEY = "usageAndSpendReports/racvUsageAndSpend.csv"
-
-    with Path(file_name).open("rb") as file:
-        file_data = file.read()
-
-    s3.put_object(Bucket=S3_BUCKET, Key=S3_KEY, Body=file_data)
-    return []
-
-
 def racv_elec_parser(file_name: str, error_file_path: str) -> ParserResult:
     if "OptimaGenerationData" in file_name:
         raise Exception("Not Relevant Parser For File")
@@ -167,7 +146,7 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
         envizi_vertical_parser_water,
         envizi_vertical_parser_electricity,
         racv_elec_parser,
-        optima_usage_and_spend_to_s3,  # RACV — unchanged
+        racv_billing_parser,  # RACV — unchanged
         bunnings_billing_parser,  # NEW — Bunnings billing
         interval_parser,
         envizi_vertical_parser_water_bulk,
