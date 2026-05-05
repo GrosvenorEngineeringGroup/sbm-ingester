@@ -179,3 +179,80 @@ class TestDownloadDemandCsvHappyPath:
         )
 
         assert result is not None
+
+
+NO_DATA_BODY = (
+    b'Commodities:,"Electricity"\r\n'
+    b'Sites (NMIs):,"0000005438UN02B"\r\n'
+    b'Status:,"Active"\r\n'
+    b"Country:, New Zealand\r\n"
+    b"Start:,01-May-2026\r\n"
+    b"End:,03-May-2026\r\n"
+    b"\r\n"
+    b"\r\n"
+    b"No data found"
+)
+
+
+class TestDownloadDemandCsvNoDataSentinel:
+    @responses.activate
+    def test_no_data_response_returns_bytes_for_audit(self) -> None:
+        """BidEnergy returns a CSV containing 'No data found' for sites with no demand
+        meter. The downloader must STILL return the bytes so the caller uploads the
+        sentinel CSV to S3 for audit retention."""
+        from demand_exporter.downloader import download_demand_csv
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=200,
+            body=NO_DATA_BODY,
+            content_type="application/vnd.csv",
+        )
+
+        result = download_demand_csv(
+            cookies=".ASPXAUTH=tok",
+            site_id_str="site-empty",
+            start_date="2026-05-01",
+            end_date="2026-05-03",
+            project="bunnings",
+            nmi="Optima_NODATA",
+        )
+
+        assert result is not None
+        content, filename = result
+        assert content == NO_DATA_BODY
+        assert b"No data found" in content
+        # Filename pattern still applies to sentinel CSVs
+        assert filename.startswith("optima_bunnings_demand_profile_NMI#OPTIMA_NODATA_2026-05-01_2026-05-03_")
+
+    @responses.activate
+    def test_no_data_response_logs_at_info_level(self) -> None:
+        """Sentinel responses log at INFO with a distinct message — not as an error."""
+        from unittest.mock import patch
+
+        from demand_exporter import downloader as dl_module
+
+        responses.add(
+            responses.GET,
+            "https://app.bidenergy.com/BuyerReport/DemandProfilePartial",
+            status=200,
+            body=NO_DATA_BODY,
+            content_type="application/vnd.csv",
+        )
+
+        with patch.object(dl_module.logger, "info") as mock_info, patch.object(dl_module.logger, "error") as mock_error:
+            dl_module.download_demand_csv(
+                cookies=".ASPXAUTH=tok",
+                site_id_str="site-empty",
+                start_date="2026-05-01",
+                end_date="2026-05-03",
+                project="bunnings",
+                nmi="Optima_NODATA",
+            )
+
+        # No errors logged
+        mock_error.assert_not_called()
+        # An info log mentioning the no-data outcome was emitted
+        info_messages = [call.args[0] for call in mock_info.call_args_list]
+        assert any("no data" in m.lower() for m in info_messages)
