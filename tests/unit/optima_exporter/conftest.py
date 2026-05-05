@@ -57,6 +57,43 @@ def reload_processor_module() -> Any:
     return processor_module
 
 
+def reload_demand_uploader_module() -> Any:
+    """Reload the demand_exporter uploader module with fresh environment."""
+    import demand_exporter.uploader as uploader_module
+
+    uploader_module._s3_client = None
+    importlib.reload(uploader_module)
+    return uploader_module
+
+
+def reload_demand_processor_module() -> Any:
+    """Reload the demand_exporter processor module with fresh environment.
+
+    Resets the DynamoDB and S3 module-level singletons before reload so
+    moto's mocked clients are picked up cleanly between tests. The existing
+    nem12 helper does NOT reset these — but tests that interleave real
+    boto and mocked boto require this discipline.
+    """
+    import optima_shared.config as config_module
+
+    importlib.reload(config_module)
+
+    import optima_shared.dynamodb as dynamodb_module
+
+    dynamodb_module._dynamodb = None
+    importlib.reload(dynamodb_module)
+
+    import demand_exporter.uploader as uploader_module
+
+    uploader_module._s3_client = None
+    importlib.reload(uploader_module)
+
+    import demand_exporter.processor as processor_module
+
+    importlib.reload(processor_module)
+    return processor_module
+
+
 # ==================== Environment Fixtures ====================
 
 
@@ -128,5 +165,16 @@ def mock_billing_lambda_context() -> MagicMock:
     context.function_name = "optima-billing-exporter"
     context.memory_limit_in_mb = 128
     context.invoked_function_arn = "arn:aws:lambda:ap-southeast-2:123456789012:function:optima-billing-exporter"
+    context.aws_request_id = "test-request-id"
+    return context
+
+
+@pytest.fixture
+def mock_demand_lambda_context() -> MagicMock:
+    """Create mock Lambda context for demand exporter."""
+    context = MagicMock()
+    context.function_name = "optima-demand-exporter"
+    context.memory_limit_in_mb = 256
+    context.invoked_function_arn = "arn:aws:lambda:ap-southeast-2:123456789012:function:optima-demand-exporter"
     context.aws_request_id = "test-request-id"
     return context
