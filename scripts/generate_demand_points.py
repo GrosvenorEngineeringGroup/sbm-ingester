@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Generate data/demand_points.csv for Bunnings Optima sites.
+"""Generate a demand_points CSV for Optima sites of a given project.
 
-Scans DynamoDB sbm-optima-config for Bunnings sites with NMIs starting with
-'Optima_', then queries Neptune to find each site's meter_vertex_id by
-walking the equipRef edge from any existing E1 (or B1 fallback) point.
+Scans DynamoDB sbm-optima-config for the chosen project's sites with NMIs
+starting with 'Optima_', then queries Neptune to find each site's
+meter_vertex_id by walking the equipRef edge from any existing E1 (or B1
+fallback) point.
 
-Output: data/demand_points.csv with 3 rows per NMI (kw/kva/pf), suitable
-for input to scripts/import_demand_points.py.
+Output: a CSV with 3 rows per NMI (kw/kva/pf), suitable for input to
+scripts/import_demand_points.py.
 
 Usage:
     PYTHONPATH=src uv run scripts/generate_demand_points.py \\
@@ -38,8 +39,8 @@ DEMAND_FIELDS = [
 ]
 
 
-def scan_bunnings_optima_sites() -> list[dict]:
-    """Scan DynamoDB for Bunnings Optima sites."""
+def scan_optima_sites_for_project(project: str) -> list[dict]:
+    """Scan DynamoDB for Optima sites belonging to the given project."""
     session = boto3.Session(profile_name=AWS_PROFILE)
     ddb = session.client("dynamodb", region_name=AWS_REGION)
 
@@ -63,7 +64,7 @@ def scan_bunnings_optima_sites() -> list[dict]:
             "country": i["country"]["S"],
         }
         for i in items
-        if i["project"]["S"] == "bunnings" and i["nmi"]["S"].startswith("Optima_")
+        if i["project"]["S"] == project and i["nmi"]["S"].startswith("Optima_")
     ]
 
 
@@ -116,8 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 60)
 
     print("\nScanning DynamoDB...")
-    sites = scan_bunnings_optima_sites()
-    print(f"Found {len(sites)} Bunnings Optima sites.")
+    sites = scan_optima_sites_for_project(args.project)
+    print(f"Found {len(sites)} {args.project} Optima sites.")
 
     print("\nResolving meter_vertex_id from Neptune (this may take a few minutes)...")
     rows: list[dict] = []

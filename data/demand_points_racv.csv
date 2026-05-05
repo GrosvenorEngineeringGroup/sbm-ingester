@@ -1,0 +1,166 @@
+identifier,field,nem12_id,label,point_category,meter_vertex_id
+3117512760,kw,Optima_3117512760-demand-kw,3117512760 Demand kW,demand,p:racv:18b15aa2c4e-e5b5ffc3
+3117512760,kva,Optima_3117512760-demand-kva,3117512760 Demand kVA,demand,p:racv:18b15aa2c4e-e5b5ffc3
+3117512760,pf,Optima_3117512760-demand-pf,3117512760 Demand Power Factor,demand,p:racv:18b15aa2c4e-e5b5ffc3
+3120033315,kw,Optima_3120033315-demand-kw,3120033315 Demand kW,demand,p:racv:1979c3bbeb3-22f3552
+3120033315,kva,Optima_3120033315-demand-kva,3120033315 Demand kVA,demand,p:racv:1979c3bbeb3-22f3552
+3120033315,pf,Optima_3120033315-demand-pf,3120033315 Demand Power Factor,demand,p:racv:1979c3bbeb3-22f3552
+3120040266,kw,Optima_3120040266-demand-kw,3120040266 Demand kW,demand,p:racv:1979c3f3733-3a8f7dbd
+3120040266,kva,Optima_3120040266-demand-kva,3120040266 Demand kVA,demand,p:racv:1979c3f3733-3a8f7dbd
+3120040266,pf,Optima_3120040266-demand-pf,3120040266 Demand Power Factor,demand,p:racv:1979c3f3733-3a8f7dbd
+3120682540,kw,Optima_3120682540-demand-kw,3120682540 Demand kW,demand,p:racv:1979beda253-d2c5b158
+3120682540,kva,Optima_3120682540-demand-kva,3120682540 Demand kVA,demand,p:racv:1979beda253-d2c5b158
+3120682540,pf,Optima_3120682540-demand-pf,3120682540 Demand Power Factor,demand,p:racv:1979beda253-d2c5b158
+3120682541,kw,Optima_3120682541-demand-kw,3120682541 Demand kW,demand,p:racv:1979c39c7bb-dcaeb3f
+3120682541,kva,Optima_3120682541-demand-kva,3120682541 Demand kVA,demand,p:racv:1979c39c7bb-dcaeb3f
+3120682541,pf,Optima_3120682541-demand-pf,3120682541 Demand Power Factor,demand,p:racv:1979c39c7bb-dcaeb3f
+3120682542,kw,Optima_3120682542-demand-kw,3120682542 Demand kW,demand,p:racv:1979c2b8058-e6eff850
+3120682542,kva,Optima_3120682542-demand-kva,3120682542 Demand kVA,demand,p:racv:1979c2b8058-e6eff850
+3120682542,pf,Optima_3120682542-demand-pf,3120682542 Demand Power Factor,demand,p:racv:1979c2b8058-e6eff850
+3120682543,kw,Optima_3120682543-demand-kw,3120682543 Demand kW,demand,p:racv:1979c35d505-ec3fe645
+3120682543,kva,Optima_3120682543-demand-kva,3120682543 Demand kVA,demand,p:racv:1979c35d505-ec3fe645
+3120682543,pf,Optima_3120682543-demand-pf,3120682543 Demand Power Factor,demand,p:racv:1979c35d505-ec3fe645
+3120682544,kw,Optima_3120682544-demand-kw,3120682544 Demand kW,demand,p:racv:1979c37f978-887ea1e2
+3120682544,kva,Optima_3120682544-demand-kva,3120682544 Demand kVA,demand,p:racv:1979c37f978-887ea1e2
+3120682544,pf,Optima_3120682544-demand-pf,3120682544 Demand Power Factor,demand,p:racv:1979c37f978-887ea1e2
+6102014610,kw,Optima_6102014610-demand-kw,6102014610 Demand kW,demand,p:racv:18b15aa2b2e-954b9dfa
+6102014610,kva,Optima_6102014610-demand-kva,6102014610 Demand kVA,demand,p:racv:18b15aa2b2e-954b9dfa
+6102014610,pf,Optima_6102014610-demand-pf,6102014610 Demand Power Factor,demand,p:racv:18b15aa2b2e-954b9dfa
+6102014611,kw,Optima_6102014611-demand-kw,6102014611 Demand kW,demand,p:racv:18b15aa2cc2-92ee6df1
+6102014611,kva,Optima_6102014611-demand-kva,6102014611 Demand kVA,demand,p:racv:18b15aa2cc2-92ee6df1
+6102014611,pf,Optima_6102014611-demand-pf,6102014611 Demand Power Factor,demand,p:racv:18b15aa2cc2-92ee6df1
+6102019437,kw,Optima_6102019437-demand-kw,6102019437 Demand kW,demand,p:racv:18b15aa2ce1-1e8984ab
+6102019437,kva,Optima_6102019437-demand-kva,6102019437 Demand kVA,demand,p:racv:18b15aa2ce1-1e8984ab
+6102019437,pf,Optima_6102019437-demand-pf,6102019437 Demand Power Factor,demand,p:racv:18b15aa2ce1-1e8984ab
+6102019438,kw,Optima_6102019438-demand-kw,6102019438 Demand kW,demand,p:racv:18b15aa2b44-399f05e4
+6102019438,kva,Optima_6102019438-demand-kva,6102019438 Demand kVA,demand,p:racv:18b15aa2b44-399f05e4
+6102019438,pf,Optima_6102019438-demand-pf,6102019438 Demand Power Factor,demand,p:racv:18b15aa2b44-399f05e4
+6102019719,kw,Optima_6102019719-demand-kw,6102019719 Demand kW,demand,p:racv:18b15aa2cf9-1e78d1a8
+6102019719,kva,Optima_6102019719-demand-kva,6102019719 Demand kVA,demand,p:racv:18b15aa2cf9-1e78d1a8
+6102019719,pf,Optima_6102019719-demand-pf,6102019719 Demand Power Factor,demand,p:racv:18b15aa2cf9-1e78d1a8
+6102026568,kw,Optima_6102026568-demand-kw,6102026568 Demand kW,demand,p:racv:18b15aa2b5c-cd40c93c
+6102026568,kva,Optima_6102026568-demand-kva,6102026568 Demand kVA,demand,p:racv:18b15aa2b5c-cd40c93c
+6102026568,pf,Optima_6102026568-demand-pf,6102026568 Demand Power Factor,demand,p:racv:18b15aa2b5c-cd40c93c
+6102034058,kw,Optima_6102034058-demand-kw,6102034058 Demand kW,demand,p:racv:18b15aa2c34-4c2cfd04
+6102034058,kva,Optima_6102034058-demand-kva,6102034058 Demand kVA,demand,p:racv:18b15aa2c34-4c2cfd04
+6102034058,pf,Optima_6102034058-demand-pf,6102034058 Demand Power Factor,demand,p:racv:18b15aa2c34-4c2cfd04
+6102049093,kw,Optima_6102049093-demand-kw,6102049093 Demand kW,demand,p:racv:1965fcf0bd5-80187ad8
+6102049093,kva,Optima_6102049093-demand-kva,6102049093 Demand kVA,demand,p:racv:1965fcf0bd5-80187ad8
+6102049093,pf,Optima_6102049093-demand-pf,6102049093 Demand Power Factor,demand,p:racv:1965fcf0bd5-80187ad8
+6102395013,kw,Optima_6102395013-demand-kw,6102395013 Demand kW,demand,p:racv:1884cb45cc7-b91e8929
+6102395013,kva,Optima_6102395013-demand-kva,6102395013 Demand kVA,demand,p:racv:1884cb45cc7-b91e8929
+6102395013,pf,Optima_6102395013-demand-pf,6102395013 Demand Power Factor,demand,p:racv:1884cb45cc7-b91e8929
+6103063630,kw,Optima_6103063630-demand-kw,6103063630 Demand kW,demand,p:racv:18b15aa2b72-3049ebe6
+6103063630,kva,Optima_6103063630-demand-kva,6103063630 Demand kVA,demand,p:racv:18b15aa2b72-3049ebe6
+6103063630,pf,Optima_6103063630-demand-pf,6103063630 Demand Power Factor,demand,p:racv:18b15aa2b72-3049ebe6
+6103084680,kw,Optima_6103084680-demand-kw,6103084680 Demand kW,demand,p:racv:1979ff9a389-50ca6c69
+6103084680,kva,Optima_6103084680-demand-kva,6103084680 Demand kVA,demand,p:racv:1979ff9a389-50ca6c69
+6103084680,pf,Optima_6103084680-demand-pf,6103084680 Demand Power Factor,demand,p:racv:1979ff9a389-50ca6c69
+6203624549,kw,Optima_6203624549-demand-kw,6203624549 Demand kW,demand,p:racv:1979b906b17-811e79ba
+6203624549,kva,Optima_6203624549-demand-kva,6203624549 Demand kVA,demand,p:racv:1979b906b17-811e79ba
+6203624549,pf,Optima_6203624549-demand-pf,6203624549 Demand Power Factor,demand,p:racv:1979b906b17-811e79ba
+6203740672,kw,Optima_6203740672-demand-kw,6203740672 Demand kW,demand,p:racv:18b15aa2d32-552a186b
+6203740672,kva,Optima_6203740672-demand-kva,6203740672 Demand kVA,demand,p:racv:18b15aa2d32-552a186b
+6203740672,pf,Optima_6203740672-demand-pf,6203740672 Demand Power Factor,demand,p:racv:18b15aa2d32-552a186b
+6203746343,kw,Optima_6203746343-demand-kw,6203746343 Demand kW,demand,p:racv:18b15aa2b88-e0f41dce
+6203746343,kva,Optima_6203746343-demand-kva,6203746343 Demand kVA,demand,p:racv:18b15aa2b88-e0f41dce
+6203746343,pf,Optima_6203746343-demand-pf,6203746343 Demand Power Factor,demand,p:racv:18b15aa2b88-e0f41dce
+6203810579,kw,Optima_6203810579-demand-kw,6203810579 Demand kW,demand,p:racv:18b15aa2c88-374fa590
+6203810579,kva,Optima_6203810579-demand-kva,6203810579 Demand kVA,demand,p:racv:18b15aa2c88-374fa590
+6203810579,pf,Optima_6203810579-demand-pf,6203810579 Demand Power Factor,demand,p:racv:18b15aa2c88-374fa590
+6204025561,kw,Optima_6204025561-demand-kw,6204025561 Demand kW,demand,p:racv:196601c924f-11c7dfda
+6204025561,kva,Optima_6204025561-demand-kva,6204025561 Demand kVA,demand,p:racv:196601c924f-11c7dfda
+6204025561,pf,Optima_6204025561-demand-pf,6204025561 Demand Power Factor,demand,p:racv:196601c924f-11c7dfda
+6305723112,kw,Optima_6305723112-demand-kw,6305723112 Demand kW,demand,p:racv:1884cb45bff-4a661f8c
+6305723112,kva,Optima_6305723112-demand-kva,6305723112 Demand kVA,demand,p:racv:1884cb45bff-4a661f8c
+6305723112,pf,Optima_6305723112-demand-pf,6305723112 Demand Power Factor,demand,p:racv:1884cb45bff-4a661f8c
+6305806606,kw,Optima_6305806606-demand-kw,6305806606 Demand kW,demand,p:racv:18b15aa2c1e-efcb0a88
+6305806606,kva,Optima_6305806606-demand-kva,6305806606 Demand kVA,demand,p:racv:18b15aa2c1e-efcb0a88
+6305806606,pf,Optima_6305806606-demand-pf,6305806606 Demand Power Factor,demand,p:racv:18b15aa2c1e-efcb0a88
+6407100888,kw,Optima_6407100888-demand-kw,6407100888 Demand kW,demand,p:racv:1979b83ecc9-96f8217b
+6407100888,kva,Optima_6407100888-demand-kva,6407100888 Demand kVA,demand,p:racv:1979b83ecc9-96f8217b
+6407100888,pf,Optima_6407100888-demand-pf,6407100888 Demand Power Factor,demand,p:racv:1979b83ecc9-96f8217b
+6407101004,kw,Optima_6407101004-demand-kw,6407101004 Demand kW,demand,p:racv:1979b7a99d3-4ec5cb19
+6407101004,kva,Optima_6407101004-demand-kva,6407101004 Demand kVA,demand,p:racv:1979b7a99d3-4ec5cb19
+6407101004,pf,Optima_6407101004-demand-pf,6407101004 Demand Power Factor,demand,p:racv:1979b7a99d3-4ec5cb19
+6407102558,kw,Optima_6407102558-demand-kw,6407102558 Demand kW,demand,p:racv:1979b6f08ed-70cbe4f
+6407102558,kva,Optima_6407102558-demand-kva,6407102558 Demand kVA,demand,p:racv:1979b6f08ed-70cbe4f
+6407102558,pf,Optima_6407102558-demand-pf,6407102558 Demand Power Factor,demand,p:racv:1979b6f08ed-70cbe4f
+6407104267,kw,Optima_6407104267-demand-kw,6407104267 Demand kW,demand,p:racv:1979b2c7d80-8b5611e
+6407104267,kva,Optima_6407104267-demand-kva,6407104267 Demand kVA,demand,p:racv:1979b2c7d80-8b5611e
+6407104267,pf,Optima_6407104267-demand-pf,6407104267 Demand Power Factor,demand,p:racv:1979b2c7d80-8b5611e
+6407107993,kw,Optima_6407107993-demand-kw,6407107993 Demand kW,demand,p:racv:1979b6d2edb-aa2e60e5
+6407107993,kva,Optima_6407107993-demand-kva,6407107993 Demand kVA,demand,p:racv:1979b6d2edb-aa2e60e5
+6407107993,pf,Optima_6407107993-demand-pf,6407107993 Demand Power Factor,demand,p:racv:1979b6d2edb-aa2e60e5
+6407108925,kw,Optima_6407108925-demand-kw,6407108925 Demand kW,demand,p:racv:1979b2a7b80-10946fb0
+6407108925,kva,Optima_6407108925-demand-kva,6407108925 Demand kVA,demand,p:racv:1979b2a7b80-10946fb0
+6407108925,pf,Optima_6407108925-demand-pf,6407108925 Demand Power Factor,demand,p:racv:1979b2a7b80-10946fb0
+6407210594,kw,Optima_6407210594-demand-kw,6407210594 Demand kW,demand,p:racv:1979b757f26-cda8e72e
+6407210594,kva,Optima_6407210594-demand-kva,6407210594 Demand kVA,demand,p:racv:1979b757f26-cda8e72e
+6407210594,pf,Optima_6407210594-demand-pf,6407210594 Demand Power Factor,demand,p:racv:1979b757f26-cda8e72e
+6407604489,kw,Optima_6407604489-demand-kw,6407604489 Demand kW,demand,p:racv:1979b225647-3485426
+6407604489,kva,Optima_6407604489-demand-kva,6407604489 Demand kVA,demand,p:racv:1979b225647-3485426
+6407604489,pf,Optima_6407604489-demand-pf,6407604489 Demand Power Factor,demand,p:racv:1979b225647-3485426
+6407604495,kw,Optima_6407604495-demand-kw,6407604495 Demand kW,demand,p:racv:196eb662206-b55075f5
+6407604495,kva,Optima_6407604495-demand-kva,6407604495 Demand kVA,demand,p:racv:196eb662206-b55075f5
+6407604495,pf,Optima_6407604495-demand-pf,6407604495 Demand Power Factor,demand,p:racv:196eb662206-b55075f5
+6407630532,kw,Optima_6407630532-demand-kw,6407630532 Demand kW,demand,p:racv:1979b747e5d-8e2241e4
+6407630532,kva,Optima_6407630532-demand-kva,6407630532 Demand kVA,demand,p:racv:1979b747e5d-8e2241e4
+6407630532,pf,Optima_6407630532-demand-pf,6407630532 Demand Power Factor,demand,p:racv:1979b747e5d-8e2241e4
+6407670216,kw,Optima_6407670216-demand-kw,6407670216 Demand kW,demand,p:racv:1979b7d132a-ed912e38
+6407670216,kva,Optima_6407670216-demand-kva,6407670216 Demand kVA,demand,p:racv:1979b7d132a-ed912e38
+6407670216,pf,Optima_6407670216-demand-pf,6407670216 Demand Power Factor,demand,p:racv:1979b7d132a-ed912e38
+6407670217,kw,Optima_6407670217-demand-kw,6407670217 Demand kW,demand,p:racv:1979b827d71-3c524a92
+6407670217,kva,Optima_6407670217-demand-kva,6407670217 Demand kVA,demand,p:racv:1979b827d71-3c524a92
+6407670217,pf,Optima_6407670217-demand-pf,6407670217 Demand Power Factor,demand,p:racv:1979b827d71-3c524a92
+6407670218,kw,Optima_6407670218-demand-kw,6407670218 Demand kW,demand,p:racv:1979b7e5f4d-1563368c
+6407670218,kva,Optima_6407670218-demand-kva,6407670218 Demand kVA,demand,p:racv:1979b7e5f4d-1563368c
+6407670218,pf,Optima_6407670218-demand-pf,6407670218 Demand Power Factor,demand,p:racv:1979b7e5f4d-1563368c
+6407670219,kw,Optima_6407670219-demand-kw,6407670219 Demand kW,demand,p:racv:1979b72cb1b-4f714ad1
+6407670219,kva,Optima_6407670219-demand-kva,6407670219 Demand kVA,demand,p:racv:1979b72cb1b-4f714ad1
+6407670219,pf,Optima_6407670219-demand-pf,6407670219 Demand Power Factor,demand,p:racv:1979b72cb1b-4f714ad1
+6407670220,kw,Optima_6407670220-demand-kw,6407670220 Demand kW,demand,p:racv:1979b808278-8458fffe
+6407670220,kva,Optima_6407670220-demand-kva,6407670220 Demand kVA,demand,p:racv:1979b808278-8458fffe
+6407670220,pf,Optima_6407670220-demand-pf,6407670220 Demand Power Factor,demand,p:racv:1979b808278-8458fffe
+6407679506,kw,Optima_6407679506-demand-kw,6407679506 Demand kW,demand,p:racv:1979b78af56-4fe87035
+6407679506,kva,Optima_6407679506-demand-kva,6407679506 Demand kVA,demand,p:racv:1979b78af56-4fe87035
+6407679506,pf,Optima_6407679506-demand-pf,6407679506 Demand Power Factor,demand,p:racv:1979b78af56-4fe87035
+6408269542,kw,Optima_6408269542-demand-kw,6408269542 Demand kW,demand,p:racv:18b15aa2d15-69daadb9
+6408269542,kva,Optima_6408269542-demand-kva,6408269542 Demand kVA,demand,p:racv:18b15aa2d15-69daadb9
+6408269542,pf,Optima_6408269542-demand-pf,6408269542 Demand Power Factor,demand,p:racv:18b15aa2d15-69daadb9
+6408269543,kw,Optima_6408269543-demand-kw,6408269543 Demand kW,demand,p:racv:18b15aa2c04-ee9c07c3
+6408269543,kva,Optima_6408269543-demand-kva,6408269543 Demand kVA,demand,p:racv:18b15aa2c04-ee9c07c3
+6408269543,pf,Optima_6408269543-demand-pf,6408269543 Demand Power Factor,demand,p:racv:18b15aa2c04-ee9c07c3
+6408507131,kw,Optima_6408507131-demand-kw,6408507131 Demand kW,demand,p:racv:1966018af3f-cbfe27f
+6408507131,kva,Optima_6408507131-demand-kva,6408507131 Demand kVA,demand,p:racv:1966018af3f-cbfe27f
+6408507131,pf,Optima_6408507131-demand-pf,6408507131 Demand Power Factor,demand,p:racv:1966018af3f-cbfe27f
+8000282622,kw,Optima_8000282622-demand-kw,8000282622 Demand kW,demand,p:racv:18b15aa2bb3-ad6759db
+8000282622,kva,Optima_8000282622-demand-kva,8000282622 Demand kVA,demand,p:racv:18b15aa2bb3-ad6759db
+8000282622,pf,Optima_8000282622-demand-pf,8000282622 Demand Power Factor,demand,p:racv:18b15aa2bb3-ad6759db
+8000282774,kw,Optima_8000282774-demand-kw,8000282774 Demand kW,demand,p:racv:18b15aa2b9e-7290c5ee
+8000282774,kva,Optima_8000282774-demand-kva,8000282774 Demand kVA,demand,p:racv:18b15aa2b9e-7290c5ee
+8000282774,pf,Optima_8000282774-demand-pf,8000282774 Demand Power Factor,demand,p:racv:18b15aa2b9e-7290c5ee
+QB08517762,kw,Optima_QB08517762-demand-kw,QB08517762 Demand kW,demand,p:racv:1884cb45c29-b2d0a27
+QB08517762,kva,Optima_QB08517762-demand-kva,QB08517762 Demand kVA,demand,p:racv:1884cb45c29-b2d0a27
+QB08517762,pf,Optima_QB08517762-demand-pf,QB08517762 Demand Power Factor,demand,p:racv:1884cb45c29-b2d0a27
+QB08646325,kw,Optima_QB08646325-demand-kw,QB08646325 Demand kW,demand,p:racv:1884cb45c9a-ab3f620c
+QB08646325,kva,Optima_QB08646325-demand-kva,QB08646325 Demand kVA,demand,p:racv:1884cb45c9a-ab3f620c
+QB08646325,pf,Optima_QB08646325-demand-pf,QB08646325 Demand Power Factor,demand,p:racv:1884cb45c9a-ab3f620c
+QB08833443,kw,Optima_QB08833443-demand-kw,QB08833443 Demand kW,demand,p:racv:1884cb45bb6-6dc7254b
+QB08833443,kva,Optima_QB08833443-demand-kva,QB08833443 Demand kVA,demand,p:racv:1884cb45bb6-6dc7254b
+QB08833443,pf,Optima_QB08833443-demand-pf,QB08833443 Demand Power Factor,demand,p:racv:1884cb45bb6-6dc7254b
+QB09351795,kw,Optima_QB09351795-demand-kw,QB09351795 Demand kW,demand,p:racv:1979c4d9988-87ab76fc
+QB09351795,kva,Optima_QB09351795-demand-kva,QB09351795 Demand kVA,demand,p:racv:1979c4d9988-87ab76fc
+QB09351795,pf,Optima_QB09351795-demand-pf,QB09351795 Demand Power Factor,demand,p:racv:1979c4d9988-87ab76fc
+VAAA000162,kw,Optima_VAAA000162-demand-kw,VAAA000162 Demand kW,demand,p:racv:1884cb45d0f-acf2d0c4
+VAAA000162,kva,Optima_VAAA000162-demand-kva,VAAA000162 Demand kVA,demand,p:racv:1884cb45d0f-acf2d0c4
+VAAA000162,pf,Optima_VAAA000162-demand-pf,VAAA000162 Demand Power Factor,demand,p:racv:1884cb45d0f-acf2d0c4
+VCCCSE0016,kw,Optima_VCCCSE0016-demand-kw,VCCCSE0016 Demand kW,demand,p:racv:18b15aa2bec-e094dd47
+VCCCSE0016,kva,Optima_VCCCSE0016-demand-kva,VCCCSE0016 Demand kVA,demand,p:racv:18b15aa2bec-e094dd47
+VCCCSE0016,pf,Optima_VCCCSE0016-demand-pf,VCCCSE0016 Demand Power Factor,demand,p:racv:18b15aa2bec-e094dd47
+VEEE06F6Y7,kw,Optima_VEEE06F6Y7-demand-kw,VEEE06F6Y7 Demand kW,demand,p:racv:18b15aa2c6f-26c6f438
+VEEE06F6Y7,kva,Optima_VEEE06F6Y7-demand-kva,VEEE06F6Y7 Demand kVA,demand,p:racv:18b15aa2c6f-26c6f438
+VEEE06F6Y7,pf,Optima_VEEE06F6Y7-demand-pf,VEEE06F6Y7 Demand Power Factor,demand,p:racv:18b15aa2c6f-26c6f438
+VEEE0TEU17,kw,Optima_VEEE0TEU17-demand-kw,VEEE0TEU17 Demand kW,demand,p:racv:1884cb45d3d-7322a6c6
+VEEE0TEU17,kva,Optima_VEEE0TEU17-demand-kva,VEEE0TEU17 Demand kVA,demand,p:racv:1884cb45d3d-7322a6c6
+VEEE0TEU17,pf,Optima_VEEE0TEU17-demand-pf,VEEE0TEU17 Demand Power Factor,demand,p:racv:1884cb45d3d-7322a6c6

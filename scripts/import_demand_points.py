@@ -2,7 +2,7 @@
 """
 Import demand points into Neptune from a CSV file.
 
-Reads data/demand_points.csv and creates Neptune point vertices with equipRef
+Reads a demand_points CSV and creates Neptune point vertices with equipRef
 edges to their parent meter vertices. Each point is created idempotently
 using nem12Id as the deduplication key.
 
@@ -10,9 +10,13 @@ Rows with empty meter_vertex_id are skipped and logged as orphans (the
 NMI's meter vertex doesn't exist in Neptune yet — manual investigation
 needed).
 
+The --project flag controls the prefix used for generated point IDs
+(p:{project}:...) and defaults to 'bunnings' for backwards compatibility.
+
 Usage:
     PYTHONPATH=src uv run scripts/import_demand_points.py --csv data/demand_points.csv --dry-run
     PYTHONPATH=src uv run scripts/import_demand_points.py --csv data/demand_points.csv
+    PYTHONPATH=src uv run scripts/import_demand_points.py --csv data/demand_points_racv.csv --project racv
 """
 
 from __future__ import annotations
@@ -31,14 +35,14 @@ from scripts.billing_neptune_helper import gremlin_query
 EXISTENCE_CHECK_BATCH_SIZE = 200
 
 
-def generate_point_id() -> str:
+def generate_point_id(project: str) -> str:
     """Generate a Neptune point ID matching existing convention.
 
-    Format: p:bunnings:{hex_timestamp}-{hex_random}
+    Format: p:{project}:{hex_timestamp}-{hex_random}
     """
     hex_ts = format(int(time.time() * 1000), "x")
     hex_rand = secrets.token_hex(3)
-    return f"p:bunnings:{hex_ts}-{hex_rand}"
+    return f"p:{project}:{hex_ts}-{hex_rand}"
 
 
 def batch_check_existing_nem12_ids(nem12_ids: list[str]) -> set[str]:
@@ -95,12 +99,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Output CSV mapping point_vertex_id to nem12_id (default: data/demand_point_ids.csv)",
     )
     parser.add_argument("--workers", type=int, default=10, help="Number of parallel workers (default: 10)")
+    parser.add_argument(
+        "--project",
+        default="bunnings",
+        help="Project prefix for generated point IDs, e.g. p:{project}:... (default: bunnings)",
+    )
     args = parser.parse_args(argv)
 
     print("=" * 60)
     print("Demand Points Neptune Import")
     print("=" * 60)
     print(f"  CSV File:  {args.csv_file}")
+    print(f"  Project:   {args.project}")
     print(f"  Mode:      {'DRY RUN' if args.dry_run else 'LIVE'}")
     print("=" * 60)
     print()
@@ -143,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def _create(row: dict) -> tuple[str, str] | None:
         try:
-            point_id = generate_point_id()
+            point_id = generate_point_id(args.project)
             create_demand_point(
                 point_id=point_id,
                 label=row["label"],
