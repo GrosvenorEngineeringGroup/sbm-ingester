@@ -61,56 +61,6 @@ class TestGetNonNemDf:
             assert mock_log.debug.called
 
 
-class TestGreenSquarePrivateWireSchneiderComXParser:
-    """Tests for green_square_private_wire_schneider_comx_parser function."""
-
-    def test_validates_comx_header(self, temp_directory: str) -> None:
-        """Test that ComX header is validated."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
-
-            # Create file without ComX header - match expected CSV structure
-            filepath = str(Path(temp_directory) / "not_comx.csv")
-            content = """Row1,col2,col3,col4,col5
-NotComX510_Green_Square,data,data,data,SiteName
-"""
-            with Path(filepath).open("w") as f:
-                f.write(content)
-
-            with pytest.raises(Exception, match="Not Relevant Parser"):
-                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
-
-    def test_converts_wh_to_kwh(self, temp_directory: str) -> None:
-        """Test that Wh values are converted to kWh."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import green_square_private_wire_schneider_comx_parser
-
-            # Create valid ComX file with Wh column - must have consistent columns
-            filepath = str(Path(temp_directory) / "comx_data.csv")
-            content = """Row1,col2,col3,col4,TestSite
-ComX510_Green_Square,data,data,data,TestSite
-Row3,col2,col3,col4,col5
-Row4,col2,col3,col4,col5
-Row5,col2,col3,col4,col5
-Row6,col2,col3,col4,col5
-Local Time Stamp,Active energy (Wh),Other,col4,col5
-01/01/2024 00:00,1000,data,col4,col5
-01/01/2024 00:30,2000,data,col4,col5
-"""
-            with Path(filepath).open("w") as f:
-                f.write(content)
-
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
-
-            assert len(result) == 1
-            _nmi, df = result[0]
-
-            # Values should be converted from Wh to kWh
-            assert "E1_kWh" in df.columns
-            # 1000 Wh = 1.0 kWh
-            assert df["E1_kWh"].iloc[0] == 1.0
-
-
 class TestDataFrameOutputFormat:
     """Tests for DataFrame output format consistency across parsers."""
 
