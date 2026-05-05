@@ -59,6 +59,7 @@ Optima_<NMI>-demand-pf            ""  (empty string)
 
 **Rationale:**
 - **`Optima_` prefix:** matches existing `Optima_<NMI>-E1` / `-B1` interval-data convention. Bunnings billing uses bare NMI (no `Optima_`) for historical reasons; new mappings should follow the prefixed Optima convention.
+- **⚠️ Acknowledged long-term inconsistency.** After this PR, two Optima sensor families coexist under different prefixes in `nem12_mappings.json`: billing (bare `<NMI>-billing-...`) and demand/interval (`Optima_<NMI>-...`). Retrofitting billing is **explicitly out of scope** — billing's existing Hudi rows are keyed by the current sensor IDs, and changing the prefix would require coordinated Neptune rename + Hudi backfill. Future Optima parsers SHOULD use the `Optima_` prefix; billing stays as-is.
 - **`demand-` namespace:** mirrors the `billing-` namespace (`<NMI>-billing-peak-usage`). Lets a grep on `demand-` find every demand-related point.
 - **All-lowercase `kw`/`kva`/`pf`:** consistent with existing Hudi unit values (`kwh`, `aud`).
 - **Empty unit for PF:** Power Factor is a dimensionless ratio; empty string is technically correct. Trade-off: `WHERE unit = ''` queries are slightly awkward, but acceptable.
@@ -155,7 +156,7 @@ PYTHONPATH=src uv run scripts/import_demand_points.py \
 2. Skip rows with empty `meter_vertex_id` and log them (`"orphan: NMI=<X>, field=<Y>, no meter_vertex_id"`).
 3. Output filename defaults to `data/demand_point_ids.csv` instead of `data/billing_point_ids.csv`.
 
-**Idempotency:** existence check by `nem12Id` (same pattern as billing) — re-running the script after partial completion is safe.
+**Idempotency:** existence check by `nem12Id` (same pattern as billing) — re-running the script after partial completion is safe. **Caveat:** if a meter vertex is deleted in Neptune *after* a previous run created points pointing at it, the next run sees the `nem12Id` already exists and skips, leaving an orphaned point with a dangling `equipRef`. For Bunnings static infrastructure this is unlikely; if it happens, manual cleanup is via `meter-importer/scripts/delete_points.py`.
 
 **Point ID generation:** reuses `import_billing_points.py`'s `generate_point_id()` helper (`p:bunnings:<hex_ts>-<hex_rand>`). May extract to a shared module later, but inline copy is fine for now (YAGNI).
 
@@ -203,8 +204,8 @@ CSV_FIELD_MAPPING: list[tuple[str, str, str]] = [
 ### Filename + content gate (defence in depth)
 
 ```python
-# 1. Fast filename reject (no I/O)
-if "Demand Profile" not in Path(file_name).name:
+# 1. Fast filename reject (no I/O) — CASE-INSENSITIVE
+if "demand profile" not in Path(file_name).name.lower():
     raise Exception("Not a Demand Profile file (filename mismatch)")
 
 # 2. Content sniff (read first line only)
@@ -214,7 +215,7 @@ if not first_line.startswith("Commodities:"):
     raise Exception("Not a Demand Profile file (missing metadata header)")
 ```
 
-The exact filename substring will be finalised when Step 4 (exporter) is built. For now `"Demand Profile"` matches the user's manual download (`Bunnings demand profile.csv` would also need lowercase tolerance — see open question below).
+Case-insensitive on purpose — the user's manual download is `Bunnings demand profile.csv` (lowercase), but a future automated exporter (Step 4) might use a different casing. Both must accept. The substring `"demand profile"` (with space) is unique enough that case-insensitive match won't false-positive.
 
 ### CSV parsing
 
@@ -240,8 +241,12 @@ def _parse_demand_rows(file_path: str) -> list[dict[str, str]]:
 ### Per-row processing
 
 ```python
-mappings = _get_optima_mappings()   # cached at module level (see "Helper sharing")
+mappings = get_nem12_mappings()   # cached at module level (see "Helper sharing")
 
+# locale note: %b (abbreviated month name) is locale-dependent. AWS Lambda
+# Python runtime defaults to en_US.UTF-8 / C.UTF-8, where %b matches "Feb",
+# "Mar", etc. Local dev environments using non-English locales would fail
+# parsing — if this becomes a problem, switch to an explicit dict mapping.
 ts = datetime.strptime(row["ReadingDateTime"], "%d-%b-%Y %H:%M:%S")
 ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
 nmi = row["Identifier"].strip()
@@ -287,19 +292,26 @@ return []
 
 `bunnings_billing.py` already has `_get_nem12_mappings()` with module-level caching for `nem12_mappings.json`. Both parsers want the same cached dict.
 
-**Decision: extract a shared helper.**
+**Decision: extract a shared helper at the `parsers/` level (not inside `optima/`).**
 
-Add `src/shared/parsers/optima/_mappings.py`:
+`nem12_mappings.json` is a global registry consumed by *any* parser that needs Neptune ID lookup; it isn't Optima-specific. Future envizi/racv parsers may want the same cache. Putting the loader at `parsers/_mappings.py` keeps the boundary correct.
+
+Add `src/shared/parsers/_mappings.py`:
 
 ```python
-"""Shared loader for nem12_mappings.json (cached per Lambda container)."""
+"""Shared loader for nem12_mappings.json (cached per Lambda container).
+
+Used by any parser that needs to resolve nem12-style sensor keys to Neptune
+IDs without going through file_processor's standard NMI-mapping flow.
+"""
 from __future__ import annotations
 
 import json
+
 import boto3
 from aws_lambda_powertools import Logger
 
-logger = Logger(service="optima-mappings", child=True)
+logger = Logger(service="nem12-mappings-loader", child=True)
 
 MAPPINGS_BUCKET = "sbm-file-ingester"
 MAPPINGS_KEY = "nem12_mappings.json"
@@ -311,25 +323,44 @@ def get_nem12_mappings() -> dict:
     """Lazy-load nem12_mappings.json from S3 once per Lambda container."""
     global _cache
     if _cache is None:
-        logger.info("Loading nem12_mappings.json from S3", extra={"bucket": MAPPINGS_BUCKET, "key": MAPPINGS_KEY})
+        logger.info(
+            "Loading nem12_mappings.json from S3",
+            extra={"bucket": MAPPINGS_BUCKET, "key": MAPPINGS_KEY},
+        )
         obj = boto3.client("s3").get_object(Bucket=MAPPINGS_BUCKET, Key=MAPPINGS_KEY)
         _cache = json.loads(obj["Body"].read())
     return _cache
-
-
-def _reset_cache_for_tests() -> None:
-    """Test-only helper: clears the cache between test cases."""
-    global _cache
-    _cache = None
 ```
+
+**No `_reset_cache_for_tests()` helper.** Tests should reset the cache via `monkeypatch.setattr` against `_cache` directly — production code should not ship test-only public/semi-public APIs.
 
 Then both `demand.py` and `bunnings_billing.py` import from it:
 
 ```python
-from shared.parsers.optima._mappings import get_nem12_mappings, _reset_cache_for_tests
+from shared.parsers._mappings import get_nem12_mappings
 ```
 
-**Side effect on bunnings_billing.py:** its existing `_get_nem12_mappings()` and `_nem12_mappings_cache` get removed and replaced with the shared import. Existing tests that monkey-patch `bp._get_nem12_mappings` need their patch target updated to the shared module. This is a small, mechanical change scoped to the same PR.
+**Side effect on `bunnings_billing.py`:** its existing module-level `_get_nem12_mappings()` and `_nem12_mappings_cache` are removed; the function call sites use `get_nem12_mappings()` from the shared module.
+
+**Test patch sites in `tests/unit/parsers/optima/test_bunnings_billing.py` requiring update** (verify with `grep -nE '_get_nem12_mappings|_nem12_mappings_cache|_reset_mappings_cache' tests/unit/parsers/optima/test_bunnings_billing.py` — currently around lines 49, 99-103, 107, 125):
+
+| Old | New |
+|---|---|
+| `monkeypatch.setattr(bp, "_get_nem12_mappings", lambda: {})` | `monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})` |
+| `bp._nem12_mappings_cache = None` (in `_reset_mappings_cache` fixture) | `mappings_mod._cache = None` |
+| Fixture `_reset_mappings_cache` (used by ~11 tests) | Renamed to reset the shared module's `_cache` |
+
+Where `mappings_mod` is `from shared.parsers import _mappings as mappings_mod` (or similar import alias for the patch target). Each test that asserts on logger/mappings call counts must verify the new patch target after the change. Failure mode if not updated: tests still pass (patch targets a no-longer-imported name) but mocks are silently ineffective.
+
+### ⚠️ Operational note: source file moves to `newIrrevFiles/`
+
+After the parser returns `[]`, `file_processor` finds `file_neptune_ids` empty and routes the source CSV to `newIrrevFiles/` (not `newP/`). This is **correct and expected** — it matches `bunnings_billing_parser`'s behaviour. The Hudi rows are written *as a side effect* during parser execution, not via the standard NMI-mapped flow that determines the destination directory.
+
+**Operator-facing implication:** demand CSVs **will appear in `newIrrevFiles/archived/<week>/`**, not `newP/`. Anyone auditing demand ingestion success should look at:
+- CloudWatch logs for `service=optima-demand-parser` lines `"demand_written"` (rows count) and `"demand_no_rows_written"` (skip cases)
+- Hudi `default.sensordata_default` table filtered on `sensorid LIKE 'p:bunnings:%'` AND `unit IN ('kw', 'kva', '')`
+
+NOT at the source file's S3 destination directory.
 
 ### Dispatcher wire-up
 
@@ -375,31 +406,39 @@ At minimum 7 tests; mirror the structure of `tests/unit/parsers/optima/test_bunn
 
 ### Test fixture
 
-Inline a small synthetic CSV via `tmp_path` (same approach as the interval_parser regression test):
+Put the CSV builder helper in `tests/unit/parsers/optima/conftest.py` so all 7 tests can share it (rather than inlining in `test_demand.py`). This matches the existing pattern in `tests/unit/optima_exporter/conftest.py`.
 
 ```python
-def _write_demand_csv(tmp_path, filename="Bunnings_Demand_Profile.csv", rows=None):
-    csv_path = tmp_path / filename
-    rows = rows or [
-        ("4001260599", "01-Feb-2026 00:00:00", "5.24", "10.48", "10.48", "1.0000"),
-        ("4001260599", "01-Feb-2026 00:30:00", "5.21", "10.42", "10.42", "1.0000"),
-        ("4001260599", "01-Feb-2026 05:30:00", "29.56", "59.12", "67.18", "0.8800"),
-    ]
-    body_lines = [
-        'Commodities:,"Electricity"',
-        'Sites (NMIs):,"4001260599"',
-        'Status:,"Active"',
-        'Country:, Australia',
-        'Start:,01-Feb-2026',
-        'End:,30-Apr-2026',
-        '',
-        '',
-        'Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVa,Power Factor,Site Name',
-    ]
-    for nmi, ts, e, kw, kva, pf in rows:
-        body_lines.append(f"Bunnings Australia,{nmi},NMI,{ts},{e},{kw},{kva},{pf},BUN AUS Forbes")
-    csv_path.write_text("\n".join(body_lines))
-    return csv_path
+# tests/unit/parsers/optima/conftest.py
+import pytest
+
+
+@pytest.fixture
+def write_demand_csv(tmp_path):
+    """Factory fixture: write a synthetic Demand Profile CSV, return path."""
+    def _write(filename="Bunnings_Demand_Profile.csv", rows=None):
+        csv_path = tmp_path / filename
+        rows = rows or [
+            ("4001260599", "01-Feb-2026 00:00:00", "5.24", "10.48", "10.48", "1.0000"),
+            ("4001260599", "01-Feb-2026 00:30:00", "5.21", "10.42", "10.42", "1.0000"),
+            ("4001260599", "01-Feb-2026 05:30:00", "29.56", "59.12", "67.18", "0.8800"),
+        ]
+        body_lines = [
+            'Commodities:,"Electricity"',
+            'Sites (NMIs):,"4001260599"',
+            'Status:,"Active"',
+            'Country:, Australia',
+            'Start:,01-Feb-2026',
+            'End:,30-Apr-2026',
+            '',
+            '',
+            'Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVa,Power Factor,Site Name',
+        ]
+        for nmi, ts, e, kw, kva, pf in rows:
+            body_lines.append(f"Bunnings Australia,{nmi},NMI,{ts},{e},{kw},{kva},{pf},BUN AUS Forbes")
+        csv_path.write_text("\n".join(body_lines))
+        return csv_path
+    return _write
 ```
 
 Promote to `tests/unit/fixtures/` only if a real-shape file is needed for richer scenarios.
@@ -419,7 +458,7 @@ Promote to `tests/unit/fixtures/` only if a real-shape file is needed for richer
 | `scripts/generate_demand_points.py` | ✅ created |
 | `scripts/import_demand_points.py` | ✅ created |
 | `src/shared/parsers/optima/demand.py` | ✅ created |
-| `src/shared/parsers/optima/_mappings.py` (new shared helper) | ✅ created |
+| `src/shared/parsers/_mappings.py` (new shared helper at parsers/ level — broader than Optima) | ✅ created |
 | `src/shared/parsers/optima/bunnings_billing.py` | ⚠️ small refactor (use shared `get_nem12_mappings`) |
 | `src/shared/non_nem_parsers.py` | ⚠️ add demand_parser to dispatcher |
 | `tests/unit/parsers/optima/test_demand.py` | ✅ created |
