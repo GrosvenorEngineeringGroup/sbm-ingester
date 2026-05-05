@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,18 +17,15 @@ from typing import TYPE_CHECKING
 import boto3
 from aws_lambda_powertools import Logger
 
+from shared.parsers._mappings import get_nem12_mappings
+
 if TYPE_CHECKING:
     from shared.parsers import ParserResult
 
 logger = Logger(service="bunnings-billing-parser", child=True)
 
-MAPPINGS_BUCKET = "sbm-file-ingester"
-MAPPINGS_KEY = "nem12_mappings.json"
-
 HUDI_BUCKET = "hudibucketsrc"
 HUDI_PREFIX = "sensorDataFiles"
-
-_nem12_mappings_cache: dict | None = None
 
 
 # (CSV column name, billing suffix used in nem12_mappings key, unit source)
@@ -108,22 +104,6 @@ def _parse_billing_rows(file_path: str) -> list[dict[str, str]]:
     data_section = "\n".join(lines[7:])
     reader = csv.DictReader(io.StringIO(data_section))
     return [row for row in reader if row.get("Identifier")]
-
-
-def _get_nem12_mappings() -> dict:
-    """Lazy-load nem12_mappings.json from S3 once per Lambda container.
-
-    Cached at module level; lives for the container's warm lifetime. Cold
-    starts pay one ~1 MB S3 GET. Mapping refresh happens hourly via the
-    sbm-files-ingester-nem12-mappings-to-s3 Lambda — stale containers simply
-    miss new NMIs until they recycle, which is acceptable because new NMIs
-    skip silently and catch up on the next monthly run.
-    """
-    global _nem12_mappings_cache
-    if _nem12_mappings_cache is None:
-        obj = boto3.client("s3").get_object(Bucket=MAPPINGS_BUCKET, Key=MAPPINGS_KEY)
-        _nem12_mappings_cache = json.loads(obj["Body"].read())
-    return _nem12_mappings_cache
 
 
 def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
@@ -207,7 +187,7 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserResul
         raise Exception("Not Bunnings Usage and Spend File")
 
     rows = _parse_billing_rows(file_name)
-    mappings = _get_nem12_mappings()
+    mappings = get_nem12_mappings()
     rows_written = _process_rows_and_write(rows, mappings)
     logger.info(
         "bunnings_billing_parsed",

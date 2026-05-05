@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import boto3
 import pytest
 from moto import mock_aws
 
 import shared.parsers.optima.bunnings_billing as bp_mod
+from shared.parsers import _mappings as mappings_mod
 from shared.parsers.optima.bunnings_billing import (
     CSV_FIELD_MAPPING,
     _billing_date_to_ts,
@@ -46,7 +46,7 @@ def test_utf16_decoding_and_row_parsing(tmp_path, monkeypatch) -> None:
         return 0
 
     monkeypatch.setattr(bp, "_process_rows_and_write", fake_process)
-    monkeypatch.setattr(bp, "_get_nem12_mappings", lambda: {})
+    monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
 
     result = bp.bunnings_billing_parser(str(dst), "dummy")
     assert result == []
@@ -98,38 +98,9 @@ def test_csv_field_mapping_has_23_entries() -> None:
 @pytest.fixture
 def _reset_mappings_cache():
     """Ensure module-level cache starts empty for each test."""
-    bp_mod._nem12_mappings_cache = None
+    mappings_mod._cache = None
     yield
-    bp_mod._nem12_mappings_cache = None
-
-
-@mock_aws
-def test_get_nem12_mappings_loads_and_caches(_reset_mappings_cache) -> None:
-    """First call loads from S3; subsequent calls reuse the cache."""
-    s3 = boto3.client("s3", region_name="ap-southeast-2")
-    s3.create_bucket(
-        Bucket="sbm-file-ingester",
-        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
-    )
-    mappings_payload = {
-        "VCCCLG0019-billing-peak-usage": "p:bunnings:19c88bf11c8-76959f",
-        "VCCCLG0019-billing-off-peak-usage": "p:bunnings:19c88bf11ca-38fd75",
-    }
-    s3.put_object(
-        Bucket="sbm-file-ingester",
-        Key="nem12_mappings.json",
-        Body=json.dumps(mappings_payload).encode(),
-    )
-
-    with patch("shared.parsers.optima.bunnings_billing.boto3.client", wraps=boto3.client) as spy:
-        first = bp_mod._get_nem12_mappings()
-        second = bp_mod._get_nem12_mappings()
-
-    assert first == mappings_payload
-    assert second is first  # same dict object — cached
-    # boto3.client("s3") should have been called exactly once
-    s3_calls = [c for c in spy.call_args_list if c.args and c.args[0] == "s3"]
-    assert len(s3_calls) == 1, f"expected 1 s3 client call, got {len(s3_calls)}"
+    mappings_mod._cache = None
 
 
 @mock_aws
