@@ -198,12 +198,85 @@ def _reset_mappings_cache():
 
 (Keep the fixture name `_reset_mappings_cache` so the ~11 tests that use it continue to work without per-test changes.)
 
-- [ ] **Step 4: Run bunnings_billing tests to confirm refactor passes**
+- [ ] **Step 3.5: Migrate the cache-loading test (`test_get_nem12_mappings_loads_and_caches`)**
 
-Run: `uv run pytest tests/unit/parsers/optima/test_bunnings_billing.py -v 2>&1 | tail -25`
-Expected: 17 passed (same count as baseline).
+There is one test in `tests/unit/parsers/optima/test_bunnings_billing.py` (around lines 107-133) that calls `bp_mod._get_nem12_mappings()` *directly* (NOT via `monkeypatch.setattr`) and patches `shared.parsers.optima.bunnings_billing.boto3.client`. After the refactor, both will fail:
+- The direct call → `AttributeError` (function moved to `_mappings.py`)
+- The boto3 patch → patches the wrong module (no longer the one doing the S3 GET)
 
-If any test fails with `AttributeError: ... has no attribute '_get_nem12_mappings'` or similar, you missed a patch site — re-run the grep from Step 3.
+**This test belongs to the moved code,** so move it to a new dedicated test file (cleaner than retrofitting it inside `test_bunnings_billing.py`):
+
+Create `tests/unit/parsers/test_mappings.py`:
+
+```python
+"""Tests for shared.parsers._mappings.get_nem12_mappings."""
+
+import json
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from shared.parsers import _mappings as mappings_mod
+
+
+@pytest.fixture
+def _reset_cache():
+    mappings_mod._cache = None
+    yield
+    mappings_mod._cache = None
+
+
+@mock_aws
+def test_loads_and_caches(_reset_cache, monkeypatch) -> None:
+    """First call loads from S3; subsequent calls reuse the cache."""
+    s3 = boto3.client("s3", region_name="ap-southeast-2")
+    s3.create_bucket(
+        Bucket="sbm-file-ingester",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    mappings_payload = {
+        "VCCCLG0019-billing-peak-usage": "p:bunnings:19c88bf11c8-76959f",
+        "VCCCLG0019-billing-off-peak-usage": "p:bunnings:19c88bf11ca-38fd75",
+    }
+    s3.put_object(
+        Bucket="sbm-file-ingester",
+        Key="nem12_mappings.json",
+        Body=json.dumps(mappings_payload).encode(),
+    )
+
+    from unittest.mock import patch
+
+    with patch(
+        "shared.parsers._mappings.boto3.client",
+        wraps=boto3.client,
+    ) as spy:
+        first = mappings_mod.get_nem12_mappings()
+        second = mappings_mod.get_nem12_mappings()
+
+    assert first == mappings_payload
+    assert second is first  # same dict object — cached
+    s3_calls = [c for c in spy.call_args_list if c.args and c.args[0] == "s3"]
+    assert len(s3_calls) == 1, f"expected 1 s3 client call, got {len(s3_calls)}"
+```
+
+Then **delete the original test from `tests/unit/parsers/optima/test_bunnings_billing.py`** (~lines 107-133, the entire `test_get_nem12_mappings_loads_and_caches` function and its `@mock_aws` decorator). Locate exactly:
+
+```bash
+grep -nE "^@mock_aws|^def test_get_nem12_mappings_loads_and_caches" tests/unit/parsers/optima/test_bunnings_billing.py
+```
+
+After deletion, the bunnings_billing test count drops by 1 (16 instead of 17), and the new `test_mappings.py` adds 1 (net unchanged).
+
+- [ ] **Step 4: Run bunnings_billing + new mappings tests to confirm refactor passes**
+
+```bash
+uv run pytest tests/unit/parsers/optima/test_bunnings_billing.py tests/unit/parsers/test_mappings.py -v 2>&1 | tail -30
+```
+
+Expected: **16 + 1 = 17 passed** (one test moved from bunnings_billing to test_mappings; net count unchanged).
+
+If any test fails with `AttributeError: ... has no attribute '_get_nem12_mappings'` or similar, you missed a patch site — re-run the grep from Step 3. If `test_loads_and_caches` fails with the wrong patch target, verify it patches `shared.parsers._mappings.boto3.client` (NOT `shared.parsers.optima.bunnings_billing.boto3.client`).
 
 - [ ] **Step 5: Run full suite to confirm no other tests broke**
 
@@ -215,7 +288,8 @@ Expected: 491 passed (same as baseline).
 ```bash
 git add src/shared/parsers/_mappings.py \
         src/shared/parsers/optima/bunnings_billing.py \
-        tests/unit/parsers/optima/test_bunnings_billing.py
+        tests/unit/parsers/optima/test_bunnings_billing.py \
+        tests/unit/parsers/test_mappings.py
 git commit -m "refactor: extract nem12_mappings loader into shared parsers/_mappings.py
 
 bunnings_billing.py now imports get_nem12_mappings() from the shared
@@ -303,16 +377,23 @@ class TestFilenameGate:
 
     def test_accepts_lowercase_user_download(self, write_demand_csv):
         # The user's manual download is named "Bunnings demand profile.csv"
-        # (lowercase). Must accept this casing.
+        # (lowercase). Must accept this casing — i.e., the filename gate
+        # MUST NOT raise. (The parser may still raise downstream because
+        # the stub returns [] without reading content, but specifically
+        # the filename-gate-mismatch exception must not fire.)
         path = write_demand_csv(filename="Bunnings demand profile.csv")
-        # Should NOT raise on filename gate; will fall through to other logic
-        # (and succeed or fail there based on content). For this gate test,
-        # we just assert no filename-gate exception.
         try:
-            demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path), "/tmp/err.log")
+            # If no exception, the gate passed (and the rest of the parser
+            # ran cleanly on a valid file).
+            assert result == [] or isinstance(result, list)
         except Exception as e:
+            # Only the specific filename-mismatch error is forbidden here.
+            # Any other downstream error means the gate accepted the file
+            # but a later step (mappings lookup, S3, etc.) failed — that's
+            # not what this test is gating.
             assert "filename mismatch" not in str(e), (
-                f"Filename gate rejected lowercase: {e}"
+                f"Filename gate rejected lowercase user download: {e}"
             )
 
 
@@ -441,14 +522,18 @@ class TestEmptyData:
         assert result == []
 ```
 
-- [ ] **Step 2: Run tests to verify the no-data test fails**
+- [ ] **Step 2: Run tests to verify behaviour against the current stub**
 
 Run: `uv run pytest tests/unit/parsers/optima/test_demand.py -v 2>&1 | tail -15`
-Expected: 3 still pass; the 2 new tests behaviour:
-- `test_no_data_found_returns_empty_list_no_exception` may FAIL because the parser body currently doesn't handle the "No data found" sentinel — the file lacks a column header so DictReader will raise (or return empty).
-- `test_header_only_returns_empty_list` should already PASS because parser stub returns [].
 
-The exact failure mode depends on the stub. The point: this step exposes the gap in CSV parsing. Both tests should pass after Step 3.
+Expected:
+- 3 prior tests still pass.
+- `test_header_only_returns_empty_list` PASSES — the stub returns `[]` regardless of body content, which incidentally satisfies this test.
+- `test_no_data_found_returns_empty_list_no_exception` PASSES for the same reason — the stub doesn't try to parse the body.
+
+So this is a "safety-net + future-proof" task rather than a strict TDD red-green cycle. Both tests already pass against the stub, but they LOCK IN the contract: when Step 3 adds real CSV parsing, the no-data sentinel must continue to short-circuit instead of crashing on the missing column header. Without these tests, a naive `csv.DictReader` over the no-data file would raise — Step 3 must explicitly handle the sentinel.
+
+After Step 3 they continue to pass for a *different* reason (the explicit sentinel detection branch is exercised). To verify the test is meaningful: temporarily comment out the `if any("No data found" in line for line in lines): return []` block in Step 3's implementation and re-run — the no-data test should fail with a `pandas`/CSV exception. Restore the block.
 
 - [ ] **Step 3: Add CSV parsing helpers and field map to `src/shared/parsers/optima/demand.py`**
 
@@ -1067,7 +1152,10 @@ def find_meter_vertex_id(nmi_full: str) -> tuple[str | None, str]:
         nem12_id = f"{nmi_full}-{channel}"
         # Escape single quotes — NMIs are alphanumeric so this is just defensive
         escaped = nem12_id.replace("'", "\\'")
-        query = f"g.V().has('nem12Id', '{escaped}').in('equipRef').id().limit(1).toList()"
+        # Edge direction: point --equipRef--> meter (see import_billing_points.py
+        # which creates the edge with .addE('equipRef').from('pt')). To walk
+        # from a point to its meter we follow OUTGOING edges with .out().
+        query = f"g.V().has('nem12Id', '{escaped}').out('equipRef').id().limit(1).toList()"
         result = gremlin_query(query)
         if result:
             return result[0], channel
@@ -1510,10 +1598,12 @@ print(f'Demand points in Neptune: {result}')
 
 Expected: a count close to 1404 (created points). If this is significantly off, something went wrong — look at the import log.
 
-- [ ] **Step 6: Commit the generated artifacts**
+- [ ] **Step 6: Commit the generated artifacts** (use `-f` because `data/*.csv` is in `.gitignore`)
+
+`.gitignore:114` excludes `data/*.csv` (no prior `data/billing_*.csv` was ever committed either — verify with `git log --all -- data/billing_points.csv` returning empty). The artifacts ARE useful to commit because they document the exact Neptune state created by the import; force-add with `-f`:
 
 ```bash
-git add data/demand_points.csv data/demand_point_ids.csv
+git add -f data/demand_points.csv data/demand_point_ids.csv
 git commit -m "chore: generated data/demand_points.csv and demand_point_ids.csv
 
 Output of:
@@ -1523,8 +1613,14 @@ Output of:
 Live Neptune state now contains ~1404 new point vertices with
 pointCategory='demand'. The next hourly run of the
 sbm-files-ingester-nem12-mappings-to-s3 Lambda will export them to
-nem12_mappings.json, after which demand_parser can resolve them."
+nem12_mappings.json, after which demand_parser can resolve them.
+
+Force-added because data/*.csv is in .gitignore — these artifacts are
+checked in for traceability of the live Neptune state, not because
+the pipeline depends on them."
 ```
+
+If you'd rather NOT commit the artifacts (they are reproducible from the scripts), skip this step. Both choices are defensible; spec is silent.
 
 ---
 
@@ -1532,10 +1628,21 @@ nem12_mappings.json, after which demand_parser can resolve them."
 
 **Files:** none modified (verification only).
 
-- [ ] **Step 1: Wait for the next hourly mapping export**
+- [ ] **Step 1: Trigger the mappings export Lambda (skip the wait)**
+
+The `sbm-files-ingester-nem12-mappings-to-s3` Lambda runs hourly. Don't wait — invoke it manually:
 
 ```bash
-# Check whether nem12_mappings.json contains demand keys yet:
+aws lambda invoke \
+    --function-name sbm-files-ingester-nem12-mappings-to-s3 \
+    --profile geg --region ap-southeast-2 \
+    /tmp/mappings_export.json
+cat /tmp/mappings_export.json   # expect {"statusCode": 200, ...}
+```
+
+Then verify `nem12_mappings.json` contains the new demand keys:
+
+```bash
 aws s3 cp s3://sbm-file-ingester/nem12_mappings.json /tmp/mappings.json --profile geg --region ap-southeast-2 2>&1 | tail -2
 python3 -c "
 import json
@@ -1547,7 +1654,7 @@ print('Examples:', demand[:5])
 "
 ```
 
-Expected: `Demand keys in mappings: ~1404` (after the hourly Lambda runs). If 0, wait until the next hour and re-check.
+Expected: `Demand keys in mappings: ~1404`. If 0 right after the manual invoke, the Lambda may not have completed — wait 30s and re-check the S3 file timestamp.
 
 - [ ] **Step 2: Upload a real demand profile CSV to trigger the parser**
 
