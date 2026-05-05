@@ -85,11 +85,15 @@ tests/unit/parsers/                     # NEW, mirrors source structure
 │   ├── test_vertical_water.py
 │   ├── test_vertical_water_bulk.py
 │   └── test_vertical_electricity.py
-├── green_square/
-│   ├── __init__.py
-│   └── test_comx.py
-└── test_dispatcher.py                  # get_non_nem_df routing tests
+└── green_square/
+    ├── __init__.py
+    └── test_comx.py
+
+tests/unit/test_dispatcher.py           # NEW, sibling of tests/unit/parsers/ (because dispatcher
+                                        # lives at shared.non_nem_parsers, not under shared.parsers)
 ```
+
+**Why `test_dispatcher.py` is a sibling, not nested under `parsers/`:** the source it tests (`get_non_nem_df`) lives at `src/shared/non_nem_parsers.py`, not under `src/shared/parsers/`. Source/test mirror principle puts it next to (not inside) the parsers test directory.
 
 **Test file migrations:**
 
@@ -118,6 +122,13 @@ Rationale recap:
 - `interval_parser` — the file is "Interval Usage Csv" from BidEnergy UI but contains both Usage and Generation columns. `interval_usage_parser` would be misleading (implies usage only); `interval_parser` is honest.
 - `bunnings_billing_parser` — file is "Usage and Spend Report" billing output; `_billing_` captures purpose without false-narrowing to either side.
 - `racv_billing_parser` — same file format as Bunnings billing but RACV-specific behaviour (archive to a different S3 bucket only, no Hudi write). Vendor prefix preserved because behaviour differs from the Bunnings sibling.
+
+**Acknowledged naming asymmetry:** `interval_parser` drops its platform prefix (was `optima_parser`) while `bunnings_billing_parser` and `racv_billing_parser` keep their vendor prefixes — even though all three sit under `parsers/optima/`. The asymmetry reflects a structural difference, not an accident:
+
+- **One vendor-agnostic parser** handles all interval files (it dispatches on the `BuyerShortName` column inside the CSV — Bunnings and RACV go through the same function). Path `parsers/optima/interval.py` already disambiguates from the bulk endpoint variant; no vendor prefix needed.
+- **Two vendor-specific functions** for billing because the behaviours diverge sharply: Bunnings billing → full parse → Hudi sensor rows; RACV billing → archive-only to a different S3 bucket. They cannot be merged without an `if vendor == ...` switch, so they remain distinct functions; the vendor prefix on each is necessary to tell them apart in the dispatcher list and at the import site.
+
+If a future change unifies billing behaviour, the rename to a single `billing_parser` becomes natural — but that is out of scope for this refactor.
 
 ## Final Dispatcher (`non_nem_parsers.py`)
 
@@ -166,7 +177,7 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
 
 **All consumers update their import paths to point at the new module locations.** No backward-compat shims in `non_nem_parsers.py`. The dispatcher (`get_non_nem_df`) remains importable from `shared.non_nem_parsers` because that file is kept (with reduced contents) — no consumer of the dispatcher needs to change.
 
-Affected import statements (35 total, mostly in tests):
+**Affected import statements: 60 total** across `src/` and `tests/` (verified by `grep -rn "from shared.non_nem_parsers\|from shared.billing_parser\|from shared.noosa_solar_parser" --include="*.py" src/ tests/ | wc -l`). Of these, the rename-affected sites are concentrated in `tests/unit/test_non_nem_parsers*.py`, `tests/unit/test_billing_parser.py`, and `tests/unit/test_noosa_solar_parser.py`; the dispatcher-only import (`from shared.non_nem_parsers import get_non_nem_df`) appears 6 times and stays unchanged.
 
 | Old import | New import |
 |---|---|
@@ -177,9 +188,52 @@ Affected import statements (35 total, mostly in tests):
 | `from shared.non_nem_parsers import envizi_vertical_parser_water` | `from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water` |
 | `from shared.non_nem_parsers import envizi_vertical_parser_water_bulk` | `from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk` |
 | `from shared.non_nem_parsers import envizi_vertical_parser_electricity` | `from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity` |
-| `from shared.non_nem_parsers import get_non_nem_df` | (unchanged — dispatcher stays at this path) |
+| `from shared.non_nem_parsers import get_non_nem_df` | (unchanged — dispatcher stays at this path; ~6 sites) |
 | `from shared.billing_parser import bunnings_usage_and_spend_parser` | `from shared.parsers.optima.bunnings_billing import bunnings_billing_parser` |
 | `from shared.noosa_solar_parser import noosa_solar_parser` | `from shared.parsers.racv.noosa_solar import noosa_solar_parser` |
+
+## Mock Path Migration
+
+When a module moves, every `unittest.mock.patch("<old.module.path>.<symbol>")` targeting that module silently breaks: `patch()` raises `AttributeError` only when the patched name doesn't exist in the target module, but if the OLD module still exists (as `non_nem_parsers.py` does, just smaller), the patch may attach to a different `logger` than the one the parser code is actually using — leading to silent test failures (mocks don't intercept anything, but assertions still pass).
+
+**Patches affected:**
+
+| Old patch path | New patch path | Sites |
+|---|---|---|
+| `patch("shared.non_nem_parsers.logger")` for tests calling parsers DIRECTLY | `patch("shared.parsers.<platform>.<file>.logger")` (each parser's own logger) | ~36 in `test_non_nem_parsers.py` + `test_non_nem_parsers_edge_cases.py` |
+| `patch("shared.non_nem_parsers.logger")` for tests calling `get_non_nem_df` (dispatcher) | (unchanged — dispatcher's logger stays at this path) | ~5 dispatcher test cases |
+| `patch("shared.noosa_solar_parser.logger")` | `patch("shared.parsers.racv.noosa_solar.logger")` | 17 in `test_noosa_solar_parser.py` |
+| `patch("shared.billing_parser.boto3.client", ...)` | `patch("shared.parsers.optima.bunnings_billing.boto3.client", ...)` | 1 in `test_billing_parser.py:124` |
+| `monkeypatch.setattr(bp, ...)` where `bp = shared.billing_parser` | `monkeypatch.setattr(bp, ...)` where `bp = shared.parsers.optima.bunnings_billing` | 2 in `test_billing_parser.py` (alias rebinding) |
+
+The migration must run a final sweep: `grep -rn 'patch("shared\.\(non_nem_parsers\|billing_parser\|noosa_solar_parser\)\.' tests/` should return zero matches when the refactor is complete (except the ~5 sites legitimately still patching the dispatcher's logger).
+
+## Per-Module Logger Declarations
+
+In the original `non_nem_parsers.py`, only `envizi_vertical_parser_water` (line 34) calls `logger.error` directly; the dispatcher uses the same module-level logger for `logger.debug` / `logger.error` on parse failures. The other 6 parsers in that file do not log — they just raise.
+
+After the split, each parser file gets its own module-level logger declaration even if its functions don't currently log anything:
+
+```python
+# src/shared/parsers/envizi/vertical_water.py
+from aws_lambda_powertools import Logger
+logger = Logger(service="envizi-vertical-water-parser", child=True)
+
+def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> ParserResult:
+    ...
+    logger.error("envizi_vertical_parser_water: Multiple units", ...)
+    ...
+```
+
+Why every file gets a logger (not just `vertical_water.py`):
+
+1. **Mock patching consistency** — tests can always `patch("shared.parsers.<platform>.<file>.logger")` without first checking whether the file exposes one
+2. **Future-proofing** — parsers will likely add logging as the codebase matures; having the logger ready avoids per-parser scaffolding later
+3. **Mirrors existing siblings** — `noosa_solar_parser.py` and `billing_parser.py` already declare their own loggers (`service="noosa-solar-parser"` and `service="bunnings-billing-parser"`)
+
+Service name convention: `"<platform>-<file-stem>-parser"` (e.g., `"envizi-vertical-water-parser"`, `"optima-interval-parser"`, `"green-square-comx-parser"`). This makes log filtering in CloudWatch trivial.
+
+The dispatcher in `non_nem_parsers.py` keeps its existing logger declaration (`Logger(service="non-nem-parsers", child=True)`).
 
 ## Subpackage `__init__.py` Conventions
 
@@ -204,30 +258,43 @@ if "Generation" in raw_df.columns:
 Add a regression test in `tests/unit/parsers/optima/test_interval.py` to lock this contract:
 
 ```python
-def test_interval_parser_persists_both_usage_and_generation():
+def test_interval_parser_persists_both_usage_and_generation(tmp_path):
     """Both Usage→E1_kWh and Generation→B1_kWh must be produced when present."""
-    # Use a real-shape sample CSV with non-zero Usage AND Generation columns
-    result = interval_parser(SAMPLE_CSV_WITH_GENERATION, error_path)
+    # Synthetic 12-column CSV matching the BidEnergy "Export Interval Usage Csv" output shape.
+    # Two NMIs, one with non-zero Generation to confirm both channels persist.
+    csv_path = tmp_path / "Bunnings-AU-Electricity-TEST-NMI-ENERGYAP.csv"
+    csv_path.write_text(
+        "BuyerShortName,Country,Commodity,Identifier,IdentifierType,DistributorId,"
+        "Date,Start Time,Usage,Generation,DemandKva,Reactive\n"
+        '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:00,1.5,0.8,3.0,0.0\n'
+        '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:30,1.7,0.9,3.4,0.0\n'
+    )
+    result = interval_parser(str(csv_path), str(tmp_path / "err.log"))
     assert len(result) == 1
     nmi_key, df = result[0]
+    assert nmi_key == "Optima_TEST"
     assert "E1_kWh" in df.columns
     assert "B1_kWh" in df.columns
-    assert df["E1_kWh"].sum() > 0
-    assert df["B1_kWh"].sum() > 0   # critical: Generation persists
+    assert df["E1_kWh"].sum() == 3.2  # 1.5 + 1.7
+    assert df["B1_kWh"].sum() == 1.7  # 0.8 + 0.9 — Generation persists
 ```
+
+The fixture is inlined (synthetic CSV via `tmp_path`) rather than a file under `tests/unit/fixtures/` because: (a) the schema is small and self-documenting in the test, (b) the expected sums double as readability — anyone reading the test sees exactly what data is being asserted on, (c) avoids one more fixture file to maintain. If the test grows beyond ~15 lines of CSV literal, promote it to `tests/unit/fixtures/optima_interval_usage_with_generation.csv`.
 
 If a future change accidentally drops one channel, this test breaks.
 
 ## Migration Steps (high-level — execution plan goes in writing-plans)
 
-1. Create `src/shared/parsers/` subpackage skeleton (empty `__init__.py` files).
-2. `git mv` the 7 bundled parsers from `non_nem_parsers.py` into their new files (manual extraction from a single source file, but use `git mv` for `billing_parser.py` and `noosa_solar_parser.py` to preserve history).
+1. Create `src/shared/parsers/` subpackage skeleton (`__init__.py` files for `parsers/`, `parsers/optima/`, `parsers/racv/`, `parsers/envizi/`, `parsers/green_square/`).
+2. **Extract** the 7 parser functions from `non_nem_parsers.py` into their new per-file homes (manual cut/paste, since they are functions inside a single source file — `git mv` does not apply here). **Use `git mv`** only for the two files that already exist as standalone modules: `billing_parser.py` → `parsers/optima/bunnings_billing.py` and `noosa_solar_parser.py` → `parsers/racv/noosa_solar.py` (preserves git history).
 3. Apply the 3 function renames in their new files.
 4. Reduce `non_nem_parsers.py` to the dispatcher-only form shown above.
-5. Update all 35 import statements across `src/`, `tests/`, and any scripts.
-6. Reorganise tests under `tests/unit/parsers/` per the structure above.
-7. Add the `test_interval_parser_persists_both_usage_and_generation` regression test.
-8. Run `uv run ruff check . --fix && uv run ruff format . && uv run pytest --cov=src` — verify all 525+ tests pass and coverage stays ≥90%.
+5. Add per-module logger declarations to every parser file (see "Per-Module Logger Declarations" section).
+6. Update all rename-affected import statements across `src/`, `tests/`, and any scripts.
+7. Reorganise tests under `tests/unit/parsers/` per the structure above (and migrate mock patch paths per the "Mock Path Migration" section).
+8. Add the `test_interval_parser_persists_both_usage_and_generation` regression test.
+9. Run `uv run ruff check . --fix && uv run ruff format . && uv run pytest --cov=src` — verify all 525+ tests pass and coverage stays ≥90%.
+10. Final sweep: `grep -rn 'patch("shared\.\(non_nem_parsers\|billing_parser\|noosa_solar_parser\)\.' tests/` should return only the ~5 dispatcher-logger patches.
 
 ## Risk & Rollback
 
