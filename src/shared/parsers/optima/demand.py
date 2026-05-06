@@ -19,6 +19,7 @@ import io
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import boto3
 from aws_lambda_powertools import Logger
@@ -73,6 +74,26 @@ def _validate_required_headers(fieldnames: list[str] | None) -> None:
         raise ParserError(f"Missing demand columns: {', '.join(missing_headers)}")
 
 
+def _row_has_content(row: dict[str | None, Any]) -> bool:
+    for value in row.values():
+        if isinstance(value, list):
+            if any(str(item).strip() for item in value if item is not None):
+                return True
+            continue
+        if value is not None and str(value).strip():
+            return True
+    return False
+
+
+def _validate_row_shape(row: dict[str | None, Any], fieldnames: list[str] | None, row_number: int) -> None:
+    if None in row:
+        raise ParserError(f"Malformed demand row {row_number}: unexpected extra cells")
+
+    missing_cells = [fieldname for fieldname in fieldnames or [] if row.get(fieldname) is None]
+    if missing_cells:
+        raise ParserError(f"Malformed demand row {row_number}: missing cells for {', '.join(missing_cells)}")
+
+
 def _parse_demand_rows(file_path: str) -> DemandParseResult:
     """Skip metadata rows and return data rows plus empty-data sentinel state.
 
@@ -91,7 +112,12 @@ def _parse_demand_rows(file_path: str) -> DemandParseResult:
     data_section = "\n".join(lines[8:])  # row 9 onward (0-indexed 8)
     reader = csv.DictReader(io.StringIO(data_section))
     _validate_required_headers(reader.fieldnames)
-    rows = [row for row in reader if any((value or "").strip() for value in row.values())]
+    rows: list[dict[str, str]] = []
+    for row_number, row in enumerate(reader, start=10):
+        if not _row_has_content(row):
+            continue
+        _validate_row_shape(row, reader.fieldnames, row_number)
+        rows.append(row)
     return DemandParseResult(rows=rows, no_data_sentinel=False)
 
 

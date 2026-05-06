@@ -120,6 +120,37 @@ class TestHeaderValidation:
         mock_client.return_value.put_object.assert_not_called()
 
 
+class TestRowShapeValidation:
+    def test_truncated_row_raises_parser_error_without_upload(
+        self, write_demand_csv, monkeypatch, _reset_mappings_cache
+    ):
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+        body = "\n".join(
+            [
+                'Commodities:,"Electricity"',
+                'Sites (NMIs):,"4001260599"',
+                'Status:,"Active"',
+                "Country:, Australia",
+                "Start:,01-Feb-2026",
+                "End:,30-Apr-2026",
+                "",
+                "",
+                "Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVa,Power Factor,Site Name",
+                "Bunnings Australia,4001260599,NMI,01-Feb-2026 00:00:00,5.2400,10.4800",
+            ]
+        )
+        path = write_demand_csv(body_override=body)
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            with pytest.raises(ParserError, match="Malformed demand row"):
+                demand_parser(str(path), "/tmp/err.log")
+
+        mock_client.return_value.put_object.assert_not_called()
+
+
 @pytest.fixture
 def _reset_mappings_cache():
     """Clear the shared mappings cache before and after each test."""

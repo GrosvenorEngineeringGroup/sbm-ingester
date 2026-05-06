@@ -421,6 +421,28 @@ def test_all_valid_billing_candidates_unmapped_returns_unmapped(_reset_mappings_
     assert result.unmapped_count == result.candidate_row_count
 
 
+def test_truncated_billing_row_raises_parser_error_without_upload(_reset_mappings_cache, tmp_path, monkeypatch) -> None:
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+    text = src.read_bytes().decode("utf-16-le").lstrip("\ufeff")
+    lines = text.rstrip("\n").split("\n")
+    header = lines[7].split(",")
+    peak_index = header.index("Peak")
+    truncated_row = ",".join(lines[8].split(",")[: peak_index + 1])
+    lines[8] = truncated_row
+    src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
+    monkeypatch.setattr(
+        bp_mod,
+        "get_nem12_mappings",
+        lambda: {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"},
+    )
+
+    with patch("shared.parsers.optima.bunnings_billing.boto3.client") as mock_client:
+        with pytest.raises(ParserError, match="Malformed Bunnings billing row"):
+            bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    mock_client.return_value.put_object.assert_not_called()
+
+
 @mock_aws
 def test_blank_value_skipped(_reset_mappings_cache, tmp_path) -> None:
     """Cells with empty string produce no Hudi row for that field."""
