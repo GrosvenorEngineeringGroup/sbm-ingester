@@ -40,7 +40,12 @@ class TestIntervalParser:
         assert result.reason == "no_data_sentinel"
         assert result.dfs == []
 
-    def test_pseudo_no_data_sentinel_with_malformed_usage_raises_parser_error(self, tmp_path) -> None:
+    def test_pseudo_no_data_sentinel_with_malformed_usage_skip_counts(self, tmp_path) -> None:
+        """Pseudo-sentinel row with malformed Usage and blank date is skipped.
+
+        Both the bad timestamp (blank Date) and unparseable Usage value get
+        counted in skip_reasons. File becomes processed_empty, not parse-err.
+        """
         from shared.parsers.optima.interval import interval_parser
 
         filepath = tmp_path / "interval.csv"
@@ -50,8 +55,12 @@ class TestIntervalParser:
             "No data is available,,,,,,,,not-a-number,,,\n"
         )
 
-        with pytest.raises(ParserError, match="Failed to parse interval Usage values"):
-            interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed_empty"
+        assert result.dfs == []
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
 
     def test_missing_required_columns_is_not_relevant(self, tmp_path) -> None:
         from shared.parsers.optima.interval import interval_parser
@@ -62,14 +71,20 @@ class TestIntervalParser:
         with pytest.raises(NotRelevantParser, match="Not an Optima interval CSV"):
             interval_parser(str(filepath), "error_log")
 
-    def test_invalid_timestamp_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+    def test_invalid_timestamp_after_schema_match_skip_counts(self, tmp_path) -> None:
+        """Single bad-timestamp row is skipped, not raised. File stays
+        processed_empty with rows_skipped recorded."""
         from shared.parsers.optima.interval import interval_parser
 
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\nnot-a-date,00:00,METER001,1.0\n")
 
-        with pytest.raises(ParserError, match="Failed to parse interval timestamps"):
-            interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed_empty"
+        assert result.dfs == []
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
+        assert result.reason == "all_skipped"
 
     def test_missing_value_channel_after_schema_match_raises_parser_error(self, tmp_path) -> None:
         from shared.parsers.optima.interval import interval_parser
@@ -106,23 +121,30 @@ class TestIntervalParser:
         assert result.reason == "blank_values"
         assert result.dfs == []
 
-    def test_blank_date_with_malformed_usage_raises_parser_error(self, tmp_path) -> None:
+    def test_blank_date_with_malformed_usage_skip_counts(self, tmp_path) -> None:
+        """Row with blank Date AND malformed Usage is double-skipped."""
         from shared.parsers.optima.interval import interval_parser
 
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n,00:00,METER001,not-a-number\n")
 
-        with pytest.raises(ParserError, match="Failed to parse interval Usage values"):
-            interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed_empty"
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
 
-    def test_blank_date_with_blank_usage_raises_timestamp_parser_error(self, tmp_path) -> None:
+    def test_blank_date_with_blank_usage_skip_counts(self, tmp_path) -> None:
+        """Row with blank Date and blank Usage is skipped on timestamp."""
         from shared.parsers.optima.interval import interval_parser
 
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n,00:00,METER001,\n")
 
-        with pytest.raises(ParserError, match="Failed to parse interval timestamps"):
-            interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed_empty"
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
 
     def test_blank_only_value_rows_return_processed_empty(self, tmp_path) -> None:
         from shared.parsers.optima.interval import interval_parser
@@ -141,23 +163,82 @@ class TestIntervalParser:
         assert result.reason == "blank_values"
         assert result.dfs == []
 
-    def test_malformed_usage_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+    def test_malformed_usage_after_schema_match_skip_counts(self, tmp_path) -> None:
+        """Single malformed Usage value is skipped (counted), not raised."""
         from shared.parsers.optima.interval import interval_parser
 
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n2026-05-01,00:00,METER001,not-a-number\n")
 
-        with pytest.raises(ParserError, match="Failed to parse interval Usage values"):
-            interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed_empty"
+        assert result.dfs == []
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
 
-    def test_malformed_generation_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+    def test_malformed_generation_after_schema_match_skip_counts(self, tmp_path) -> None:
+        """Single malformed Generation value is skipped (counted), not raised."""
         from shared.parsers.optima.interval import interval_parser
 
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Generation\n2026-05-01,00:00,METER001,not-a-number\n")
 
-        with pytest.raises(ParserError, match="Failed to parse interval Generation values"):
-            interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed_empty"
+        assert result.dfs == []
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+
+    def test_partial_bad_rows_in_otherwise_valid_file_skip_counts(self, tmp_path) -> None:
+        """N valid rows + 1 malformed numeric → N rows in output, rows_skipped=1."""
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        # Use 30-min intervals across two days so all timestamps are distinct & valid.
+        good_rows = []
+        for day in (1, 2, 3, 4, 5):
+            for h in range(24):
+                for m in (0, 30):
+                    good_rows.append(f"2026-05-0{day},{h:02d}:{m:02d},METER001,{(h + m) * 0.5}")
+        good_rows = good_rows[:99]
+        filepath.write_text(
+            "Date,Start Time,Identifier,Usage\n" + "\n".join(good_rows) + "\n2026-05-06,00:00,METER001,not-a-number\n"
+        )
+
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed"
+        assert result.source_row_count == 100
+        assert result.candidate_row_count == 99
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+        assert len(result.dfs) == 1
+        _nmi, df = result.dfs[0]
+        assert len(df) == 99
+
+    def test_partial_bad_timestamp_in_otherwise_valid_file_skip_counts(self, tmp_path) -> None:
+        """N valid rows + 1 malformed timestamp → N rows, rows_skipped=1."""
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        good_rows = []
+        for day in (1, 2, 3, 4, 5):
+            for h in range(24):
+                for m in (0, 30):
+                    good_rows.append(f"2026-05-0{day},{h:02d}:{m:02d},METER001,{(h + m) * 0.5}")
+        good_rows = good_rows[:99]
+        filepath.write_text(
+            "Date,Start Time,Identifier,Usage\n" + "\n".join(good_rows) + "\nnot-a-date,00:00,METER001,1.0\n"
+        )
+
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed"
+        assert result.source_row_count == 100
+        assert result.candidate_row_count == 99
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
+        assert len(result.dfs) == 1
+        _nmi, df = result.dfs[0]
+        assert len(df) == 99
 
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
         """Test that generation data is parsed correctly."""

@@ -172,8 +172,10 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             assert result.reason == "no_valid_energy_rows"
             assert result.dfs == []
 
-    def test_raises_parser_error_for_malformed_energy_value(self, temp_directory: str) -> None:
-        """Test that ComX parser rejects non-blank malformed energy values."""
+    def test_skip_counts_for_malformed_energy_value(self, temp_directory: str) -> None:
+        """ComX parser skip-counts non-blank malformed energy values
+        instead of raising. With every value bad, file becomes processed_empty
+        with rows_skipped reflecting unparseable_value."""
         with patch("shared.non_nem_parsers.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
@@ -190,8 +192,63 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            with pytest.raises(ParserError, match="Failed to parse Green Square ComX energy"):
-                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            assert result.status == "processed_empty"
+            assert result.dfs == []
+            assert result.skip_reasons["unparseable_value"] == 1
+            assert result.reason == "no_valid_energy_rows"
+
+    def test_partial_malformed_energy_with_valid_rows_skip_counts(self, temp_directory: str) -> None:
+        """N valid rows + 1 malformed energy → N rows in output, rows_skipped=1."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
+
+            filepath = str(Path(temp_directory) / "comx_partial_bad.csv")
+            content = """Row1,col2,col3,col4,TestSite
+ComX510_Green_Square,data,data,data,TestSite
+Row3,col2,col3,col4,col5
+Row4,col2,col3,col4,col5
+Row5,col2,col3,col4,col5
+Row6,col2,col3,col4,col5
+Local Time Stamp,Active energy (kWh),Other,col4,col5
+01/01/2024 00:00,1.0,data,col4,col5
+01/01/2024 00:30,2.0,data,col4,col5
+01/01/2024 01:00,not-a-number,data,col4,col5
+"""
+            with Path(filepath).open("w") as f:
+                f.write(content)
+
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            assert result.status == "processed"
+            assert result.skip_reasons["unparseable_value"] == 1
+            assert result.candidate_row_count == 2
+            assert result.rows_skipped == 1
+
+    def test_partial_malformed_timestamp_skip_counts(self, temp_directory: str) -> None:
+        """N valid rows + 1 malformed timestamp → N rows in output, rows_skipped=1."""
+        with patch("shared.non_nem_parsers.logger"):
+            from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
+
+            filepath = str(Path(temp_directory) / "comx_partial_bad_ts.csv")
+            content = """Row1,col2,col3,col4,TestSite
+ComX510_Green_Square,data,data,data,TestSite
+Row3,col2,col3,col4,col5
+Row4,col2,col3,col4,col5
+Row5,col2,col3,col4,col5
+Row6,col2,col3,col4,col5
+Local Time Stamp,Active energy (kWh),Other,col4,col5
+01/01/2024 00:00,1.0,data,col4,col5
+01/01/2024 00:30,2.0,data,col4,col5
+not-a-date,3.0,data,col4,col5
+"""
+            with Path(filepath).open("w") as f:
+                f.write(content)
+
+            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            assert result.status == "processed"
+            assert result.skip_reasons["unparseable_timestamp"] == 1
+            assert result.candidate_row_count == 2
+            assert result.rows_skipped == 1
 
     def test_extracts_site_name_correctly(self, temp_directory: str) -> None:
         """Test that ComX parser extracts site name correctly."""

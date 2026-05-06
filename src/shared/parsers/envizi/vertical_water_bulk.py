@@ -2,27 +2,35 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ParserResult
+from shared.parsers import (
+    NotRelevantParser,
+    ParserOutcome,
+    ParserResult,
+    SkipReason,
+)
 
 logger = Logger(service="envizi-vertical-water-bulk-parser", child=True)
 
 ENVIZI_BULK_WATER_REQUIRED = {"Serial_No", "Date_Time", "kL"}
 
 
-def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> None:
+def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]:
+    """Permissively coerce ``column`` to numeric in place.
+
+    Returns ``(unparseable_count, blank_count)``.
+    """
     series = raw_df[column]
     parsed = pd.to_numeric(series, errors="coerce")
-    non_blank = series.notna() & series.astype(str).str.strip().ne("")
-    invalid = non_blank & parsed.isna()
-    if invalid.any():
-        bad_value = series.loc[invalid].iloc[0]
-        raise ParserError(f"Failed to parse Envizi bulk water {column} values: {bad_value!r}")
+    blank_mask = series.isna() | series.astype(str).str.strip().eq("")
+    unparseable_mask = (~blank_mask) & parsed.isna()
     raw_df[column] = parsed
+    return int(unparseable_mask.sum()), int(blank_mask.sum())
 
 
 def envizi_vertical_parser_water_bulk(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -40,13 +48,51 @@ def envizi_vertical_parser_water_bulk(file_name: str, error_file_path: str) -> P
     if not ENVIZI_BULK_WATER_REQUIRED.issubset(raw_df.columns):
         raise NotRelevantParser("Not an Envizi bulk water CSV")
 
-    try:
-        raw_df["Date_Time"] = pd.to_datetime(raw_df["Date_Time"])
-    except Exception as e:
-        raise ParserError(f"Failed to parse Envizi bulk water timestamps: {e}") from e
-    _coerce_numeric_column(raw_df, "kL")
-    if not raw_df["kL"].notna().any():
-        return ParserOutcome(status="processed_empty", source_row_count=len(raw_df), reason="blank_values")
+    source_row_count = len(raw_df)
+    skip_reasons: Counter[SkipReason] = Counter()
+
+    raw_df["Date_Time"] = pd.to_datetime(raw_df["Date_Time"], errors="coerce")
+    bad_ts_mask = raw_df["Date_Time"].isna()
+    bad_ts_count = int(bad_ts_mask.sum())
+    if bad_ts_count:
+        skip_reasons["unparseable_timestamp"] += bad_ts_count
+        raw_df = raw_df.loc[~bad_ts_mask].copy()
+
+    unparseable, blank = _coerce_numeric_column(raw_df, "kL")
+    if unparseable:
+        skip_reasons["unparseable_value"] += unparseable
+    if blank:
+        skip_reasons["blank_value"] += blank
+
+    valid_value_mask = raw_df["kL"].notna()
+    raw_df = raw_df.loc[valid_value_mask].copy()
+
+    candidate_row_count = len(raw_df)
+    rows_skipped = source_row_count - candidate_row_count
+
+    if candidate_row_count == 0:
+        if source_row_count == 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=0,
+                reason="blank_values",
+            )
+        if bad_ts_count == source_row_count:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=source_row_count,
+                rows_skipped=rows_skipped,
+                skip_reasons=skip_reasons,
+                reason="all_skipped",
+            )
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=source_row_count,
+            rows_skipped=rows_skipped,
+            skip_reasons=skip_reasons,
+            reason="blank_values",
+        )
+
     raw_df["Serial_No"] = raw_df["Serial_No"].astype(str)
 
     dfs: ParserResult = []
@@ -57,6 +103,20 @@ def envizi_vertical_parser_water_bulk(file_name: str, error_file_path: str) -> P
         dfs.append((f"Envizi_{name}", buf_df))
 
     if not dfs:
-        return ParserOutcome(status="processed_empty", source_row_count=len(raw_df), reason="no_rows")
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=source_row_count,
+            candidate_row_count=candidate_row_count,
+            rows_skipped=rows_skipped,
+            skip_reasons=skip_reasons,
+            reason="no_rows",
+        )
 
-    return ParserOutcome(status="processed", dfs=dfs, source_row_count=len(raw_df))
+    return ParserOutcome(
+        status="processed",
+        dfs=dfs,
+        source_row_count=source_row_count,
+        candidate_row_count=candidate_row_count,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
+    )

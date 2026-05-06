@@ -88,8 +88,8 @@ class TestParseNumericColumns:
         assert "E1_kWh" in df.columns
         assert list(df["E1_kWh"]) == [10.5, 20.0, 30.5]
 
-    def test_malformed_numeric_value_raises_parser_error(self, tmp_path: Path) -> None:
-        """Numeric-looking columns reject non-empty malformed values."""
+    def test_malformed_numeric_value_skip_counts(self, tmp_path: Path) -> None:
+        """Numeric-looking columns skip-count non-empty malformed values."""
         filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
         _create_noosa_csv(
             filepath,
@@ -99,8 +99,36 @@ class TestParseNumericColumns:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            with pytest.raises(ParserError, match="p:racv:r:sensor1"):
-                noosa_solar_parser(filepath, "error_log")
+            result = noosa_solar_parser(filepath, "error_log")
+            assert result.status == "processed"
+            assert result.skip_reasons["unparseable_value"] == 1
+            # Two valid rows survive in the output DataFrame.
+            assert len(result.dfs) == 1
+            _sensor, df = result.dfs[0]
+            assert len(df) == 2
+
+    def test_partial_malformed_timestamp_with_valid_rows_skip_counts(self, tmp_path: Path) -> None:
+        """N valid rows + 1 malformed timestamp → N rows in output, rows_skipped=1."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            timestamps=[
+                "31-Mar-26 8:00 AM AEST",
+                "31-Mar-26 8:30 AM AEST",
+                "not-a-date AEST",
+            ],
+            columns={"p:racv:r:sensor1": ["1.0", "2.0", "3.0"]},
+        )
+
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
+
+            result = noosa_solar_parser(filepath, "error_log")
+            assert result.status == "processed"
+            assert result.skip_reasons["unparseable_timestamp"] == 1
+            assert len(result.dfs) == 1
+            _sensor, df = result.dfs[0]
+            assert len(df) == 2
 
 
 class TestParseStatusColumns:

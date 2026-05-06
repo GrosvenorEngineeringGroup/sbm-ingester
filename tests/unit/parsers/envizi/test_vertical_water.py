@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from conftest import create_envizi_water_csv
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
+from shared.parsers import NotRelevantParser, ParserOutcome
 from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 
 
@@ -82,15 +82,57 @@ class TestEnviziVerticalParserWater:
             # Should log warning about multiple units
             assert mock_log.error.called
 
-    def test_malformed_consumption_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+    def test_malformed_consumption_after_schema_match_skip_counts(self, tmp_path) -> None:
+        """Single malformed Consumption value is skipped (counted), not raised."""
         path = tmp_path / "water.csv"
         path.write_text(
             "Serial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
             "12345,2026-05-01T00:00:00,2026-05-01T00:30:00,not-a-number,kL\n"
         )
 
-        with pytest.raises(ParserError, match="Failed to parse Envizi water Consumption values"):
-            envizi_vertical_parser_water(str(path), "error_log")
+        result = envizi_vertical_parser_water(str(path), "error_log")
+        assert result.status == "processed_empty"
+        assert result.dfs == []
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+
+    def test_partial_malformed_consumption_with_valid_rows_skip_counts(self, tmp_path) -> None:
+        """N valid rows + 1 malformed numeric → N rows in output, rows_skipped=1."""
+        path = tmp_path / "water.csv"
+        good_rows = "\n".join(
+            f"12345,2026-05-01T{h:02d}:00:00,2026-05-01T{h:02d}:30:00,{h * 0.5},kL" for h in range(24)
+        )
+        path.write_text(
+            "Serial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
+            + good_rows
+            + "\n12345,2026-05-02T00:00:00,2026-05-02T00:30:00,not-a-number,kL\n"
+        )
+
+        result = envizi_vertical_parser_water(str(path), "error_log")
+        assert result.status == "processed"
+        assert result.source_row_count == 25
+        assert result.candidate_row_count == 24
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+
+    def test_partial_malformed_timestamp_with_valid_rows_skip_counts(self, tmp_path) -> None:
+        """N valid rows + 1 malformed timestamp → N rows in output, rows_skipped=1."""
+        path = tmp_path / "water.csv"
+        good_rows = "\n".join(
+            f"12345,2026-05-01T{h:02d}:00:00,2026-05-01T{h:02d}:30:00,{h * 0.5},kL" for h in range(24)
+        )
+        path.write_text(
+            "Serial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
+            + good_rows
+            + "\n12345,not-a-date,2026-05-02T00:30:00,1.0,kL\n"
+        )
+
+        result = envizi_vertical_parser_water(str(path), "error_log")
+        assert result.status == "processed"
+        assert result.source_row_count == 25
+        assert result.candidate_row_count == 24
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
 
     def test_blank_only_consumption_values_return_processed_empty(self, tmp_path) -> None:
         path = tmp_path / "water.csv"

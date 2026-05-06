@@ -1,9 +1,16 @@
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ParserResult
+from shared.parsers import (
+    NotRelevantParser,
+    ParserError,
+    ParserOutcome,
+    ParserResult,
+    SkipReason,
+)
 
 logger = Logger(service="noosa-solar-parser", child=True)
 
@@ -41,21 +48,26 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     if not df.empty and not df["timestamp"].notna().any():
         raise ParserError("Missing timestamp values in Noosa Solar file")
 
-    # Strip timezone suffix (AEST/AEDT) and parse timestamps
-    try:
-        timestamp_text = df["timestamp"].astype(str)
-        tz_values = timestamp_text.dropna().str.extract(r"\s+([A-Z]{3,4})$")[0].dropna().unique()
-        unexpected_tz = [tz for tz in tz_values if tz != "AEST"]
-        if len(unexpected_tz) > 0:
-            logger.warning(
-                "Unexpected timezone in Noosa Solar file",
-                extra={"timezones": unexpected_tz},
-            )
+    source_row_count = len(df)
+    skip_reasons: Counter[SkipReason] = Counter()
 
-        timestamp_text = timestamp_text.str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
-        df["timestamp"] = pd.to_datetime(timestamp_text, format="%d-%b-%y %I:%M %p")
-    except Exception as e:
-        raise ParserError(f"Failed to parse Noosa Solar timestamps: {e}") from e
+    # Strip timezone suffix (AEST/AEDT) and parse timestamps permissively.
+    timestamp_text = df["timestamp"].astype(str)
+    tz_values = timestamp_text.dropna().str.extract(r"\s+([A-Z]{3,4})$")[0].dropna().unique()
+    unexpected_tz = [tz for tz in tz_values if tz != "AEST"]
+    if len(unexpected_tz) > 0:
+        logger.warning(
+            "Unexpected timezone in Noosa Solar file",
+            extra={"timezones": unexpected_tz},
+        )
+
+    timestamp_text = timestamp_text.str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
+    df["timestamp"] = pd.to_datetime(timestamp_text, format="%d-%b-%y %I:%M %p", errors="coerce")
+    bad_ts_mask = df["timestamp"].isna()
+    bad_ts_count = int(bad_ts_mask.sum())
+    if bad_ts_count:
+        skip_reasons["unparseable_timestamp"] += bad_ts_count
+        df = df.loc[~bad_ts_mask].copy()
 
     sensor_columns = [col for col in df.columns if col.startswith("p:")]
 
@@ -74,13 +86,11 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             continue  # Skip all-NaN columns
 
         if numeric_count >= non_null_count * 0.5:
-            # Numeric column (kWh energy readings)
-            malformed_values = series[series.notna() & numeric_series.isna()]
-            if not malformed_values.empty:
-                bad_value = malformed_values.iloc[0]
-                raise ParserError(
-                    f"Failed to parse Noosa Solar numeric values for {sensor_id} from column {raw_col}: {bad_value!r}"
-                )
+            # Numeric column (kWh energy readings) — permissive coerce.
+            malformed_mask = series.notna() & numeric_series.isna()
+            malformed_count = int(malformed_mask.sum())
+            if malformed_count:
+                skip_reasons["unparseable_value"] += malformed_count
 
             col_name = "E1_kWh"
             out_df = pd.DataFrame(
@@ -112,11 +122,31 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         if not out_df.empty:
             results.append((sensor_id, out_df))
 
+    candidate_row_count = len(df)
+    rows_skipped = source_row_count - candidate_row_count
+
     if not results:
+        if bad_ts_count == source_row_count and source_row_count > 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=source_row_count,
+                rows_skipped=rows_skipped,
+                skip_reasons=skip_reasons,
+                reason="all_skipped",
+            )
         return ParserOutcome(
             status="processed_empty",
-            source_row_count=len(df),
+            source_row_count=source_row_count,
+            rows_skipped=rows_skipped,
+            skip_reasons=skip_reasons,
             reason="no_valid_point_rows",
         )
 
-    return ParserOutcome(status="processed", dfs=results, source_row_count=len(df))
+    return ParserOutcome(
+        status="processed",
+        dfs=results,
+        source_row_count=source_row_count,
+        candidate_row_count=candidate_row_count,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
+    )

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
+from shared.parsers import NotRelevantParser, ParserOutcome
 from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk
 
 
@@ -112,12 +112,42 @@ class TestParserOutputConsistency:
             _, result_df = result_dfs[0]
             assert result_df.index.name == "t_start"
 
-    def test_malformed_kl_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+    def test_malformed_kl_after_schema_match_skip_counts(self, tmp_path) -> None:
+        """Single malformed kL value is skipped (counted), not raised."""
         path = tmp_path / "bulk_water.csv"
         path.write_text("Serial_No,Date_Time,kL\n12345,2026-05-01T00:00:00,not-a-number\n")
 
-        with pytest.raises(ParserError, match="Failed to parse Envizi bulk water kL values"):
-            envizi_vertical_parser_water_bulk(str(path), "error_log")
+        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        assert result.status == "processed_empty"
+        assert result.dfs == []
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+
+    def test_partial_malformed_kl_with_valid_rows_skip_counts(self, tmp_path) -> None:
+        """N valid rows + 1 malformed numeric → N rows in output, rows_skipped=1."""
+        path = tmp_path / "bulk_water.csv"
+        good_rows = "\n".join(f"12345,2026-05-01T{h:02d}:00:00,{h * 0.5}" for h in range(24))
+        path.write_text("Serial_No,Date_Time,kL\n" + good_rows + "\n12345,2026-05-02T00:00:00,not-a-number\n")
+
+        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        assert result.status == "processed"
+        assert result.source_row_count == 25
+        assert result.candidate_row_count == 24
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_value"] == 1
+
+    def test_partial_malformed_timestamp_with_valid_rows_skip_counts(self, tmp_path) -> None:
+        """N valid rows + 1 malformed timestamp → N rows in output, rows_skipped=1."""
+        path = tmp_path / "bulk_water.csv"
+        good_rows = "\n".join(f"12345,2026-05-01T{h:02d}:00:00,{h * 0.5}" for h in range(24))
+        path.write_text("Serial_No,Date_Time,kL\n" + good_rows + "\n12345,not-a-date,1.0\n")
+
+        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        assert result.status == "processed"
+        assert result.source_row_count == 25
+        assert result.candidate_row_count == 24
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
 
     def test_blank_only_kl_values_return_processed_empty(self, tmp_path) -> None:
         path = tmp_path / "bulk_water.csv"

@@ -9,7 +9,7 @@ import pytest
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
+from shared.parsers import NotRelevantParser, ParserOutcome
 
 
 def _processed_dfs(result: ParserOutcome):
@@ -162,8 +162,9 @@ Date,Start Time,Meter1 kWh
             assert df["E1_kWh"].dropna().tolist() == [5.5]
             assert df["E1_kWh"].isna().sum() == 1
 
-    def test_non_blank_invalid_kwh_value_raises_parser_error(self, temp_directory: str) -> None:
-        """Non-blank non-numeric kWh cells are still malformed."""
+    def test_non_blank_invalid_kwh_value_skip_counts(self, temp_directory: str) -> None:
+        """Non-blank non-numeric kWh cells are counted as unparseable_value
+        and skipped, not raised."""
         with patch("shared.parsers.racv.elec.logger"):
             from shared.parsers.racv.elec import racv_elec_parser
 
@@ -176,8 +177,32 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            with pytest.raises(ParserError, match="Failed to parse RACV electricity values"):
-                racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath, "error_log")
+            # The single bad cell becomes NaN; daily sum is NaN/0 → all_zero_valid.
+            assert result.status == "processed_empty"
+            assert result.dfs == []
+            assert result.skip_reasons["unparseable_value"] == 1
+
+    def test_partial_malformed_kwh_with_valid_rows_skip_counts(self, temp_directory: str) -> None:
+        """Some valid rows + 1 malformed numeric → valid rows still processed,
+        rows_skipped reflects the bad row count via unparseable_value."""
+        with patch("shared.parsers.racv.elec.logger"):
+            from shared.parsers.racv.elec import racv_elec_parser
+
+            filepath = str(Path(temp_directory) / "mixed_invalid.csv")
+            valid_rows = "\n".join(f"2024-01-01,{h:02d}:00,5.0" for h in range(24))
+            content = (
+                "Header Row 1\nHeader Row 2\nDate,Start Time,Meter1 kWh\n"
+                + valid_rows
+                + "\n2024-01-02,00:00,not-a-number\n"
+            )
+            with Path(filepath).open("w") as f:
+                f.write(content)
+
+            result = racv_elec_parser(filepath, "error_log")
+            assert result.status == "processed"
+            assert result.skip_reasons["unparseable_value"] == 1
+            assert len(result.dfs) == 1
 
     def test_handles_mixed_zero_nonzero_meters(self, temp_directory: str) -> None:
         """Test that racv_elec_parser handles files with some zero and some non-zero meters."""

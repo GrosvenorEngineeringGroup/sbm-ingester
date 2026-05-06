@@ -8,10 +8,18 @@ persisted as separate channels (E1_kWh and B1_kWh respectively) keyed by NMI.
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ParserResult
+from shared.parsers import (
+    NotRelevantParser,
+    ParserError,
+    ParserOutcome,
+    ParserResult,
+    SkipReason,
+)
 
 logger = Logger(service="optima-interval-parser", child=True)
 
@@ -32,15 +40,20 @@ def _is_no_data_sentinel(raw_df: pd.DataFrame) -> bool:
     return not non_blank_values.any()
 
 
-def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> None:
+def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]:
+    """Permissively coerce a column to numeric in place.
+
+    Returns ``(unparseable_count, blank_count)``:
+
+    - ``unparseable_count`` — non-blank cells that did not coerce to numeric.
+    - ``blank_count`` — originally blank/whitespace/null cells.
+    """
     series = raw_df[column]
     parsed = pd.to_numeric(series, errors="coerce")
-    non_blank = series.notna() & series.astype(str).str.strip().ne("")
-    invalid = non_blank & parsed.isna()
-    if invalid.any():
-        bad_value = series.loc[invalid].iloc[0]
-        raise ParserError(f"Failed to parse interval {column} values: {bad_value!r}")
+    blank_mask = series.isna() | series.astype(str).str.strip().eq("")
+    unparseable_mask = (~blank_mask) & parsed.isna()
     raw_df[column] = parsed
+    return int(unparseable_mask.sum()), int(blank_mask.sum())
 
 
 def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -68,18 +81,66 @@ def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     if not value_columns:
         raise ParserError("Missing interval value column: expected Usage or Generation")
 
+    source_row_count = len(raw_df)
+    skip_reasons: Counter[SkipReason] = Counter()
+
+    # Numeric coercion: non-blank malformed → unparseable_value;
+    # we do NOT count blank_value here because a row with a blank value in one
+    # column may still be valid via another value column.
     for column in value_columns:
-        _coerce_numeric_column(raw_df, column)
+        unparseable, _blank = _coerce_numeric_column(raw_df, column)
+        if unparseable:
+            skip_reasons["unparseable_value"] += unparseable
 
-    try:
-        raw_df["Interval_Start"] = pd.to_datetime(raw_df["Date"] + " " + raw_df["Start Time"])
-    except Exception as e:
-        raise ParserError(f"Failed to parse interval timestamps: {e}") from e
+    # Timestamp coercion: drop rows whose timestamp does not parse.
+    combined_ts = raw_df["Date"].astype(str) + " " + raw_df["Start Time"].astype(str)
+    raw_df["Interval_Start"] = pd.to_datetime(combined_ts, errors="coerce")
+    bad_ts_mask = raw_df["Interval_Start"].isna()
+    bad_ts_count = int(bad_ts_mask.sum())
+    if bad_ts_count:
+        skip_reasons["unparseable_timestamp"] += bad_ts_count
+        raw_df = raw_df.loc[~bad_ts_mask].copy()
 
-    if not any(raw_df[column].notna().any() for column in value_columns):
+    # A row is a value-bearing candidate only if at least one of the value
+    # columns has a usable numeric. Rows where all value columns are blank
+    # (or all non-blank but unparseable) get filtered here; they do not
+    # contribute to candidate_row_count.
+    if value_columns:
+        any_value_mask = pd.Series(False, index=raw_df.index)
+        for column in value_columns:
+            any_value_mask = any_value_mask | raw_df[column].notna()
+        # Rows with neither timestamp parse failure nor any usable value
+        # are effectively skipped; they were originally blank-value rows
+        # (the unparseable were already counted above).
+        no_value_mask = ~any_value_mask
+        no_value_count = int(no_value_mask.sum())
+        if no_value_count:
+            skip_reasons["blank_value"] += no_value_count
+        raw_df = raw_df.loc[any_value_mask].copy()
+
+    candidate_row_count = len(raw_df)
+    rows_skipped = source_row_count - candidate_row_count
+
+    if candidate_row_count == 0:
+        if source_row_count == 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=0,
+                reason="blank_values",
+            )
+        if bad_ts_count == source_row_count:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=source_row_count,
+                rows_skipped=rows_skipped,
+                skip_reasons=skip_reasons,
+                reason="all_skipped",
+            )
         return ParserOutcome(
             status="processed_empty",
-            source_row_count=len(raw_df),
+            source_row_count=source_row_count,
+            rows_skipped=rows_skipped,
+            skip_reasons=skip_reasons,
             reason="blank_values",
         )
 
@@ -104,4 +165,11 @@ def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         output_df = output_df.set_index("t_start")
         dfs.append((f"Optima_{name}", output_df))
 
-    return ParserOutcome(status="processed", dfs=dfs, source_row_count=len(raw_df))
+    return ParserOutcome(
+        status="processed",
+        dfs=dfs,
+        source_row_count=source_row_count,
+        candidate_row_count=candidate_row_count,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
+    )

@@ -9,23 +9,32 @@ across all intervals are filtered out as invalid.
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ParserResult
+from shared.parsers import (
+    NotRelevantParser,
+    ParserOutcome,
+    ParserResult,
+    SkipReason,
+)
 
 logger = Logger(service="racv-elec-parser", child=True)
 
 
-def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> None:
+def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]:
+    """Permissively coerce ``column`` to numeric in place.
+
+    Returns ``(unparseable_count, blank_count)``.
+    """
     series = raw_df[column]
     parsed = pd.to_numeric(series, errors="coerce")
-    non_blank = series.notna() & series.astype(str).str.strip().ne("")
-    invalid = non_blank & parsed.isna()
-    if invalid.any():
-        bad_value = series.loc[invalid].iloc[0]
-        raise ParserError(f"Failed to parse RACV electricity values: {bad_value!r}")
+    blank_mask = series.isna() | series.astype(str).str.strip().eq("")
+    unparseable_mask = (~blank_mask) & parsed.isna()
     raw_df[column] = parsed
+    return int(unparseable_mask.sum()), int(blank_mask.sum())
 
 
 def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -46,15 +55,46 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     if not meter_cols:
         raise NotRelevantParser("Not a RACV electricity CSV")
 
-    try:
-        raw_df["Interval_Start"] = pd.to_datetime(raw_df["Date"] + " " + raw_df["Start Time"])
-    except Exception as e:
-        raise ParserError(f"Failed to parse RACV electricity timestamps: {e}") from e
+    source_row_count = len(raw_df)
+    skip_reasons: Counter[SkipReason] = Counter()
+
+    # Timestamp coercion: rows whose timestamp does not parse are dropped
+    # entirely (one bad timestamp invalidates the row across all meter
+    # columns in this wide format).
+    combined_ts = raw_df["Date"].astype(str) + " " + raw_df["Start Time"].astype(str)
+    raw_df["Interval_Start"] = pd.to_datetime(combined_ts, errors="coerce")
+    bad_ts_mask = raw_df["Interval_Start"].isna()
+    bad_ts_count = int(bad_ts_mask.sum())
+    if bad_ts_count:
+        skip_reasons["unparseable_timestamp"] += bad_ts_count
+        raw_df = raw_df.loc[~bad_ts_mask].copy()
+
+    if raw_df.empty:
+        rows_skipped = source_row_count
+        if bad_ts_count == source_row_count and source_row_count > 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=source_row_count,
+                rows_skipped=rows_skipped,
+                skip_reasons=skip_reasons,
+                reason="all_skipped",
+            )
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=source_row_count,
+            reason="all_zero_valid",
+        )
 
     dfs: ParserResult = []
     for mn in meter_cols:
         buf_df = raw_df[["Interval_Start", mn]].rename(columns={"Interval_Start": "t_start", mn: "E1_kWh"})
-        _coerce_numeric_column(buf_df, "E1_kWh")
+        # Permissive coerce: unparseable non-blank cells become NaN and are
+        # counted as ``unparseable_value``. Blank cells (whitespace/NA) are
+        # part of the wide-format contract (sparse meters) and are not
+        # counted as skipped.
+        unparseable, _blank = _coerce_numeric_column(buf_df, "E1_kWh")
+        if unparseable:
+            skip_reasons["unparseable_value"] += unparseable
         buf_df = buf_df.set_index("t_start")
 
         # Daily aggregation to filter out invalid days
@@ -65,6 +105,22 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         if not non_zero_dates.empty:
             dfs.append((f"Optima_{mn.split(' ')[0]}", buf_df))
 
+    candidate_row_count = len(raw_df)
+    rows_skipped = source_row_count - candidate_row_count
+
     if dfs:
-        return ParserOutcome(status="processed", dfs=dfs, source_row_count=len(raw_df))
-    return ParserOutcome(status="processed_empty", source_row_count=len(raw_df), reason="all_zero_valid")
+        return ParserOutcome(
+            status="processed",
+            dfs=dfs,
+            source_row_count=source_row_count,
+            candidate_row_count=candidate_row_count,
+            rows_skipped=rows_skipped,
+            skip_reasons=skip_reasons,
+        )
+    return ParserOutcome(
+        status="processed_empty",
+        source_row_count=source_row_count,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
+        reason="all_zero_valid",
+    )
