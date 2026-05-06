@@ -387,6 +387,8 @@ status="unmapped"           → rows_written = 0, candidate_row_count > 0,
                               unmapped_count = candidate_row_count
 status="processed_external" → rows_written = 0, dfs = []
 rows_skipped <= sum(skip_reasons.values())  (cell-level skip counts can exceed row count when a row has multiple value columns)
+
+Invariants apply to the **final outcome** (post-`file_processor` recomputation for DataFrame parsers, or directly for side-effect parsers). Intermediate raw `ParserOutcome` returned by DataFrame parsers is advisory — its `status="processed"` with `rows_written=0` is normal because `rows_written` is computed downstream by `_compute_dataframe_final_status`. The test-only invariant helper must be applied to final outcomes only.
 ```
 
 ## Dispatcher Design
