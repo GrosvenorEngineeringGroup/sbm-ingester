@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -912,6 +913,42 @@ class TestParserOutcomeDisposition:
         assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
 
     @mock_aws
+    def test_partial_flush_validation_error_cleans_hudi_output(self) -> None:
+        class DelayedBadValue:
+            def __float__(self) -> float:
+                time.sleep(0.1)
+                raise ValueError("not-number")
+
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+                "B1_kWh": [DelayedBadValue()],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1", "NMI1-B1": "p:test:b1"})
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app.BATCH_SIZE", 1),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFilesStaging/") == []
+
+    @mock_aws
     def test_dataframe_upload_failure_moves_to_new_parse_err(self) -> None:
         df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": [1.0]})
         s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
@@ -933,6 +970,7 @@ class TestParserOutcomeDisposition:
         assert result == 1
         assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
         assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
 
     @mock_aws
     @pytest.mark.parametrize("error_cls", [ParserError, ProcessingError])

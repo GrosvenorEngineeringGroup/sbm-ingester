@@ -7,7 +7,7 @@ import tempfile
 import time
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
@@ -143,6 +143,13 @@ class DataFrameCandidate:
     ts: Any
     val: float
     quality: str
+
+
+@dataclass(frozen=True)
+class CSVUploadJob:
+    future: Future[None]
+    staging_key: str
+    final_key: str
 
 
 def _processed_destination_for_status(status: str) -> str:
@@ -392,10 +399,12 @@ class DirectCSVWriter:
     def __init__(self, batch_timestamp: str, executor: ThreadPoolExecutor) -> None:
         self.batch_timestamp = batch_timestamp
         self.executor = executor
+        self.writer_token = uuid.uuid4().hex
         self.buffer = io.StringIO()
         self.buffer.write(self.CSV_HEADER)
         self.row_count = 0
-        self.futures: list = []
+        self.upload_jobs: list[CSVUploadJob] = []
+        self.committed_final_keys: list[str] = []
 
     def write_row(self, sensor_id: str, ts: Any, val: float, unit: str, quality: str = "") -> None:
         """Write a single row to the buffer."""
@@ -405,18 +414,20 @@ class DirectCSVWriter:
         self.row_count += 1
 
     def flush(self) -> None:
-        """Upload current buffer to S3 asynchronously."""
+        """Upload current buffer to staging asynchronously."""
         if self.row_count == 0:
             return
 
         csv_content = self.buffer.getvalue()
-        output_key = f"sensorDataFiles/batch_{self.batch_timestamp}_{random.randint(1, 1000000)}.csv"
+        batch_file_name = f"batch_{self.batch_timestamp}_{random.randint(1, 1000000)}.csv"
+        staging_key = f"sensorDataFilesStaging/{self.writer_token}/{batch_file_name}"
+        final_key = f"sensorDataFiles/{batch_file_name}"
 
         # Submit upload task to thread pool
-        future = self.executor.submit(_upload_csv_to_s3, csv_content, output_key)
-        self.futures.append(future)
+        future = self.executor.submit(_upload_csv_to_s3, csv_content, staging_key)
+        self.upload_jobs.append(CSVUploadJob(future=future, staging_key=staging_key, final_key=final_key))
 
-        logger.debug("Submitted CSV upload", extra={"output_key": output_key, "rows": self.row_count})
+        logger.debug("Submitted CSV upload", extra={"output_key": staging_key, "rows": self.row_count})
 
         # Reset buffer for next batch
         self.buffer = io.StringIO()
@@ -424,12 +435,51 @@ class DirectCSVWriter:
         self.row_count = 0
 
     def wait_for_uploads(self) -> None:
-        """Wait for all pending S3 uploads to complete."""
-        try:
-            for future in self.futures:
-                future.result()  # Raises exception if upload failed
-        finally:
-            self.futures.clear()
+        """Wait for uploads and publish staged objects."""
+        self.commit()
+
+    def commit(self) -> None:
+        """Publish staged uploads to final Hudi keys."""
+        jobs = list(self.upload_jobs)
+        for job in jobs:
+            job.future.result()
+
+        for job in jobs:
+            s3_resource.Object("hudibucketsrc", job.final_key).copy({"Bucket": "hudibucketsrc", "Key": job.staging_key})
+            self.committed_final_keys.append(job.final_key)
+            s3_resource.Object("hudibucketsrc", job.staging_key).delete()
+            logger.debug(
+                "Committed staged CSV upload",
+                extra={"staging_key": job.staging_key, "final_key": job.final_key},
+            )
+
+        self.upload_jobs.clear()
+
+    def abort(self) -> None:
+        """Observe pending uploads and delete writer-owned staged/final objects."""
+        jobs = list(self.upload_jobs)
+        for job in jobs:
+            try:
+                job.future.result()
+            except Exception as e:
+                logger.warning(
+                    "Staged CSV upload failed during abort",
+                    extra={"staging_key": job.staging_key, "final_key": job.final_key, "error": str(e)},
+                )
+
+        keys_to_delete = [job.staging_key for job in jobs] + [job.final_key for job in jobs] + self.committed_final_keys
+        seen_keys: set[str] = set()
+        for key in keys_to_delete:
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            try:
+                s3_resource.Object("hudibucketsrc", key).delete()
+            except Exception as e:
+                logger.warning("Failed to delete staged CSV object", extra={"key": key, "error": str(e)})
+
+        self.upload_jobs.clear()
+        self.committed_final_keys.clear()
 
 
 @idempotent_function(persistence_store=persistence_layer, config=idempotency_config, data_keyword_argument="tbp_files")
@@ -560,9 +610,9 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                                 if csv_writer.row_count >= BATCH_SIZE:
                                     csv_writer.flush()
 
-                    # Flush and wait before moving the source file.
+                    # Flush and publish only after all validation for this source file succeeds.
                     csv_writer.flush()
-                    csv_writer.wait_for_uploads()
+                    csv_writer.commit()
 
                     processed_monitor_points_count += mapped_monitor_points_count
                     total_monitor_points_count += mapped_monitor_points_count
@@ -582,6 +632,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
 
             except Exception as e:
                 # Handle errors during streaming iteration or per-file uploads
+                csv_writer.abort()
                 logger.error(
                     "Error processing NMI data",
                     exc_info=True,
