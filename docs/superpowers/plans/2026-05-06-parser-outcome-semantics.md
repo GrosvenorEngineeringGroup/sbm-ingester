@@ -2095,3 +2095,190 @@ If no edits were needed, do not create an empty commit.
 - Type consistency:
   - `ParserOutcome.status`, `source_row_count`, `candidate_row_count`, `rows_written`, `unmapped_count`, and `reason` match the design spec.
   - Exception names match the spec: `NotRelevantParser`, `ParserError`, `ProcessingError`.
+
+---
+
+## Follow-up Tasks (post-implementation review)
+
+The following tasks emerged from the post-implementation contract review and 2026-05-06 production-data audit. They refine the contract toward Bronze+Silver-combined semantics: row-level filtering becomes permissive (skip-and-count, never reject), structural failures remain strict (`ParserError`), and observability is upgraded with closed enums, namespaced identifiers, sidecar audit logs, and new metrics.
+
+These tasks are **independently deployable** and **additive**: each preserves Hudi-row equivalence for files currently producing data on `origin/main`. The dispatcher narrowing committed in Task 7 stays; the row-level strict raises introduced in Tasks 3–5 are reverted to coerce-and-skip.
+
+### Task 10: Restore permissive row-level coercion in DataFrame parsers
+
+**Goal:** Revert row-level `ParserError` raises in DataFrame parsers to legacy `errors="coerce"` semantics. A matched file with one bad numeric cell must produce N-1 Hudi rows + `newP/`, not 0 rows + `newParseErr/`.
+
+**Files:**
+- Modify: `src/shared/parsers/optima/interval.py`
+- Modify: `src/shared/parsers/envizi/vertical_electricity.py`
+- Modify: `src/shared/parsers/envizi/vertical_water.py`
+- Modify: `src/shared/parsers/envizi/vertical_water_bulk.py`
+- Modify: `src/shared/parsers/racv/elec.py`
+- Modify: `src/shared/parsers/racv/noosa_solar.py` (preserve the existing vendor status string mapping; only revert the raw-numeric raise)
+- Modify: `src/shared/parsers/green_square/comx.py`
+- Modify: corresponding tests under `tests/unit/parsers/`
+
+**Steps:**
+- [ ] Replace each `pd.to_numeric(errors="raise")` with `pd.to_numeric(errors="coerce")` for value columns.
+- [ ] Remove the wrapper that converts coerce failures into `ParserError`.
+- [ ] Add return path that records `rows_skipped` and `skip_reasons["unparseable_value"]` per coerced-to-NaN cell originally non-empty.
+- [ ] Update tests that asserted `ParserError` on bad cells to assert: file processes, the bad row is skipped, `skip_reasons["unparseable_value"]` reflects the count.
+- [ ] Add tests confirming a file with 99 valid rows + 1 malformed cell yields 99 Hudi rows + `processed`.
+- [ ] Run `uv run pytest tests/unit/parsers -q`; expected pass.
+
+### Task 11: Restore permissive row handling in side-effect parsers
+
+**Goal:** Revert `invalid_count > 0` and `_validate_row_shape` strict raises in `demand_parser` and `bunnings_billing_parser`.
+
+**Files:**
+- Modify: `src/shared/parsers/optima/demand.py`
+- Modify: `src/shared/parsers/optima/bunnings_billing.py`
+- Modify: `tests/unit/parsers/optima/test_demand.py`
+- Modify: `tests/unit/parsers/optima/test_bunnings_billing.py`
+
+**Steps:**
+- [ ] Delete the `if build.invalid_count > 0: raise ParserError(...)` blocks. Replace with `rows_skipped += build.invalid_count`.
+- [ ] Refactor `_validate_row_shape` so it returns `None` (skip the row + count) for tolerable shape mismatches instead of raising. Reserve `ParserError` for required-field-missing.
+- [ ] Add a `skip_reasons: Counter[SkipReason]` aggregation to the side-effect builder.
+- [ ] Update tests: existing tests that asserted `ParserError` on a malformed row become "row skipped, others written, file → newP/".
+- [ ] Add tests asserting that a file with one trailing-comma row writes the other rows.
+
+### Task 12: Add `unmapped_identifiers`, `unsupported_suffixes`, `rows_skipped`, `skip_reasons` fields
+
+**Goal:** Add the four new observability fields to `ParserOutcome`. Populate them in file_processor (DataFrame path) and in side-effect parsers.
+
+**Files:**
+- Modify: `src/shared/parsers/outcome.py`
+- Modify: `src/functions/file_processor/app.py`
+- Modify: `src/shared/parsers/optima/demand.py`
+- Modify: `src/shared/parsers/optima/bunnings_billing.py`
+- Modify: `tests/unit/parsers/test_outcome.py`
+- Modify: `tests/unit/test_edge_cases.py`
+
+**Steps:**
+- [ ] Add `unmapped_identifiers: tuple[tuple[str, str], ...] = ()`, `unsupported_suffixes: frozenset[str] = field(default_factory=frozenset)`, `rows_skipped: int = 0`, `skip_reasons: Counter[SkipReason] = field(default_factory=Counter)` to `ParserOutcome`.
+- [ ] Add `SkipReason = Literal[...]` to `outcome.py`.
+- [ ] In `_candidate_values`, capture which (kind, value) pair failed mapping and accumulate into a list passed up to the outcome.
+- [ ] In file_processor's DataFrame path, when a column suffix is unrecognized, accumulate into `unsupported_suffixes` rather than silent `continue`.
+- [ ] In demand and bunnings_billing parsers, populate `unmapped_identifiers` with `("nmi", monitor_key)` for each unmapped key.
+- [ ] In file_processor's NEM12 path, populate `unmapped_identifiers` with `("nem12_nmi", nmi)` for each unmapped NMI.
+- [ ] In Noosa Solar, populate with `("p_id", p_id_string)` for malformed/unmapped p: IDs.
+- [ ] In Envizi/ComX, populate with the kind documented in the spec's table.
+- [ ] Cap `unmapped_identifiers` at 100 entries per outcome (deduplicated).
+- [ ] Tests assert specific contents of `unmapped_identifiers` and `unsupported_suffixes`, not just non-emptiness.
+- [ ] Cross-field invariant tests (per spec).
+
+### Task 13: NEM12 empty-payload special case in file_processor
+
+**Goal:** Detect NEM12 files with only `100`/`900` records and emit `processed_empty(reason="no_data_sentinel")` directly, without falling through to non-NEM dispatcher.
+
+**Files:**
+- Modify: `src/functions/file_processor/app.py`
+- Modify: `tests/unit/test_edge_cases.py`
+
+**Steps:**
+- [ ] Add helper `_looks_like_nem12(file_path)` that reads first ~50 bytes and matches `100,NEM12,` prefix (BOM-stripped).
+- [ ] In NEM12 path, when `next(stream, None) is None` AND `_looks_like_nem12(...)`, emit `ParserOutcome(status="processed_empty", reason="no_data_sentinel", source_row_count=0)` instead of raising and falling through.
+- [ ] Add fixture `nem12_empty_100_900_only.csv` with content `100,NEM12,202605060200,MDP1,Origin\n900\n`.
+- [ ] Test: file produces `processed_empty`, source moves to `newP/`, no Hudi rows written, no fallback to non-NEM dispatcher invoked (assert via `patch` on `get_non_nem_outcome`).
+- [ ] Test that nemreader genuine parse errors (e.g., malformed `200` record in a non-empty file) still propagate as before.
+
+### Task 14: BOM-aware cheap relevance gates
+
+**Goal:** Cheap relevance gates handle UTF-8 BOM transparently. Files with BOM (R1746-style, Noosa Solar) must not bypass parsers due to BOM mismatch.
+
+**Files:**
+- Modify: every parser that uses `open(file).readline()` or similar in its relevance gate
+- Modify: `src/shared/parsers/optima/interval.py`
+- Modify: `src/shared/parsers/envizi/vertical_electricity.py`, `vertical_water.py`, `vertical_water_bulk.py`
+- Modify: `src/shared/parsers/racv/elec.py`, `noosa_solar.py`
+- Modify: `src/shared/parsers/green_square/comx.py`
+- Modify: tests with fixtures that include BOM-prefixed content
+
+**Steps:**
+- [ ] Replace `open(file)` in relevance gates with `open(file, encoding="utf-8-sig")`.
+- [ ] For multi-section sniff (ComX), read up to 6 initial lines for header check rather than just one.
+- [ ] Add fixtures with UTF-8 BOM content for at least one parser test (Noosa already exercises this).
+- [ ] Test: a BOM-prefixed file matching the parser's signature still passes the relevance gate.
+- [ ] Test: a BOM-prefixed file with mismatched header content correctly raises `NotRelevantParser`.
+
+### Task 15: Sidecar audit log + new metrics
+
+**Goal:** Emit `s3://hudibucketsrc/audit/<batch_ts>/<source>.skipped.json` for any file with `rows_skipped > 0` or `unmapped_count > 0`. Cap at 100 samples per file. Emit `PartialMappedRatio`, `RowsSkippedRatio`, `MalformedValueCount`, `UnsupportedSuffixesFound` metrics.
+
+**Files:**
+- Modify: `src/functions/file_processor/app.py`
+- Possibly create: `src/shared/audit.py`
+- Modify: `tests/unit/test_edge_cases.py`
+
+**Steps:**
+- [ ] Add `write_audit_sidecar(s3_client, batch_ts, source_filename, outcome, skip_samples)` helper that writes the JSON schema documented in the spec.
+- [ ] In file_processor's per-file finalization, when `rows_skipped > 0` or `unmapped_count > 0`, call `write_audit_sidecar`.
+- [ ] Sample collection: track up to 100 sample tuples (`row_idx`, `column`, `value`, `reason`) during DataFrame consumption; pass to sidecar writer.
+- [ ] Add `metrics.add_metric("PartialMappedRatio", ...)`, `RowsSkippedRatio`, `MalformedValueCount`, `UnsupportedSuffixesFound` calls.
+- [ ] Tests assert the sidecar key exists with correct content; cap is enforced at 100; metrics calls happen with right values.
+
+### Task 16: Tighten `ParserError` vs `ProcessingError` boundary
+
+**Goal:** Align with refined spec: `ParserError` is reserved for file-level structural failures; `ProcessingError` is reserved for write/IO failures. Row-level data quality issues raise neither — they skip-and-count.
+
+**Files:**
+- Modify: `src/functions/file_processor/app.py` (the `_candidate_values` function)
+- Audit all `raise ParserError` and `raise ProcessingError` sites
+
+**Steps:**
+- [ ] In `_candidate_values`, change "malformed timestamp" / "non-numeric value" raises to skip-and-count (record in `rows_skipped` and `skip_reasons`). Do not raise.
+- [ ] Audit all `raise ParserError` sites: any that fire on a single row issue must be reverted. Acceptable `ParserError` causes are file-unreadable, schema-column-missing, entire-column-unparseable.
+- [ ] Audit all `raise ProcessingError` sites: must be on write/upload failure paths only.
+- [ ] Update tests that asserted `ParserError` on row-level issues; replace with skip-and-count assertions.
+
+### Task 17: NEM12 path exception narrowing (already in Task 7 — verify)
+
+**Goal:** Confirm Task 7's narrowing of NEM12 fallback to specific exceptions still applies under the refined contract. No code change expected unless audit reveals leak.
+
+**Files:**
+- Audit: `src/functions/file_processor/app.py`
+
+**Steps:**
+- [ ] Read the current `try/except` blocks around `stream_as_data_frames` and `output_as_data_frames`.
+- [ ] Confirm the catch is narrowed to `ValueError` and known nemreader exceptions, not bare `Exception`.
+- [ ] If still using bare `Exception`, narrow it.
+- [ ] Add a regression test: a NEM12 file that triggers a synthetic `RuntimeError` from a mocked parser raises `ParserError` and does NOT fall through to non-NEM dispatcher.
+
+### Task 18: Vendor inventory documentation
+
+**Goal:** Codify the vendor → parser table from the spec into a per-parser reference. Document the unhandled R1746/R1748 case.
+
+**Files:**
+- Modify: `sbm-ingester/CLAUDE.md` or similar repo-level doc
+
+**Steps:**
+- [ ] Add a "Vendor file formats" section listing the 10 parsers, their filename pattern, identifier source, encoding, dispatcher order.
+- [ ] Document R1746/R1748 as unhandled (current state) with reference to spec's Open Decisions.
+- [ ] No code change.
+
+### Task 19: Full verification under refined contract
+
+**Goal:** End-to-end verification after Tasks 10–18 land.
+
+**Files:**
+- No new source edits unless verification exposes a failure.
+
+**Steps:**
+- [ ] `uv run ruff format .`
+- [ ] `uv run ruff check .`
+- [ ] `uv run pytest -q` — all pass.
+- [ ] Re-run the contract review prompt against the refined spec + code; expected verdict `READY_TO_PROCEED`.
+- [ ] Generate a behaviour-shift summary: list every test that changed assertion direction (strict → permissive) so reviewers can confirm the shift was intentional.
+
+---
+
+## Constraints (apply to all follow-up tasks)
+
+- Do NOT add new parsers (R1746/R1748 stays unhandled).
+- Do NOT modify the Hudi schema.
+- Do NOT write pipeline-level markers into the `quality` column.
+- Do NOT introduce env flags. The contract has one mode.
+- Each follow-up task must preserve Hudi-row equivalence for files currently producing data on `origin/main`. Test assertions that go from "ParserError" to "rows skipped + Hudi rows written" are the canonical behaviour shift.
+- Code and code comments in English.
+- Commit messages follow the existing convention (no `Co-Authored-By` trailer, no scope in parentheses).
