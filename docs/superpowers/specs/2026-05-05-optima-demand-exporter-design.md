@@ -199,9 +199,9 @@ Promoting this to `optima_shared/` is a follow-up cleanup task — keeping a cop
                 S3 ObjectCreated event on newTBP/optima_*_demand_profile_NMI#*.csv
                 → SQS sbm-files-ingester-queue
                 → sbm-files-ingester Lambda
-                → shared.non_nem_parsers.get_non_nem_df(...)  picks demand_parser via filename gate
+                → shared.non_nem_parsers.get_non_nem_outcome(...)  picks demand_parser via filename gate
                 → demand_parser writes Hudi rows to s3://hudibucketsrc/sensorDataFiles/
-                → file moves to newIrrevFiles/ (parser returns []; expected — parser writes Hudi directly)
+                → file_processor moves the source by ParserOutcome.status
                 → existing Glue job picks up Hudi CSV
 ```
 

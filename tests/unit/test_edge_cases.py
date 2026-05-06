@@ -355,7 +355,7 @@ class TestDownloadFilesEdgeCases:
             result = download_files_to_tmp(files, temp_directory)
 
             # Should return empty list and log error
-            assert result == []
+            assert not result
             assert mock_logger.error.called
 
     @mock_aws

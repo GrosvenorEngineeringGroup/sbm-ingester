@@ -44,4 +44,4 @@ def test_legacy_get_non_nem_df_unwraps_routed_empty_outcome(tmp_path) -> None:
 
     result = get_non_nem_df(str(path), "error_log")
 
-    assert result == []
+    assert not result

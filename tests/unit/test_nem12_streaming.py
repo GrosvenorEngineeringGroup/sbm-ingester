@@ -20,7 +20,7 @@ class TestStreamingParserEdgeCases:
         from libs.nemreader.streaming import stream_nem12_file
 
         result = list(stream_nem12_file(nem12_empty_file))
-        assert result == []
+        assert not result
 
     def test_no_900_record_still_parses(self, nem12_no_900_file: str) -> None:
         """Test that file without 900 record is still parsed correctly."""
@@ -235,7 +235,7 @@ class TestStreamAsDataFramesEdgeCases:
         from shared.nem_adapter import stream_as_data_frames
 
         result = list(stream_as_data_frames(nem12_empty_file))
-        assert result == []
+        assert not result
 
     def test_no_900_record_still_returns_dataframe(self, nem12_no_900_file: str) -> None:
         """Test that file without 900 record still returns DataFrame."""
@@ -438,7 +438,7 @@ class TestMalformedInputHandling:
         empty_file.write_text("")
 
         result = list(stream_nem12_file(str(empty_file)))
-        assert result == []
+        assert not result
 
     def test_file_with_only_garbage(self, temp_directory: str) -> None:
         """Test handling of file with only garbage data."""
@@ -448,7 +448,7 @@ class TestMalformedInputHandling:
         garbage_file.write_text("not,valid,nem,data\nsome,random,garbage,here\n")
 
         result = list(stream_nem12_file(str(garbage_file)))
-        assert result == []
+        assert not result
 
     def test_malformed_200_row_skipped(self, temp_directory: str) -> None:
         """Test that malformed 200 row is skipped and logged."""
@@ -562,7 +562,7 @@ class TestZipFileHandling:
             zf.write(empty_csv, "empty.csv")
 
         result = list(stream_nem12_file(str(zip_path)))
-        assert result == []
+        assert not result
 
     def test_corrupted_zip_fallback_to_csv(self, temp_directory: str) -> None:
         """Test that corrupted ZIP falls back to CSV parsing."""

@@ -331,13 +331,13 @@ Add an early return when BidEnergy returns the "No data is available" sentinel C
 # BidEnergy returns a 148-byte sentinel CSV when a site has no data for the
 # requested range. Pandas reads "No data is available" as a single row with
 # NaN-typed Date/Start Time columns, which would crash the str+str datetime
-# concat below with UFuncTypeError. Detect and short-circuit to [].
+# concat below with UFuncTypeError. Detect and short-circuit to ParserOutcome.
 if len(raw_df) == 1 and raw_df["Date"].isna().all():
     logger.info("interval_no_data_sentinel", extra={"file": file_name})
-    return []
+    return ParserOutcome(status="processed_empty", source_row_count=1, reason="no_data_sentinel")
 ```
 
-The `[]` return signals to `file_processor` that no Hudi rows should be written; the source file is then routed to `newIrrevFiles/` (matching the convention used elsewhere for files that parse cleanly but contain no usable data).
+The `ParserOutcome` return signals to `file_processor` that no Hudi rows should be written; file disposition is then based on `ParserOutcome.status`.
 
 No other parser logic changes. Tests confirm pandas auto-inference handles `DD MMM YYYY` correctly across all 12 months, so no `format=` argument is needed.
 
@@ -392,10 +392,10 @@ class TestIntervalParserOnRealFixtures:
 
     def test_empty_data_sentinel_returns_empty_list(self) -> None:
         """Regression: BidEnergy returns 148-byte 'No data is available' CSV when
-        site has no data; parser must return [] (not raise UFuncTypeError)."""
+        site has no data; parser must return `ParserOutcome` (not raise UFuncTypeError)."""
         path = str(FIXTURE_DIR / "interval_empty.csv")
         result = interval_parser(path, "error_log")
-        assert result == []
+        assert result.status == "processed_empty"
 ```
 
 These 4 tests replace the synthetic multi-month regression test from the previous spec revision. Real fixtures catch the full set of byte-level quirks (CRLF, quoting, ICP vs NMI) that synthetic data would miss.

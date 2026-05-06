@@ -184,7 +184,7 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserResult:
       - Power Factor → sensor Optima_<NMI>-demand-pf,  unit ""  (dimensionless)
 
     Like bunnings_billing_parser, this writes directly to
-    s3://hudibucketsrc/sensorDataFiles/ and returns [] to the dispatcher;
+    s3://hudibucketsrc/sensorDataFiles/ and returns `ParserOutcome` to the dispatcher;
     the file_processor's channel-suffix gate would otherwise drop
     non-NEM12 column names like "kw"/"kva"/"pf".
     """
@@ -231,7 +231,8 @@ def _parse_demand_rows(file_path: str) -> list[dict[str, str]]:
       Row 9: column header
       Row 10+: data    OR a single "No data found" sentinel line
 
-    Returns [] if the file is the empty-data sentinel form.
+    Returns parsed rows and sentinel metadata; the public parser returns
+    `ParserOutcome` for empty-data sentinel files.
     """
     with open(file_path, encoding="utf-8") as f:
         lines = f.read().splitlines()
@@ -241,14 +242,14 @@ def _parse_demand_rows(file_path: str) -> list[dict[str, str]]:
     # requested date range. Verified against NZ Bunnings sites that have
     # meter records but no electricity time series.
     if any("No data found" in line for line in lines):
-        return []
+        return DemandParseResult(rows=[], no_data_sentinel=True)
 
     data_section = "\n".join(lines[8:])  # row 9 onward (0-indexed 8)
     reader = csv.DictReader(io.StringIO(data_section))
     return [row for row in reader if row.get("Identifier")]
 ```
 
-The parser's main body then short-circuits: if `_parse_demand_rows` returns `[]`, log `demand_no_data` and return `[]` without writing S3.
+The parser's main body then short-circuits: if `_parse_demand_rows` returns no candidate rows, log `demand_no_data` and return `ParserOutcome` without writing S3.
 
 ### Per-row processing
 
@@ -287,7 +288,7 @@ for csv_col, suffix, unit in CSV_FIELD_MAPPING:
 ```python
 if rows_written == 0:
     logger.info("demand_no_rows_written", extra={"file": file_name, "unmapped": unmapped_count})
-    return []   # don't write a header-only file (matches billing parser's behaviour)
+    return ParserOutcome(status="unmapped", candidate_row_count=unmapped_count, unmapped_count=unmapped_count)
 
 ts_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
 key = f"sensorDataFiles/demand_export_{ts_key}.csv"
@@ -297,7 +298,7 @@ boto3.client("s3").put_object(
     Body=buf.getvalue().encode(),
 )
 logger.info("demand_written", extra={"key": key, "rows": rows_written, "unmapped": unmapped_count})
-return []
+return ParserOutcome(status="processed", rows_written=rows_written, unmapped_count=unmapped_count)
 ```
 
 ### Helper sharing: `_get_optima_mappings`

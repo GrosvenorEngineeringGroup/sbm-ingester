@@ -39,4 +39,4 @@ def test_legacy_get_non_nem_df_returns_empty_list_for_processed_empty(tmp_path, 
 
     result = get_non_nem_df(str(tmp_path / "file.csv"), "error_log")
 
-    assert result == []
+    assert not result

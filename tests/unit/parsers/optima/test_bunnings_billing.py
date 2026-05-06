@@ -593,23 +593,30 @@ def test_s3_write_target_is_hudibucketsrc(_reset_mappings_cache, tmp_path) -> No
 
 @mock_aws
 def test_dispatcher_routes_bunnings_file(_reset_mappings_cache, tmp_path) -> None:
-    """End-to-end: get_non_nem_df should route a Bunnings billing file to
-    bunnings_billing_parser and return []."""
-    from shared.non_nem_parsers import get_non_nem_df
+    """End-to-end: get_non_nem_outcome should route a Bunnings billing file."""
+    from shared.non_nem_parsers import get_non_nem_outcome
 
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
-    _setup_s3_with_mappings(mappings)
+    s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
 
-    result = get_non_nem_df(str(src), "dummy")
-    assert result == []
+    result = get_non_nem_outcome(str(src), "dummy")
+
+    assert result.status == "processed"
+    assert result.source_row_count == 1
+    assert result.candidate_row_count == 1
+    assert result.rows_written == 1
+    assert result.unmapped_count == 0
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    keys = [o["Key"] for o in listed.get("Contents", [])]
+    assert len(keys) == 1
 
 
 @mock_aws
 def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache, tmp_path) -> None:
     """Regression guard: RACV files must still hit optima_usage_and_spend_to_s3,
     not the new Bunnings parser."""
-    from shared.non_nem_parsers import get_non_nem_df
+    from shared.non_nem_parsers import get_non_nem_outcome
 
     s3 = boto3.client("s3", region_name="ap-southeast-2")
     s3.create_bucket(
@@ -619,8 +626,9 @@ def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache,
     dst = tmp_path / "20260414.024550-RACV-Usage and Spend Report.csv"
     dst.write_bytes(b"dummy content")
 
-    result = get_non_nem_df(str(dst), "dummy")
-    assert result == []
+    result = get_non_nem_outcome(str(dst), "dummy")
+    assert result.status == "processed_external"
+    assert result.reason == "gegoptimareports"
 
     # RACV parser copies to gegoptimareports — verify we hit it, not ours
     obj = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")

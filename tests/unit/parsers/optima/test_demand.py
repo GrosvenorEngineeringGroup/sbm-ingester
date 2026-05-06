@@ -19,7 +19,7 @@ class TestFilenameGate:
         # The user's manual download is named "Bunnings demand profile.csv"
         # (lowercase). Must accept this casing — i.e., the filename gate
         # MUST NOT raise. (The parser may still raise downstream because
-        # the stub returns [] without reading content, but specifically
+        # the parser returns ParserOutcome without reading content, but specifically
         # the filename-gate-mismatch exception must not fire.)
         monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
 
@@ -408,7 +408,7 @@ class TestMappingLookupAndHudiWrite:
 
 class TestDispatcherIntegration:
     def test_dispatcher_routes_demand_file(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
-        from shared.non_nem_parsers import get_non_nem_df
+        from shared.non_nem_parsers import get_non_nem_outcome
 
         fake_mappings = {
             "Optima_4001260599-demand-kw": "p:bunnings:kw",
@@ -420,10 +420,11 @@ class TestDispatcherIntegration:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv()
-            result = get_non_nem_df(str(path), "/tmp/err.log")
+            result = get_non_nem_outcome(str(path), "/tmp/err.log")
 
-        # Demand parser returns [], so the dispatcher returns [] too
-        assert result == []
-        # And the parser actually fired (not just dispatcher's no-parser-found path):
-        # the boto3 mock was called means demand_parser ran.
+        assert result.status == "processed"
+        assert result.source_row_count == 3
+        assert result.candidate_row_count == 9
+        assert result.rows_written == 9
+        assert result.unmapped_count == 0
         assert mock_client.called
