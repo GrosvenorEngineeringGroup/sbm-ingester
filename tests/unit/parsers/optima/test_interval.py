@@ -10,6 +10,25 @@ from conftest import create_optima_csv
 class TestIntervalParser:
     """Tests for interval_parser function."""
 
+    def test_returns_empty_list_for_no_data_sentinel(self, temp_directory: str) -> None:
+        """BidEnergy returns 148-byte 'No data is available' CSV when site has no data
+        for the requested range. Parser must return [] (not raise UFuncTypeError)."""
+        from pathlib import Path
+
+        from shared.parsers.optima.interval import interval_parser
+
+        sentinel_csv = (
+            b"BuyerShortName,Country,Commodity,Identifier,IdentifierType,DistributorId,"
+            b"Date,Start Time,Usage,Generation,DemandKva,Reactive\r\n"
+            b"No data is available\r\n"
+        )
+        filepath = Path(temp_directory) / "empty.csv"
+        filepath.write_bytes(sentinel_csv)
+
+        result = interval_parser(str(filepath), "error_log")
+
+        assert result == []
+
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
         """Test that generation data is parsed correctly."""
         with patch("shared.non_nem_parsers.logger"):

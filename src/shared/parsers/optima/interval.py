@@ -21,6 +21,14 @@ logger = Logger(service="optima-interval-parser", child=True)
 
 def interval_parser(file_name: str, error_file_path: str) -> ParserResult:
     raw_df = pd.read_csv(file_name)
+    # BidEnergy returns a 148-byte sentinel CSV when a site has no data for the
+    # requested range. Pandas reads "No data is available" as a single row with
+    # NaN-typed Date/Start Time columns, which would crash the str+str datetime
+    # concat below with UFuncTypeError. Detect and short-circuit to [].
+    if len(raw_df) == 1 and raw_df["Date"].isna().all():
+        logger.info("interval_no_data_sentinel", extra={"file": file_name})
+        return []
+
     raw_df["Interval_Start"] = pd.to_datetime(raw_df["Date"] + " " + raw_df["Start Time"])
     raw_df["Identifier"] = raw_df["Identifier"].astype(str)
 
