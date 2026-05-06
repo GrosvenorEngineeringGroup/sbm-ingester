@@ -38,6 +38,16 @@ def lambda_handler(event: dict[str, Any], context: LambdaContext) -> dict[str, A
             "body": "Missing required parameter: project",
         }
 
+    logger.info(
+        "Lambda invoked",
+        extra={
+            "project": project,
+            "nmi": event.get("nmi"),
+            "start_date": event.get("startDate"),
+            "end_date": event.get("endDate"),
+        },
+    )
+
     result = process_export(
         project=project,
         nmi=event.get("nmi"),

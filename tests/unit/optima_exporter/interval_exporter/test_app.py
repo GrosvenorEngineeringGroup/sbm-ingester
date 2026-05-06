@@ -36,13 +36,56 @@ class TestLambdaHandler:
             )
             assert result == expected_result
 
+    def test_event_with_project_logs_invocation_before_export(self) -> None:
+        from interval_exporter.app import lambda_handler
+
+        call_order = []
+        context = MagicMock()
+
+        def record_log(*args: object, **kwargs: object) -> None:
+            call_order.append(("log", args, kwargs))
+
+        def record_export(**kwargs: object) -> dict[str, object]:
+            call_order.append(("export", kwargs))
+            return {"statusCode": 200, "body": {}}
+
+        with (
+            patch("interval_exporter.app.logger.info", side_effect=record_log),
+            patch("interval_exporter.app.process_export", side_effect=record_export),
+        ):
+            lambda_handler(
+                {
+                    "project": "racv",
+                    "nmi": "Optima_3117512760",
+                    "startDate": "2026-04-29",
+                    "endDate": "2026-04-29",
+                },
+                context,
+            )
+
+        assert call_order[0] == (
+            "log",
+            ("Lambda invoked",),
+            {
+                "extra": {
+                    "project": "racv",
+                    "nmi": "Optima_3117512760",
+                    "start_date": "2026-04-29",
+                    "end_date": "2026-04-29",
+                }
+            },
+        )
+        assert call_order[1][0] == "export"
+
     def test_missing_project_returns_400(self) -> None:
         from interval_exporter.app import lambda_handler
 
-        result = lambda_handler({}, MagicMock())
+        with patch("interval_exporter.app.process_export") as mock_export:
+            result = lambda_handler({}, MagicMock())
 
         assert result["statusCode"] == 400
         assert "project" in result["body"].lower()
+        mock_export.assert_not_called()
 
     def test_event_with_only_project_forwards_optional_values_as_none(self) -> None:
         from interval_exporter.app import lambda_handler
