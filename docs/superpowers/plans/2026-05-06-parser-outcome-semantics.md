@@ -2156,7 +2156,7 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
   - `tests/unit/parsers/optima/test_bunnings_billing.py` lines 440, 490, 509
 - [ ] Add tests asserting that a file with one trailing-comma row writes the other rows.
 
-### Task 12: Add `unmapped_identifiers`, `unsupported_suffixes`, `rows_skipped`, `skip_reasons` fields
+### Task 12: Add observability fields, final-status calc ladder, and idempotency synthesis
 
 **Goal:** Add the four new observability fields to `ParserOutcome`. Populate them in file_processor (DataFrame path) and in side-effect parsers.
 
@@ -2181,6 +2181,23 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - [ ] Tests assert specific contents of `unmapped_identifiers` and `unsupported_suffixes`, not just non-emptiness.
 - [ ] Cross-field invariant tests (per spec).
 
+**Additional steps for gaps G19, G20, G21:**
+
+- [ ] **G19 — Synthesize `idempotency_skip` outcome**: in file_processor where the DynamoDB idempotency layer detects a previously-processed file, construct `ParserOutcome(status="processed_empty", reason="idempotency_skip")` and route through the same logging/metric path. Move source to `newP/`. Spec lines 79, 196.
+- [ ] **G20 — Implement final-status calc ladder**: in file_processor's DataFrame path, replace the current ad-hoc post-processing with the explicit ladder from spec lines 460-471:
+  ```
+  if rows_written > 0:                                          processed
+  elif candidate_row_count > 0 and unmapped_count == candidate_row_count:
+                                                                unmapped
+  elif candidate_row_count == 0 and unsupported_suffixes:       processed_empty(reason="all_unknown_suffix")
+  elif rows_skipped > 0 and rows_written == 0 and candidate_row_count == 0:
+                                                                processed_empty(reason="all_skipped")
+  else:                                                         processed_empty (inherit reason from outcome)
+  ```
+  Add a unit test for each branch.
+- [ ] **G21 — `all_unknown_suffix` alarm**: when the calc ladder emits `processed_empty(reason="all_unknown_suffix")`, also emit `UnsupportedSuffixesFound` metric with the suffix dimension. Add `logger.warning("all suffixes unknown", extra={"unsupported_suffixes": list(...)})`.
+- [ ] Rename existing parser-emitted `reason="gegoptimareports"` to `reason="external_gegoptimareports"` in `src/shared/parsers/optima/racv_billing.py` (current code uses unprefixed form; spec line 78 expects prefixed).
+
 ### Task 13: NEM12 empty-payload special case in file_processor
 
 **Goal:** Detect NEM12 files with only `100`/`900` records and emit `processed_empty(reason="no_data_sentinel")` directly, without falling through to non-NEM dispatcher.
@@ -2190,8 +2207,8 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - Modify: `tests/unit/test_edge_cases.py`
 
 **Steps:**
-- [ ] Add helper `_looks_like_nem12(file_path)` that reads first ~50 bytes and matches `100,NEM12,` prefix (BOM-stripped).
-- [ ] In NEM12 path, when `next(stream, None) is None` AND `_looks_like_nem12(...)`, emit `ParserOutcome(status="processed_empty", reason="no_data_sentinel", source_row_count=0)` instead of raising and falling through.
+- [ ] Add helper `_looks_like_nem_envelope(file_path)` that reads first ~50 bytes (BOM-stripped via `encoding="utf-8-sig"`) and matches `100,NEM12,` OR `100,NEM13,` prefix. NEM13 is supported per repo CLAUDE.md and produces the same empty-payload pattern.
+- [ ] In NEM12 path, when `next(stream, None) is None` AND `_looks_like_nem_envelope(...)`, emit `ParserOutcome(status="processed_empty", reason="no_data_sentinel", source_row_count=0)` instead of raising and falling through.
 - [ ] Add fixture `nem12_empty_100_900_only.csv` with content `100,NEM12,202605060200,MDP1,Origin\n900\n`.
 - [ ] Test: file produces `processed_empty`, source moves to `newP/`, no Hudi rows written, no fallback to non-NEM dispatcher invoked (assert via `patch` on `get_non_nem_outcome`).
 - [ ] Test that nemreader genuine parse errors (e.g., malformed `200` record in a non-empty file) still propagate as before.
@@ -2285,31 +2302,37 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - Modify: `src/shared/parsers/optima/bunnings_billing.py` (around line 200; same)
 - Modify: `tests/unit/test_batch_s3_writes.py` and parser-specific tests that assert quality column content
 
+**Note:** racv_billing parser is **not** affected — it forwards the file binary to an external sink and does not write Hudi rows.
+
 **Steps:**
-- [ ] In `_candidate_values`, change `quality = "" if pd.isna(quality_raw) else str(quality_raw)` to pass `None` (not `""`) for missing quality.
-- [ ] In `DirectCSVWriter.write_row`, distinguish None quality from empty string. Write CSV cell as empty (no value between commas) which Hudi/Athena interprets as NULL — confirm via existing Athena query examples.
-- [ ] In demand and bunnings_billing parser write paths, replace any hard-coded `""` quality with `None` and ensure the CSV writer emits a true empty cell (not a quoted empty string).
-- [ ] Add unit tests asserting that a row with no vendor quality produces `quality IS NULL` semantics in the resulting CSV (the cell is empty, not `""`).
+- [ ] In `_candidate_values`, change `quality = "" if pd.isna(quality_raw) else str(quality_raw)` to `quality = None if pd.isna(quality_raw) else str(quality_raw)`.
+- [ ] In `DirectCSVWriter.write_row` (around `app.py:449`), change signature `quality: str = ""` to `quality: str | None = None`. When None, emit empty CSV cell (no quoted empty string).
+- [ ] In demand parser write path (around `demand.py:177`) and bunnings_billing parser write path (around `bunnings_billing.py:200`), replace any hard-coded `""` quality with `None` and ensure CSV serialisation produces a true empty cell.
+- [ ] Add unit tests asserting that a row with no vendor quality produces a CSV cell with no characters between adjacent commas (not `""` quoted), so Hudi/Athena reads it as NULL.
 - [ ] Add unit tests asserting that a row with vendor quality (e.g., `A`, `E`, `S14`) writes the value verbatim.
+- [ ] **Athena verification (one-time, post-deploy)**: run an Athena query against a sample of recently-ingested rows: `SELECT COUNT(*) FROM default.sensordata_default WHERE quality IS NULL AND ats > <recent_ts>` — must return non-zero. Run companion query `WHERE quality = ''` — must return zero. Document the queries in this task.
 
-### Task 21: Cross-field invariant assertion in ParserOutcome
+### Task 21: Test-only cross-field invariant assertions
 
-**Goal (gap G14):** Make spec invariants impossible to violate. Add `__post_init__` validation to `ParserOutcome`. This catches mistakes early during development and makes review easier.
+**Goal (gap G14):** Surface spec invariant violations during dev/CI without risk of crashing the production pipeline on a latent unmet invariant. Implemented as test-only assertions, NOT as `__post_init__` raise.
+
+**Rationale:** A `__post_init__` `raise` would mean any latent miss in any parser instantly crashes the entire ingestion lambda on first occurrence. Test-only assertions catch the same bugs during dev/CI with no production blast radius.
 
 **Files:**
-- Modify: `src/shared/parsers/outcome.py`
-- Modify: `tests/unit/parsers/test_outcome.py`
+- Create: `tests/unit/parsers/test_outcome_invariants.py` (or extend `test_outcome.py`)
+- Possibly modify: a shared test helper at `tests/conftest.py` to expose the assertion utility
 
 **Steps:**
-- [ ] Add `__post_init__` to `ParserOutcome` that asserts:
+- [ ] Create a test helper `assert_parser_outcome_invariants(outcome: ParserOutcome) -> None` that checks:
   - `status="processed"` → `rows_written >= 1`
   - `status="processed_empty"` → `rows_written == 0` and `unmapped_count == 0`
   - `status="unmapped"` → `rows_written == 0` and `candidate_row_count > 0` and `unmapped_count == candidate_row_count`
   - `status="processed_external"` → `rows_written == 0` and `dfs == []`
   - `sum(skip_reasons.values()) == rows_skipped` when `skip_reasons` is non-empty
-- [ ] Raise `ValueError` (not a domain exception — this is a developer error, not a runtime one) on invariant violation.
-- [ ] Add unit tests for each invariant: construct a violating outcome, expect `ValueError`.
-- [ ] Verify all existing parsers and file_processor calls produce outcomes that pass the invariants. If any fail, that's a real bug to fix.
+  - **Exception:** `reason="idempotency_skip"` is allowed with any combination — file_processor synthesizes it for the duplicate-skip case.
+- [ ] Hook the helper into every test that constructs or asserts a `ParserOutcome`. Easiest: a pytest fixture that wraps the outcome-producing call and applies the helper post-hoc.
+- [ ] Add tests that construct each violating outcome and assert the helper raises `AssertionError`.
+- [ ] Do NOT add `__post_init__` raise to `ParserOutcome` — keep production code unaffected.
 
 ### Task 19: Full verification under refined contract
 

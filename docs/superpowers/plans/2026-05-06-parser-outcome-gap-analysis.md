@@ -7,15 +7,16 @@
 
 ## Summary
 
-The committed code (Tasks 1–9) implements the original outcome contract, which has since been refined by the spec rewrite in commit `cb80ceb`. Tasks 10–19 in the plan describe the refinement work, but were drafted before the production-data audit and therefore miss some gaps.
+The committed code (Tasks 1–9) implements the original outcome contract, which has since been refined by the spec rewrite in commit `cb80ceb`. Tasks 10–19 in the plan describe the refinement work. After a meta-review of the gap analysis itself, four additional gaps (G18–G21) were identified and several severity classifications were corrected.
 
 This document is the authoritative inventory of what the current code violates vs the refined contract, mapped to the existing or new follow-up tasks that fix each.
 
 | Severity | Count | Examples |
 |---|---|---|
-| BLOCKER | 6 | Missing outcome fields, open enums, row-level `ParserError`, NEM12 fallthrough |
-| MAJOR | 6 | BOM unawareness, missing metrics, silent suffix skip, broad `except` |
-| MINOR | 1 | No cross-field invariant assertions |
+| BLOCKER | 8 | Missing outcome fields, open enums, row-level `ParserError`, NEM12 fallthrough, `quality=""` writes, missing final-status calc |
+| MAJOR | 4 | Missing metrics, silent suffix skip, no audit log, no namespaced identifiers |
+| MINOR | 3 | BOM (no current production impact for handled vendors), broad `except` (disposition unchanged), no cross-field invariants |
+| OK | 1 | Noosa STATUS_MAP preserved |
 
 A BLOCKER means the contract is currently violated in a way that produces wrong dispositions or loses data observability. A MAJOR means a contract requirement is not met but does not produce wrong outputs today. A MINOR is structural.
 
@@ -95,7 +96,10 @@ Each gap cites file:line at HEAD and maps to a remediation task (existing or new
 
 **Impact:** ~600 daily empty NEM12 files (BidEnergy "no data for this NMI on this date") go to `newParseErr/` instead of `newP/`. This is the #1 operational misclassification.
 
-### G7: Cheap relevance gates not BOM-aware AND do full-file parse  · MAJOR · Task 14
+### G7: Cheap relevance gates not BOM-aware AND do full-file parse  · MINOR · Task 14
+
+(Reclassified from MAJOR. Production audit found BOM only in R1746 (unhandled by design) and Noosa Solar (already correctly handles BOM via `encoding="utf-8-sig"`). For the 10 handled vendors, no production data is currently misrouted due to BOM. The "full-parse-before-gate" sub-finding remains a real defect but does not affect disposition.)
+
 
 **Spec:** Cheap gates use `encoding="utf-8-sig"` and avoid `pd.read_csv` before relevance is confirmed.
 
@@ -137,7 +141,10 @@ Each gap cites file:line at HEAD and maps to a remediation task (existing or new
 
 **Impact:** No alarm path exists for partial-data-loss escalation.
 
-### G11: Pipeline writes empty string into `quality` column  · MAJOR · NEW Task 20
+### G11: Pipeline writes empty string into `quality` column  · BLOCKER · NEW Task 20
+
+(Reclassified from MAJOR to BLOCKER. Athena/Presto do NOT coerce `""` to `NULL`. Every existing dashboard or query that filters `WHERE quality IS NULL` silently misclassifies these rows. This is a production-impacting query semantic bug, not just cosmetic.)
+
 
 **Spec line 570:** "Vendor does not provide quality → write NULL. Never write empty string `""`."
 
@@ -180,7 +187,10 @@ Each gap cites file:line at HEAD and maps to a remediation task (existing or new
 
 **This gap is NOT covered by Tasks 10–19. Add as Task 21.**
 
-### G15: NEM12 fallback uses bare `except Exception`  · MAJOR · Task 17
+### G15: NEM12 fallback uses bare `except Exception`  · MINOR · Task 17
+
+(Reclassified from MAJOR. A `RuntimeError`/`AttributeError` from nemreader's internals would silently fall through to non-NEM dispatcher, which then reports "no valid parser" → `newParseErr/`. The disposition outcome is unchanged; only the diagnostic log message differs. Operator response is identical. Task 17 should still narrow the catch for diagnosability, but no production behaviour depends on it.)
+
 
 **Spec:** Narrow to `(ValueError, NemParseError)` so genuine NEM12 parser bugs don't silently fall through.
 
@@ -208,6 +218,46 @@ Each gap cites file:line at HEAD and maps to a remediation task (existing or new
 
 **Impact:** After Tasks 10/11 land, these tests fail. They must be updated as part of the same commit (TDD-style) so each task's tests stay green.
 
+### G18: Hudi staging/final key naming divergent from spec  · MAJOR · Task 12 (or new Task 23)
+
+**Spec lines 519-524:** staging key `sensorDataFiles/.staging/<writer_token>/<batch_index>.csv`, final key `sensorDataFiles/<batch_timestamp>-<writer_token>-<batch_index>.csv`. `<batch_index>` is a deterministic counter.
+
+**Current:** [src/functions/file_processor/app.py:462-464](src/functions/file_processor/app.py:462) uses `sensorDataFilesStaging/<token>/...` (no `.staging/` subprefix) and `sensorDataFiles/batch_<ts>_<token>_<random>.csv` with `random.randint(1, 1_000_000)`.
+
+**Impact:** `random` introduces a 1-in-1M collision chance per writer's flushes. Spec's deterministic `<batch_index>` makes collisions impossible by construction.
+
+**Resolution:** Either align spec to current naming (accept the rare collision risk and document it), OR update `DirectCSVWriter` to use deterministic batch index. **Decision deferred** — no production incidents recorded; lowest priority.
+
+### G19: `idempotency_skip` synthesis path absent  · BLOCKER · Task 12 (expand)
+
+**Spec lines 79, 196:** file_processor must synthesize `processed_empty(reason="idempotency_skip")` when DynamoDB idempotency layer reports a previously-processed file.
+
+**Current:** No code references `idempotency_skip` anywhere in `src/`. The DynamoDB idempotency layer does its own routing (move source to `newP/`) without producing a `ParserOutcome`.
+
+**Impact:** The structured-log fields in the spec's "Metrics, Logging, and Sidecar Audit" section (`status`, `reason`, etc.) cannot be emitted for skipped duplicates because no outcome exists for them. Audit and metrics blind for this path.
+
+**Note:** Spec was inconsistent here. Initially `idempotency_skip` was paired with `processed`, which would violate the `processed → rows_written ≥ 1` invariant. Spec corrected to `processed_empty`.
+
+### G20: Final-status calculation block absent in file_processor (DataFrame path)  · BLOCKER · Task 12 (expand)
+
+**Spec lines 460-471:** the file_processor's DataFrame-path final-status calc must explicitly emit `processed_empty(reason="all_skipped")` when `rows_skipped > 0 and rows_written == 0 and candidate_row_count == 0`.
+
+**Current:** [src/functions/file_processor/app.py:564-680](src/functions/file_processor/app.py:564) has no calc block matching the spec's ladder. No `all_skipped` literal in code tree.
+
+**Impact:** A file where all rows fail (mixed reasons) currently leads to undefined disposition — likely a `ParserError` propagation depending on which raise fires first. Spec wants `processed_empty(reason="all_skipped")` → `newP/` + alarm.
+
+**Resolution:** Task 12's step list must include "implement the final-status calc block per spec lines 460-471" explicitly, not just add the fields.
+
+### G21: `all_unknown_suffix` reason emission path absent  · MAJOR · Task 12 (expand)
+
+**Spec lines 76, 179, 466:** when `unsupported_suffixes` is non-empty AND `candidate_row_count == 0`, file_processor emits `processed_empty(reason="all_unknown_suffix")` + alarm.
+
+**Current:** [src/functions/file_processor/app.py:611-612](src/functions/file_processor/app.py:611) silently `continue`s on unrecognized suffix. No escalation to a reason. No alarm.
+
+**Impact:** Schema drift (vendor renames a suffix, all columns become "unknown") goes silently to `processed_empty` with no reason at all, no alarm, no operator visibility. The alarm path is the only signal that schema drift has happened.
+
+**Resolution:** Task 12's step list must include "in file_processor's final-status calc, when only unknown suffixes are present, set reason='all_unknown_suffix' and emit `UnsupportedSuffixesFound` metric".
+
 ### G17: Vendor-specific value normalization preserved · OK
 
 **Spec:** Per-parser vendor string mapping is allowed (Noosa Solar's `FRONIUS_MODE_MAP`).
@@ -227,24 +277,36 @@ Each gap cites file:line at HEAD and maps to a remediation task (existing or new
 | G3 (10 parser raises) | BLOCKER | 10 + 11 | Plan covers |
 | G4 (_candidate_values raise) | BLOCKER | 16 | Plan covers |
 | G5 (side-effect strict) | BLOCKER | 11 | Plan covers |
-| G6 (NEM12 fallthrough) | BLOCKER | 13 | Plan covers |
-| G7 (BOM unawareness + full-parse-in-gate) | MAJOR | 14 | Plan covers — **expand to also restructure gates** |
+| G6 (NEM12 fallthrough) | BLOCKER | 13 | Plan covers — **also handle NEM13** |
+| G7 (BOM + full-parse-in-gate) | MINOR | 14 | Plan covers (full-parse restructure is the real value here) |
 | G8 (no skip tracking) | BLOCKER | 12 | Plan covers |
 | G9 (no audit sidecar) | MAJOR | 15 | Plan covers |
 | G10 (5 new metrics) | MAJOR | 15 | Plan covers |
-| G11 (`quality=""` writes) | MAJOR | **20 (NEW)** | Add task |
+| G11 (`quality=""` writes) | **BLOCKER** | 20 | Plan covers — **also explicit `write_row` signature change + Athena verification** |
 | G12 (silent suffix skip) | MAJOR | 12 | Plan covers |
 | G13 (no namespaced identifiers) | MAJOR | 12 | Plan covers |
-| G14 (no invariants) | MINOR | **21 (NEW)** | Add task |
-| G15 (broad `except`) | MAJOR | 17 | Plan covers (verify only — already done by Task 7?) |
-| G16 (~25 obsolete tests) | BLOCKER | 10 + 11 (embedded) | Plan covers — **enumerate explicitly** |
+| G14 (no invariants) | MINOR | 21 | Plan covers — **test-only assertions, not `__post_init__` raise** |
+| G15 (broad `except`) | MINOR | 17 | Plan covers (diagnostics only) |
+| G16 (~25 obsolete tests) | BLOCKER | 10 + 11 | Plan covers — line numbers enumerated |
 | G17 (Noosa STATUS_MAP) | OK | — | — |
+| **G18 (Hudi key naming)** | MAJOR | deferred | **Decision required** — accept current `random` collision risk or align to spec's deterministic index |
+| **G19 (idempotency_skip synthesis)** | BLOCKER | 12 (expand) | Add file_processor synthesis on DynamoDB hit |
+| **G20 (final-status calc absent)** | BLOCKER | 12 (expand) | Add the spec's calc ladder explicitly |
+| **G21 (`all_unknown_suffix` emission)** | MAJOR | 12 (expand) | Add reason synthesis + alarm in calc ladder |
 
-**Plan coverage gaps:**
-- G11: **NEW Task 20** required (quality NULL policy enforcement)
-- G14: **NEW Task 21** required (cross-field invariants in `__post_init__`)
-- G7: Task 14 mentions BOM but should also explicitly require restructuring gates that currently do `pd.read_csv` before relevance check
-- G16: each touched parser test file should be cross-referenced in Task 10 / 11
+**Plan coverage gaps (resolved):**
+- G11: Task 20 added (quality NULL policy enforcement)
+- G14: Task 21 added (cross-field invariants — **test-only**, not `__post_init__` raise, to avoid pipeline-crash deployment risk)
+- G7: Task 14 expanded with full-parse-before-gate restructure
+- G16: line numbers enumerated in Tasks 10 + 11
+
+**Plan coverage gaps (newly identified, route to Task 12 expansion):**
+- G19: idempotency_skip synthesis path
+- G20: file_processor's final-status calc ladder
+- G21: `all_unknown_suffix` reason emission + alarm
+
+**Plan coverage gaps (decision deferred):**
+- G18: Hudi key naming convention. Either align spec to current `random.randint` form or update code to deterministic batch index. No production incident; not blocking deploy.
 
 ---
 

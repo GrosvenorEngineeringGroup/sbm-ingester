@@ -76,7 +76,7 @@ Business-level validation (negative consumption, future timestamps, sensor sanit
 | `all_unknown_suffix` | DataFrame returned only suffix columns the file processor does not recognize | `processed_empty` |
 | `all_skipped` | Mixed skip reasons (malformed, blank, anchor failure) leave zero candidates | `processed_empty` |
 | `external_gegoptimareports` | RACV billing successful upload to `gegoptimareports` | `processed_external` |
-| `idempotency_skip` | DynamoDB idempotency layer detected a previously processed file (synthesized by file_processor, not a parser return) | `processed` |
+| `idempotency_skip` | DynamoDB idempotency layer detected a previously processed file (synthesized by file_processor, not a parser return) | `processed_empty` |
 
 ### Skip reason enum (closed)
 
@@ -193,7 +193,7 @@ The matrix is the authoritative source for "which outcome does scenario X produc
 
 | Scenario | Outcome | Disposition |
 |---|---|---|
-| DynamoDB idempotency layer indicates already processed | `processed(reason="idempotency_skip")` synthesized by file_processor; parsers not invoked | `newP/` |
+| DynamoDB idempotency layer indicates already processed | `processed_empty(reason="idempotency_skip")` synthesized by file_processor; parsers not invoked | `newP/` |
 | First time seen | normal processing | depends |
 
 ## Row-Level Filtering Boundary
@@ -505,7 +505,7 @@ Vendor encodings observed in production:
 |---|---|
 | UTF-8 (no BOM) | NEM12 (most), Optima interval/demand, Bunnings billing/demand, ComX |
 | UTF-8 with BOM (`\xef\xbb\xbf`) | R1746/R1748 (currently unhandled), RACV Noosa Solar |
-| UTF-16 LE with BOM (`\xff\xfe`) | RACV "Usage and Spend Report" billing |
+| UTF-16 LE with BOM (`\xff\xfe`) | RACV "Usage and Spend Report" billing, Bunnings "Usage and Spend" billing |
 
 Rules:
 
@@ -543,7 +543,7 @@ The 10 implemented non-NEM parsers and their dispatcher order:
 | 3 | `envizi_vertical_parser_electricity` | `Meter_Data_*_Electricity_*.csv` | column header `<NMI> (kWh)` | UTF-8 |
 | 4 | `racv_elec_parser` | (RACV electricity specific) | per-parser | UTF-8 |
 | 5 | `racv_billing_parser` | `*RACV*Usage and Spend Report*.csv` | N/A (external sink) | UTF-16 LE BOM, binary forward |
-| 6 | `bunnings_billing_parser` | `*Bunnings*Usage and Spend*.csv` | row column `Identifier` | UTF-8 |
+| 6 | `bunnings_billing_parser` | `*Bunnings*Usage and Spend*.csv` | row column `Identifier` | UTF-16 LE BOM (decoded then CSV-parsed) |
 | 7 | `demand_parser` | `*demand profile*.csv` | row column `Identifier` | UTF-8 |
 | 8 | `interval_parser` | (Optima interval files; runs after NEM12 path falls through) | row column or column header | UTF-8 |
 | 9 | `envizi_vertical_parser_water_bulk` | bulk water variant | column header | UTF-8 |
