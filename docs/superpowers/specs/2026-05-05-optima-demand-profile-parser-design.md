@@ -370,7 +370,7 @@ Where `mappings_mod` is `from shared.parsers import _mappings as mappings_mod` (
 
 ### Operational note: source file disposition follows `ParserOutcome.status`
 
-After the parser returns `ParserOutcome`, `file_processor` routes the source CSV from the explicit status rather than from `file_neptune_ids`. Successful demand CSVs with Hudi rows use `processed_external` and move to `newP/`. Valid no-data sentinel or header-only files use `processed_empty` and also move to `newP/`. Valid candidate data with no mapped demand points uses `unmapped` and moves to `newIrrevFiles/`.
+After the parser returns `ParserOutcome`, `file_processor` routes the source CSV from the explicit status rather than from `file_neptune_ids`. Successful demand CSVs with Hudi rows use `processed` and move to `newP/`. Valid no-data sentinel or header-only files use `processed_empty` and also move to `newP/`. Valid candidate data with no mapped demand points uses `unmapped` and moves to `newIrrevFiles/`.
 
 **Operator-facing implication:** demand CSVs with successful parser outcomes **will appear in `newP/archived/<week>/`**, not `newIrrevFiles/`. Anyone auditing demand ingestion success should look at:
 - CloudWatch logs for `service=optima-demand-parser` lines `"demand_written"` (rows count) and `"demand_no_rows_written"` (skip cases)
