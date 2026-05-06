@@ -197,6 +197,27 @@ def _is_blank_value(value: Any) -> bool:
     return isinstance(value, str) and value.strip() == ""
 
 
+def _looks_like_nem_envelope(file_path: str) -> bool:
+    """Return True if the file's first line looks like a NEM12 or NEM13 envelope.
+
+    Reads up to ~64 bytes (BOM-stripped via ``utf-8-sig``) and matches the
+    prefix ``100,NEM12,`` OR ``100,NEM13,``. Used to short-circuit empty
+    NEM-format files (only 100/900 records, no 200/300 payload) to
+    ``processed_empty(reason="no_data_sentinel")`` rather than falling through
+    to the non-NEM dispatcher, which never matches NEM-format files and would
+    incorrectly route them to ``newParseErr/``.
+
+    Defensive: returns ``False`` on any I/O or decoding error so a failing
+    helper never crashes the lambda.
+    """
+    try:
+        with Path(file_path).open(encoding="utf-8-sig") as f:
+            first_line = f.readline(64)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return first_line.startswith("100,NEM12,") or first_line.startswith("100,NEM13,")
+
+
 def _candidate_values(
     df: pd.DataFrame,
     col: str,
@@ -643,16 +664,40 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 stream = stream_as_data_frames(local_file_path, split_days=True)
                 first_item = next(stream, None)
                 if first_item is None:
-                    raise ValueError("No data parsed from file")
-                # Chain first item back with the rest of the stream
-                outcome = ParserOutcome(status="processed", dfs=chain([first_item], stream))
+                    # Empty NEM envelope (only 100/900 records). Do NOT fall
+                    # through to non-NEM parsers — none match NEM-format files
+                    # and the file would incorrectly route to newParseErr/.
+                    # Short-circuit to processed_empty(no_data_sentinel) so the
+                    # source moves to newP/ as a recognised empty payload.
+                    if _looks_like_nem_envelope(local_file_path):
+                        outcome = ParserOutcome(
+                            status="processed_empty",
+                            reason="no_data_sentinel",
+                            source_row_count=0,
+                        )
+                    else:
+                        raise ValueError("No data parsed from file")
+                else:
+                    # Chain first item back with the rest of the stream
+                    outcome = ParserOutcome(status="processed", dfs=chain([first_item], stream))
             except _NEM_FALLTHROUGH_ERRORS:
                 # Fall back to batch parser
                 try:
                     dfs = output_as_data_frames(local_file_path, split_days=True)
                     if not dfs:
-                        raise ValueError("No data parsed from file")
-                    outcome = ParserOutcome(status="processed", dfs=dfs)
+                        # Same NEM-envelope short-circuit as above for the
+                        # batch parser path: empty NEM12/NEM13 file -> emit
+                        # processed_empty(no_data_sentinel) directly.
+                        if _looks_like_nem_envelope(local_file_path):
+                            outcome = ParserOutcome(
+                                status="processed_empty",
+                                reason="no_data_sentinel",
+                                source_row_count=0,
+                            )
+                        else:
+                            raise ValueError("No data parsed from file")
+                    else:
+                        outcome = ParserOutcome(status="processed", dfs=dfs)
                 except _NEM_FALLTHROUGH_ERRORS:
                     # Try non-NEM parsers as last resort
                     try:

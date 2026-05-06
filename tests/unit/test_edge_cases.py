@@ -1381,6 +1381,158 @@ class TestProcessorUnsupportedSuffixAccumulation:
         assert len(hudi_keys) == 1
 
 
+class TestLooksLikeNemEnvelope:
+    """Unit tests for the ``_looks_like_nem_envelope`` helper."""
+
+    def test_nem12_envelope_matches(self, tmp_path: Path) -> None:
+        f = tmp_path / "f.csv"
+        f.write_text("100,NEM12,202605060200,MDP1,Origin\n900\n")
+        assert file_processor_app._looks_like_nem_envelope(str(f)) is True
+
+    def test_nem13_envelope_matches(self, tmp_path: Path) -> None:
+        f = tmp_path / "f.csv"
+        f.write_text("100,NEM13,202605060200,MDP1,Origin\n900\n")
+        assert file_processor_app._looks_like_nem_envelope(str(f)) is True
+
+    def test_utf8_bom_envelope_matches(self, tmp_path: Path) -> None:
+        # File starts with UTF-8 BOM (\xef\xbb\xbf) followed by a NEM12 header.
+        # ``utf-8-sig`` must strip the BOM so the prefix match still succeeds.
+        f = tmp_path / "f.csv"
+        f.write_bytes("﻿100,NEM12,202605060200,MDP1,Origin\n900\n".encode())
+        assert file_processor_app._looks_like_nem_envelope(str(f)) is True
+
+    def test_non_nem_first_line_returns_false(self, tmp_path: Path) -> None:
+        f = tmp_path / "f.csv"
+        f.write_text("Date,Value,Quality\n2024-01-01,1.0,A\n")
+        assert file_processor_app._looks_like_nem_envelope(str(f)) is False
+
+    def test_nonexistent_file_returns_false(self, tmp_path: Path) -> None:
+        assert file_processor_app._looks_like_nem_envelope(str(tmp_path / "missing.csv")) is False
+
+    def test_unparseable_bytes_returns_false(self, tmp_path: Path) -> None:
+        # Pure binary garbage that can't be decoded as utf-8 should not crash;
+        # helper must defensively return False.
+        f = tmp_path / "f.bin"
+        f.write_bytes(b"\xff\xfe\xfd\xfc some binary noise")
+        # Either decode fails (UnicodeDecodeError) -> False, or first line just
+        # doesn't match the prefix -> False. Either way: defensive False.
+        assert file_processor_app._looks_like_nem_envelope(str(f)) is False
+
+
+class TestNemEmptyEnvelopeShortCircuit:
+    """Empty NEM12/NEM13 envelopes (only 100/900 records) must short-circuit
+    to ``processed_empty(no_data_sentinel)`` instead of falling through to the
+    non-NEM dispatcher.
+    """
+
+    @mock_aws
+    def test_empty_nem12_envelope_emits_processed_empty(self, fixtures_dir: str) -> None:
+        body = (Path(fixtures_dir) / "nem12_empty.csv").read_bytes()
+        s3_resource = _create_outcome_test_buckets(file_name="empty_nem12.csv", body=body)
+
+        # If the short-circuit works, the non-NEM dispatcher must NEVER be
+        # consulted for this file. Patching it with a side_effect that fails
+        # the test guarantees that.
+        sentinel_called = AssertionError("get_non_nem_outcome must not be called for empty NEM envelopes")
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.get_non_nem_outcome", side_effect=sentinel_called),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/empty_nem12.csv"}]
+            )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/empty_nem12.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newIrrevFiles/") == []
+        # No data rows -> nothing written to Hudi.
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_empty_nem13_envelope_emits_processed_empty(self, fixtures_dir: str) -> None:
+        body = (Path(fixtures_dir) / "nem13_empty.csv").read_bytes()
+        s3_resource = _create_outcome_test_buckets(file_name="empty_nem13.csv", body=body)
+
+        sentinel_called = AssertionError("get_non_nem_outcome must not be called for empty NEM envelopes")
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.get_non_nem_outcome", side_effect=sentinel_called),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/empty_nem13.csv"}]
+            )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/empty_nem13.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_genuine_parse_error_in_nem12_still_propagates_as_parser_error(self) -> None:
+        # A NEM12-shaped file whose streaming/batch parsers raise (e.g. on a
+        # malformed 200-record producing a ValueError from nemreader) must
+        # NOT be short-circuited by the empty-envelope path: the streams are
+        # not "empty", they're "broken". The fallthrough takes us to the
+        # non-NEM dispatcher, which can't parse NEM12 -> ParserError ->
+        # newParseErr/ as before.
+        s3_resource = _create_outcome_test_buckets(
+            file_name="malformed_nem12.csv",
+            body=b"100,NEM12,202605060200,MDP1,Origin\n200,broken,record\n900\n",
+        )
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("malformed 200")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("malformed 200")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                side_effect=ParserError("non-NEM cannot parse NEM12-shaped file"),
+            ),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/malformed_nem12.csv"}]
+            )
+
+        assert result == 1
+        # ParserError from the non-NEM dispatcher (last resort) -> newParseErr/.
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/malformed_nem12.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+
+    @mock_aws
+    def test_non_nem_envelope_with_empty_stream_still_falls_through(self) -> None:
+        # A file that does NOT start with 100,NEM12, or 100,NEM13, must still
+        # fall through to the non-NEM dispatcher even when the streaming
+        # parser yields nothing. Confirms the helper is correctly NEM-only.
+        s3_resource = _create_outcome_test_buckets(
+            file_name="non_nem.csv",
+            body=b"Date,Value,Quality\n",  # header-only non-NEM file
+        )
+
+        sentinel = ParserOutcome(status="processed_empty", reason="zero_rows")
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            # Streaming returns empty iterator -> next() yields None.
+            patch("functions.file_processor.app.stream_as_data_frames", return_value=iter([])),
+            patch("functions.file_processor.app.output_as_data_frames", return_value=[]),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=sentinel,
+            ) as mock_dispatch,
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/non_nem.csv"}]
+            )
+
+        assert result == 1
+        # The non-NEM dispatcher MUST be consulted for non-NEM files.
+        assert mock_dispatch.called, "non-NEM dispatcher must be consulted for non-NEM-format files"
+        # Source moves to newP/ because the dispatcher returned processed_empty.
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/non_nem.csv"]
+
+
 class TestMissingTStartIsParserError:
     """`Missing t_start column` is a parser-output structural error."""
 
