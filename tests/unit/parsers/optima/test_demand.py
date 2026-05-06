@@ -95,7 +95,7 @@ class TestEmptyData:
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
-        assert result.reason == "blank_values"
+        assert result.reason == "all_blank"
         assert result.rows_written == 0
 
     def test_blank_value_rows_return_processed_empty_with_source_count(self, write_demand_csv, monkeypatch):
@@ -107,7 +107,7 @@ class TestEmptyData:
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 1
-        assert result.reason == "blank_values"
+        assert result.reason == "all_blank"
         assert result.rows_written == 0
 
 

@@ -146,7 +146,7 @@ class TestEnviziVerticalParserWater:
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
-        assert result.reason == "blank_values"
+        assert result.reason == "all_blank"
         assert result.dfs == []
 
 

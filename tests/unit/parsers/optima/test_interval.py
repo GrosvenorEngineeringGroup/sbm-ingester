@@ -105,7 +105,7 @@ class TestIntervalParser:
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
-        assert result.reason == "blank_values"
+        assert result.reason == "all_blank"
         assert result.dfs == []
 
     def test_header_only_generation_file_returns_processed_empty(self, tmp_path) -> None:
@@ -118,7 +118,7 @@ class TestIntervalParser:
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
-        assert result.reason == "blank_values"
+        assert result.reason == "all_blank"
         assert result.dfs == []
 
     def test_blank_date_with_malformed_usage_skip_counts(self, tmp_path) -> None:
@@ -160,7 +160,7 @@ class TestIntervalParser:
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
-        assert result.reason == "blank_values"
+        assert result.reason == "all_blank"
         assert result.dfs == []
 
     def test_malformed_usage_after_schema_match_skip_counts(self, tmp_path) -> None:

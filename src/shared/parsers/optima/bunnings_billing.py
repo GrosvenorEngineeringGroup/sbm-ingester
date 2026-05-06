@@ -314,7 +314,7 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
             status="processed_empty",
             source_row_count=0,
             rows_written=0,
-            reason="blank_values",
+            reason="all_blank",
         )
 
     mappings = get_nem12_mappings()
@@ -331,9 +331,11 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
                 status="processed_empty",
                 source_row_count=build.source_row_count,
                 rows_written=0,
-                reason="blank_values",
+                reason="all_blank",
             )
         if build.candidate_row_count > 0 and build.unmapped_count == build.candidate_row_count:
+            # Per spec edge case matrix: when all candidates fail to map,
+            # the outcome is unmapped with reason=None.
             return ParserOutcome(
                 status="unmapped",
                 source_row_count=build.source_row_count,
@@ -342,7 +344,6 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
                 unmapped_count=build.unmapped_count,
                 rows_skipped=build.rows_skipped,
                 skip_reasons=build.skip_reasons,
-                reason="all_candidates_unmapped",
             )
         logger.info(
             "bunnings_billing_no_rows_written",

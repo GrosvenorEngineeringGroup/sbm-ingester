@@ -33,7 +33,7 @@ def test_legacy_get_non_nem_df_returns_empty_list_for_processed_empty(tmp_path, 
     from shared.non_nem_parsers import get_non_nem_df
 
     def parser(file_name: str, error_file_path: str) -> ParserOutcome:
-        return ParserOutcome(status="processed_empty", reason="no_valid_point_rows")
+        return ParserOutcome(status="processed_empty", reason="all_blank")
 
     monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
 

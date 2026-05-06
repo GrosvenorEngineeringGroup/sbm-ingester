@@ -15,23 +15,11 @@ from shared.parsers import (
     ParserResult,
     SkipReason,
 )
+from shared.parsers._coerce import coerce_numeric_column
 
 logger = Logger(service="envizi-vertical-electricity-parser", child=True)
 
 ENVIZI_ELECTRICITY_REQUIRED = {"Serial_No", "Interval_Start", "Interval_End", "kWh"}
-
-
-def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]:
-    """Permissively coerce ``column`` to numeric in place.
-
-    Returns ``(unparseable_count, blank_count)``.
-    """
-    series = raw_df[column]
-    parsed = pd.to_numeric(series, errors="coerce")
-    blank_mask = series.isna() | series.astype(str).str.strip().eq("")
-    unparseable_mask = (~blank_mask) & parsed.isna()
-    raw_df[column] = parsed
-    return int(unparseable_mask.sum()), int(blank_mask.sum())
 
 
 def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -70,7 +58,8 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
         skip_reasons["unparseable_timestamp"] += bad_ts_count
         raw_df = raw_df.loc[~bad_ts_mask].copy()
 
-    unparseable, blank = _coerce_numeric_column(raw_df, "kWh")
+    coerced, unparseable, blank = coerce_numeric_column(raw_df["kWh"])
+    raw_df["kWh"] = coerced
     if unparseable:
         skip_reasons["unparseable_value"] += unparseable
     if blank:
@@ -87,7 +76,7 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
             return ParserOutcome(
                 status="processed_empty",
                 source_row_count=0,
-                reason="blank_values",
+                reason="all_blank",
             )
         if bad_ts_count == source_row_count:
             return ParserOutcome(
@@ -102,7 +91,7 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
             source_row_count=source_row_count,
             rows_skipped=rows_skipped,
             skip_reasons=skip_reasons,
-            reason="blank_values",
+            reason="all_blank",
         )
 
     raw_df["Serial_No"] = raw_df["Serial_No"].astype(str)
@@ -121,7 +110,7 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
             candidate_row_count=candidate_row_count,
             rows_skipped=rows_skipped,
             skip_reasons=skip_reasons,
-            reason="no_rows",
+            reason="zero_rows",
         )
 
     return ParserOutcome(

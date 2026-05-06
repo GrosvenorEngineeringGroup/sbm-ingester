@@ -21,6 +21,7 @@ from shared.parsers import (
     ParserResult,
     SkipReason,
 )
+from shared.parsers._coerce import coerce_numeric_column
 
 logger = Logger(service="optima-interval-parser", child=True)
 
@@ -39,22 +40,6 @@ def _is_no_data_sentinel(raw_df: pd.DataFrame) -> bool:
     other_values = raw_df.drop(columns=["BuyerShortName"]).iloc[0]
     non_blank_values = other_values.notna() & other_values.astype(str).str.strip().ne("")
     return not non_blank_values.any()
-
-
-def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]:
-    """Permissively coerce a column to numeric in place.
-
-    Returns ``(unparseable_count, blank_count)``:
-
-    - ``unparseable_count`` — non-blank cells that did not coerce to numeric.
-    - ``blank_count`` — originally blank/whitespace/null cells.
-    """
-    series = raw_df[column]
-    parsed = pd.to_numeric(series, errors="coerce")
-    blank_mask = series.isna() | series.astype(str).str.strip().eq("")
-    unparseable_mask = (~blank_mask) & parsed.isna()
-    raw_df[column] = parsed
-    return int(unparseable_mask.sum()), int(blank_mask.sum())
 
 
 def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -99,7 +84,8 @@ def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     # we do NOT count blank_value here because a row with a blank value in one
     # column may still be valid via another value column.
     for column in value_columns:
-        unparseable, _blank = _coerce_numeric_column(raw_df, column)
+        coerced, unparseable, _blank = coerce_numeric_column(raw_df[column])
+        raw_df[column] = coerced
         if unparseable:
             skip_reasons["unparseable_value"] += unparseable
 
@@ -137,7 +123,7 @@ def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             return ParserOutcome(
                 status="processed_empty",
                 source_row_count=0,
-                reason="blank_values",
+                reason="all_blank",
             )
         if bad_ts_count == source_row_count:
             return ParserOutcome(
@@ -152,7 +138,7 @@ def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             source_row_count=source_row_count,
             rows_skipped=rows_skipped,
             skip_reasons=skip_reasons,
-            reason="blank_values",
+            reason="all_blank",
         )
 
     raw_df["Identifier"] = raw_df["Identifier"].astype(str)

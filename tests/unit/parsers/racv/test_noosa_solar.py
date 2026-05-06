@@ -444,7 +444,7 @@ class TestEmptyFile:
             result = noosa_solar_parser(filepath, "error_log")
 
         assert result.status == "processed_empty"
-        assert result.reason == "no_valid_point_rows"
+        assert result.reason == "all_blank"
         assert result.dfs == []
 
 

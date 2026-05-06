@@ -538,7 +538,7 @@ def test_blank_billing_values_return_processed_empty(_reset_mappings_cache, tmp_
     result = bp_mod.bunnings_billing_parser(str(src), "dummy")
 
     assert result.status == "processed_empty"
-    assert result.reason == "blank_values"
+    assert result.reason == "all_blank"
     assert result.source_row_count == 1
     assert result.rows_written == 0
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")

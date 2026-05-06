@@ -14,6 +14,7 @@ from shared.parsers import (
     ParserOutcome,
     SkipReason,
 )
+from shared.parsers._coerce import coerce_numeric_column
 
 logger = Logger(service="green-square-comx-parser", child=True)
 
@@ -72,12 +73,7 @@ def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_p
     if "Local Time Stamp" not in raw_df.columns:
         raise ParserError("Missing Local Time Stamp column in file.")
 
-    energy_series = raw_df[energy_col]
-    parsed = pd.to_numeric(energy_series, errors="coerce")
-    blank_mask = energy_series.isna() | energy_series.astype(str).str.strip().eq("")
-    unparseable_mask = (~blank_mask) & parsed.isna()
-    unparseable_count = int(unparseable_mask.sum())
-    blank_count = int(blank_mask.sum())
+    parsed, unparseable_count, blank_count = coerce_numeric_column(raw_df[energy_col])
     if unparseable_count:
         skip_reasons["unparseable_value"] += unparseable_count
     if blank_count:
@@ -94,7 +90,7 @@ def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_p
             source_row_count=source_row_count,
             rows_skipped=rows_skipped,
             skip_reasons=skip_reasons,
-            reason="no_valid_energy_rows",
+            reason="all_blank",
         )
 
     raw_df["Local Time Stamp"] = pd.to_datetime(raw_df["Local Time Stamp"], dayfirst=True, errors="coerce")

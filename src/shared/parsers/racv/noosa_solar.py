@@ -11,6 +11,7 @@ from shared.parsers import (
     ParserResult,
     SkipReason,
 )
+from shared.parsers._coerce import coerce_numeric_column
 
 logger = Logger(service="noosa-solar-parser", child=True)
 
@@ -86,17 +87,21 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             continue  # Skip all-NaN columns
 
         if numeric_count >= non_null_count * 0.5:
-            # Numeric column (kWh energy readings) — permissive coerce.
-            malformed_mask = series.notna() & numeric_series.isna()
-            malformed_count = int(malformed_mask.sum())
-            if malformed_count:
-                skip_reasons["unparseable_value"] += malformed_count
+            # Numeric column (kWh energy readings) — permissive coerce via
+            # the shared helper. We only count unparseable_value here;
+            # blank cells are tracked separately in tall-format parsers
+            # but here we already gate the column at non_null_count == 0
+            # above, so blank counts are the dropped/NA tail and not
+            # informative as skip reasons.
+            coerced, unparseable, _blank = coerce_numeric_column(series)
+            if unparseable:
+                skip_reasons["unparseable_value"] += unparseable
 
             col_name = "E1_kWh"
             out_df = pd.DataFrame(
                 {
                     "t_start": df["timestamp"],
-                    col_name: numeric_series,
+                    col_name: coerced,
                 }
             )
         else:
@@ -139,7 +144,7 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             source_row_count=source_row_count,
             rows_skipped=rows_skipped,
             skip_reasons=skip_reasons,
-            reason="no_valid_point_rows",
+            reason="all_blank",
         )
 
     return ParserOutcome(

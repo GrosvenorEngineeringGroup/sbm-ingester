@@ -22,21 +22,9 @@ from shared.parsers import (
     ParserResult,
     SkipReason,
 )
+from shared.parsers._coerce import coerce_numeric_column
 
 logger = Logger(service="racv-elec-parser", child=True)
-
-
-def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]:
-    """Permissively coerce ``column`` to numeric in place.
-
-    Returns ``(unparseable_count, blank_count)``.
-    """
-    series = raw_df[column]
-    parsed = pd.to_numeric(series, errors="coerce")
-    blank_mask = series.isna() | series.astype(str).str.strip().eq("")
-    unparseable_mask = (~blank_mask) & parsed.isna()
-    raw_df[column] = parsed
-    return int(unparseable_mask.sum()), int(blank_mask.sum())
 
 
 def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -104,8 +92,9 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         # Permissive coerce: unparseable non-blank cells become NaN and are
         # counted as ``unparseable_value``. Blank cells (whitespace/NA) are
         # part of the wide-format contract (sparse meters) and are not
-        # counted as skipped.
-        unparseable, _blank = _coerce_numeric_column(buf_df, "E1_kWh")
+        # counted as skipped — we discard the blank_count return value.
+        coerced, unparseable, _blank = coerce_numeric_column(buf_df["E1_kWh"])
+        buf_df["E1_kWh"] = coerced
         if unparseable:
             skip_reasons["unparseable_value"] += unparseable
         buf_df = buf_df.set_index("t_start")

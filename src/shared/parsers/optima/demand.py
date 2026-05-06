@@ -281,7 +281,7 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             status="processed_empty",
             source_row_count=0,
             rows_written=0,
-            reason="blank_values",
+            reason="all_blank",
         )
 
     # 4. Build Hudi CSV using cached nem12 mappings
@@ -295,6 +295,9 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
 
     if build.rows_written == 0:
         if build.candidate_row_count > 0 and build.unmapped_count == build.candidate_row_count:
+            # Per spec edge case matrix: when all candidates fail to map,
+            # the outcome is unmapped with reason=None — file_processor's
+            # final_status routing carries unmapped to the disposition layer.
             return ParserOutcome(
                 status="unmapped",
                 source_row_count=build.source_row_count,
@@ -303,13 +306,12 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
                 unmapped_count=build.unmapped_count,
                 rows_skipped=build.rows_skipped,
                 skip_reasons=build.skip_reasons,
-                reason="all_candidates_unmapped",
             )
         if build.candidate_row_count == 0 and build.rows_skipped == 0:
             return ParserOutcome(
                 status="processed_empty",
                 source_row_count=build.source_row_count,
-                reason="blank_values",
+                reason="all_blank",
             )
         logger.info(
             "demand_no_rows_written",

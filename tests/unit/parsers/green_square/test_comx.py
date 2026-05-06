@@ -169,7 +169,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
 
             assert result.status == "processed_empty"
-            assert result.reason == "no_valid_energy_rows"
+            assert result.reason == "all_blank"
             assert result.dfs == []
 
     def test_skip_counts_for_malformed_energy_value(self, temp_directory: str) -> None:
@@ -196,7 +196,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             assert result.status == "processed_empty"
             assert result.dfs == []
             assert result.skip_reasons["unparseable_value"] == 1
-            assert result.reason == "no_valid_energy_rows"
+            assert result.reason == "all_blank"
 
     def test_partial_malformed_energy_with_valid_rows_skip_counts(self, temp_directory: str) -> None:
         """N valid rows + 1 malformed energy → N rows in output, rows_skipped=1."""
