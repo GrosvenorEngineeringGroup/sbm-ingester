@@ -175,7 +175,7 @@ Once `import_demand_points.py` completes successfully, the next hourly run of th
 ### Function signature
 
 ```python
-from shared.parser_contract import ParserError, ParserOutcome
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 
 
 def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -209,13 +209,13 @@ CSV_FIELD_MAPPING: list[tuple[str, str, str]] = [
 ```python
 # 1. Fast filename reject (no I/O) — CASE-INSENSITIVE
 if "demand profile" not in Path(file_name).name.lower():
-    raise ParserError("Not a Demand Profile file (filename mismatch)")
+    raise NotRelevantParser("Not a Demand Profile file (filename mismatch)")
 
 # 2. Content sniff (read first line only)
 with open(file_name) as f:
     first_line = f.readline()
 if not first_line.startswith("Commodities:"):
-    raise ParserError("Not a Demand Profile file (missing metadata header)")
+    raise NotRelevantParser("Not a Demand Profile file (missing metadata header)")
 ```
 
 Case-insensitive on purpose — the user's manual download is `Bunnings demand profile.csv` (lowercase), but a future automated exporter (Step 4) might use a different casing. Both must accept. The substring `"demand profile"` (with space) is unique enough that case-insensitive match won't false-positive.
@@ -412,15 +412,15 @@ At minimum 7 tests; mirror the structure of `tests/unit/parsers/optima/test_bunn
 
 | Test | Verifies |
 |---|---|
-| `test_filename_gate_rejects_non_demand_files` | Filename without "demand profile" (case-insensitive) → raises `ParserError` |
+| `test_filename_gate_rejects_non_demand_files` | Filename without "demand profile" (case-insensitive) → raises `NotRelevantParser` |
 | `test_filename_gate_accepts_lowercase_user_download` | `Bunnings demand profile.csv` (lowercase) is accepted |
-| `test_content_gate_rejects_files_without_commodities_header` | Filename matches but first line wrong → raises `ParserError` |
+| `test_content_gate_rejects_files_without_commodities_header` | Filename matches but first line wrong → raises `NotRelevantParser` |
 | `test_parses_kw_kva_pf_to_correct_sensor_ids` | All three measurements written with correct sensor IDs and units |
 | `test_unmapped_nmis_skipped_with_log` | Mapping returns None for some sensors → those rows skipped, others written |
 | `test_no_data_found_sentinel_skips_s3_put` | BidEnergy "No data found" body → no S3 PUT, returns `ParserOutcome(status="processed_empty", reason="no_data_sentinel")`, no exception |
 | `test_empty_data_skips_s3_put` | Header-only file → no S3 PUT, returns `ParserOutcome(status="processed_empty")` |
 | `test_pf_unit_is_empty_string` | Power Factor row's unit field is `""` |
-| `test_dispatcher_routes_demand_file` | End-to-end through `get_non_nem_df` |
+| `test_dispatcher_routes_demand_file` | End-to-end through `get_non_nem_outcome` |
 
 ### Test fixture
 
