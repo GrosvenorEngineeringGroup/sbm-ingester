@@ -52,7 +52,7 @@ class TestWriteAuditSidecar:
                 "unmapped_count": 0,
             },
             skip_reasons={"blank_value": 1, "unparseable_value": 1},
-            unmapped_identifiers=[("monitor_point_name", "NMI1-E1")],
+            unmapped_identifiers=[("nem12_nmi", "NMI1-E1")],
             unsupported_suffixes=["Z9Z"],
             skipped_samples=[
                 {"row": 0, "column": "E1_kWh", "value": "", "reason": "blank_value"},
@@ -67,7 +67,7 @@ class TestWriteAuditSidecar:
         assert payload["source_file"] == "example.csv"
         assert payload["outcome"]["rows_written"] == 6
         assert payload["skip_reasons"] == {"blank_value": 1, "unparseable_value": 1}
-        assert payload["unmapped_identifiers"] == [["monitor_point_name", "NMI1-E1"]]
+        assert payload["unmapped_identifiers"] == [["nem12_nmi", "NMI1-E1"]]
         assert payload["unsupported_suffixes"] == ["Z9Z"]
         assert len(payload["skipped_samples"]) == 2
 

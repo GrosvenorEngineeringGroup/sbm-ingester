@@ -624,3 +624,43 @@ class TestDispatcherIntegration:
         assert result.rows_written == 9
         assert result.unmapped_count == 0
         assert mock_client.called
+
+
+class TestUnmappedIdentifiersPopulated:
+    """Demand parser surfaces unmapped (kind, value) pairs on the outcome."""
+
+    def test_partial_mapping_populates_unmapped_identifiers(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # Only ``kw`` mapped — ``kva`` and ``pf`` should appear in
+        # unmapped_identifiers with kind ``nmi`` and the full mapping
+        # lookup key as the value (so dashboards can reproduce the miss).
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:only-kw",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
+            path = write_demand_csv()
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.unmapped_count == 6
+        # Two distinct lookup keys for kva and pf (one per row dedups).
+        values = {value for _kind, value in result.unmapped_identifiers}
+        assert "Optima_4001260599-demand-kva" in values
+        assert "Optima_4001260599-demand-pf" in values
+        # Kind canonical for Optima parsers per spec identifier-kind table.
+        assert all(kind == "nmi" for kind, _ in result.unmapped_identifiers)
+
+    def test_all_unmapped_outcome_carries_identifiers(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # Empty mapping → status=unmapped — identifiers must still flow.
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
+            path = write_demand_csv()
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "unmapped"
+        assert len(result.unmapped_identifiers) >= 1
+        assert all(kind == "nmi" for kind, _ in result.unmapped_identifiers)

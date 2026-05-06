@@ -86,6 +86,12 @@ class BillingBuildResult:
     unmapped_count: int
     rows_skipped: int
     skip_reasons: Counter[SkipReason] = field(default_factory=Counter)
+    # (kind, value) pairs of identifiers that missed mapping. Capped at 100
+    # per file (spec parser-outcome-semantics-design, signal-fields table)
+    # and deduplicated. Kind is "nmi" per spec identifier-kind table; value
+    # is the full mapping lookup key so dashboards can debug unmapped
+    # identifiers without reconstructing the suffix separately.
+    unmapped_identifiers: tuple[tuple[str, str], ...] = ()
 
 
 def _billing_date_to_ts(date_str: str) -> str | None:
@@ -217,6 +223,9 @@ def _build_hudi_csv(
     candidate_row_count = 0
     rows_written = 0
     unmapped_count = 0
+    # Track distinct mapping lookup keys that missed the mapping, capped
+    # at 100 per spec.
+    unmapped_identifiers_set: set[tuple[str, str]] = set()
 
     for row in rows:
         nmi = (row.get("Identifier") or "").strip()
@@ -254,9 +263,12 @@ def _build_hudi_csv(
 
             row_produced_rows_or_unmapped = True
             candidate_row_count += 1
-            sensor_id = mappings.get(f"{nmi}-{billing_suffix}")
+            lookup_key = f"{nmi}-{billing_suffix}"
+            sensor_id = mappings.get(lookup_key)
             if not sensor_id:
                 unmapped_count += 1
+                if len(unmapped_identifiers_set) < 100:
+                    unmapped_identifiers_set.add(("nmi", lookup_key))
                 continue
             unit = _pick_unit(billing_suffix, usage_unit, spend_currency)
             buf.write(f"{sensor_id},{ts},{raw_val},{unit},{ts},\n")
@@ -274,6 +286,7 @@ def _build_hudi_csv(
         unmapped_count=unmapped_count,
         rows_skipped=rows_skipped,
         skip_reasons=skip_reasons,
+        unmapped_identifiers=tuple(sorted(unmapped_identifiers_set)),
     )
 
 
@@ -344,6 +357,7 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
                 unmapped_count=build.unmapped_count,
                 rows_skipped=build.rows_skipped,
                 skip_reasons=build.skip_reasons,
+                unmapped_identifiers=build.unmapped_identifiers,
             )
         logger.info(
             "bunnings_billing_no_rows_written",
@@ -363,6 +377,7 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
             unmapped_count=build.unmapped_count,
             rows_skipped=build.rows_skipped,
             skip_reasons=build.skip_reasons,
+            unmapped_identifiers=build.unmapped_identifiers,
             reason="all_skipped",
         )
 
@@ -393,4 +408,5 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
         unmapped_count=build.unmapped_count,
         rows_skipped=build.rows_skipped,
         skip_reasons=build.skip_reasons,
+        unmapped_identifiers=build.unmapped_identifiers,
     )

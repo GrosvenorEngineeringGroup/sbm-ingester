@@ -683,6 +683,15 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         rows_skipped_ratio_files = 0
         malformed_value_count_total = 0
         unsupported_suffixes_files = 0
+        # Accumulator for UnmappedIdentifierKind metric (spec line 600).
+        # Holds (kind, value) tuples across all files in the batch so we
+        # can emit a per-kind count of distinct unmapped identifiers at
+        # batch end. Kept as a set to deduplicate the same identifier
+        # appearing in multiple files. Powertools dimensions are not used
+        # elsewhere in this file, so kind is encoded in the metric name
+        # (``UnmappedIdentifierKind_<kind>``) to keep emission simple and
+        # bounded by the small fixed identifier-kind taxonomy.
+        batch_unmapped_identifiers: set[tuple[str, str]] = set()
 
         for file_path in tmp_files_folder_path.iterdir():
             local_file_path = str(file_path)
@@ -843,14 +852,24 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
 
                             if neptune_id is None:
                                 unmapped_count += len(candidates)
-                                # Record (kind, value) pair for audit sidecar.
-                                # Kind is the identifier kind we attempted to
-                                # resolve: "monitor_point_name" for synthetic
-                                # NMI-suffix lookups, "point_id" otherwise.
+                                # Record (kind, value) pair for audit sidecar
+                                # using the canonical identifier taxonomy
+                                # (spec: parser-outcome-semantics-design,
+                                # identifier-kind table). Direct ``p:``
+                                # Neptune IDs use kind ``p_id``; NMI-suffix
+                                # lookups against the NEM12 mapping use kind
+                                # ``nem12_nmi``. The value carries the full
+                                # lookup key (``f"{nmi}-{suffix}"``) so
+                                # operators can debug "why didn't this NMI
+                                # map" without reconstructing the suffix
+                                # separately. Cap at 100 entries per file to
+                                # match the spec.
                                 if nmi.startswith("p:"):
-                                    unmapped_identifiers.add(("point_id", nmi))
+                                    if len(unmapped_identifiers) < 100:
+                                        unmapped_identifiers.add(("p_id", nmi))
                                 else:
-                                    unmapped_identifiers.add(("monitor_point_name", f"{nmi}-{suffix}"))
+                                    if len(unmapped_identifiers) < 100:
+                                        unmapped_identifiers.add(("nem12_nmi", f"{nmi}-{suffix}"))
                                 continue
 
                             mapped_monitor_points_count += 1
@@ -895,6 +914,20 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                             extra={
                                 "file": local_file_path,
                                 "reason": final_reason or "no_valid_candidate_rows",
+                            },
+                        )
+                    # Operator-visibility warning when the calc ladder
+                    # routes the file to processed_empty(all_unknown_suffix):
+                    # this is the schema-drift signal — the file parsed but
+                    # every column suffix was unrecognised. Surface the
+                    # offending suffixes so operators can react in real time
+                    # without grep'ing the audit sidecar.
+                    if final_reason == "all_unknown_suffix":
+                        logger.warning(
+                            "all_suffixes_unknown",
+                            extra={
+                                "file": local_file_path,
+                                "unsupported_suffixes": sorted(unsupported_suffixes),
                             },
                         )
 
@@ -963,6 +996,9 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             malformed_value_count_total += int(file_skip_counter.get("unparseable_value", 0))
             if file_unsupported_suffixes:
                 unsupported_suffixes_files += 1
+            # Accumulate this file's distinct unmapped identifiers into the
+            # batch-level set so we can emit per-kind counts at the end.
+            batch_unmapped_identifiers.update(file_unmapped_identifiers)
 
             # Sidecar audit log: emit only when the file shows partial-data-loss
             # signal. Best-effort — failures log and continue.
@@ -1030,6 +1066,20 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             unit=MetricUnit.Count,
             value=unsupported_suffixes_files,
         )
+        # UnmappedIdentifierKind (spec line 600): per-kind count of
+        # distinct (kind, value) pairs across the batch. Emitted as one
+        # metric per kind with the kind appended to the metric name to
+        # avoid relying on Powertools dimensions (not used elsewhere in
+        # this file). Skipped when the batch has no unmapped identifiers
+        # to keep CloudWatch noise-free.
+        if batch_unmapped_identifiers:
+            unmapped_kinds: Counter[str] = Counter(kind for kind, _ in batch_unmapped_identifiers)
+            for kind, count in unmapped_kinds.items():
+                metrics.add_metric(
+                    name=f"UnmappedIdentifierKind_{kind}",
+                    unit=MetricUnit.Count,
+                    value=count,
+                )
 
         processing_end_time = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
         logger.info("Script finished", extra={"timestamp": processing_end_time})

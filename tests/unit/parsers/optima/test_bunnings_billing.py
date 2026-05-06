@@ -790,3 +790,46 @@ def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache,
     # RACV parser copies to gegoptimareports — verify we hit it, not ours
     obj = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")
     assert obj["Body"].read() == b"dummy content"
+
+
+@mock_aws
+def test_partial_mapping_populates_unmapped_identifiers(_reset_mappings_cache, tmp_path) -> None:
+    """Partial-mapped Bunnings billing file must surface unmapped lookup keys.
+
+    The outcome's ``unmapped_identifiers`` records (kind="nmi", value=lookup_key)
+    so dashboards can debug "why didn't this NMI map" without reconstructing
+    the suffix separately. Spec: parser-outcome-semantics-design,
+    identifier-kind table.
+    """
+    mappings = {
+        "VCCCLG0019-billing-peak-usage": "p:bunnings:peak",
+    }
+    _setup_s3_with_mappings(mappings)
+    src = _make_fixture(
+        tmp_path,
+        "VCCCLG0019",
+        "Mar 2026",
+        {"Peak": "100.00", "OffPeak": "50.00"},
+    )
+
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed"
+    assert result.unmapped_count >= 1
+    values = {value for _kind, value in result.unmapped_identifiers}
+    assert "VCCCLG0019-billing-off-peak-usage" in values
+    assert all(kind == "nmi" for kind, _ in result.unmapped_identifiers)
+
+
+@mock_aws
+def test_all_unmapped_outcome_carries_identifiers(_reset_mappings_cache, tmp_path) -> None:
+    _setup_s3_with_mappings({})
+    src = _make_fixture(tmp_path, "UNKNOWN_NMI", "Mar 2026", {"Peak": "100.00"})
+
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "unmapped"
+    assert len(result.unmapped_identifiers) >= 1
+    assert all(kind == "nmi" for kind, _ in result.unmapped_identifiers)
+    values = {value for _kind, value in result.unmapped_identifiers}
+    assert "UNKNOWN_NMI-billing-peak-usage" in values

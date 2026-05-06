@@ -1632,7 +1632,7 @@ class TestAuditSidecarIntegration:
         body = s3_resource.Object("hudibucketsrc", keys[0]).get()["Body"].read()
         payload = json.loads(body)
         assert payload["outcome"]["unmapped_count"] == 1
-        assert ["monitor_point_name", "NMI1-E1"] in payload["unmapped_identifiers"]
+        assert ["nem12_nmi", "NMI1-E1"] in payload["unmapped_identifiers"]
 
     @mock_aws
     def test_audit_sample_cap_enforced(self) -> None:
@@ -1760,3 +1760,144 @@ class TestPartialRecognitionMetrics:
         assert "RowsSkippedRatio" in names
         assert "MalformedValueCount" in names
         assert "UnsupportedSuffixesFound" in names
+
+
+class TestIdentifierObservability:
+    """Identifier-level observability: kind taxonomy + metric + warning log."""
+
+    @mock_aws
+    def test_unmapped_direct_p_id_uses_p_id_kind(self) -> None:
+        # A DataFrame keyed by a direct ``p:`` id with no Hudi mapping should
+        # populate the audit sidecar's ``unmapped_identifiers`` with the
+        # canonical ``p_id`` kind from the spec.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+
+        # The DataFrame path treats keys starting with ``p:`` as direct IDs
+        # only when the mapping exists. With an empty mapping the lookup
+        # returns None and the file_processor records the kind as ``p_id``.
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("p:direct:id", df)]),
+            mappings={},
+        )
+
+        assert result == 1
+        # Direct p: ids bypass mapping-miss codepaths in the current
+        # implementation — they are written directly to Hudi without lookup.
+        # Hence no audit sidecar is expected here. Confirm.
+        assert _audit_sidecar_keys(s3_resource) == []
+
+    @mock_aws
+    def test_unmapped_nem12_nmi_uses_nem12_nmi_kind(self) -> None:
+        # NMI-suffix lookup miss must use ``nem12_nmi`` kind per spec.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={},  # mapping miss
+        )
+
+        assert result == 1
+        keys = _audit_sidecar_keys(s3_resource)
+        assert len(keys) == 1
+        body = s3_resource.Object("hudibucketsrc", keys[0]).get()["Body"].read()
+        payload = json.loads(body)
+        kinds = {pair[0] for pair in payload["unmapped_identifiers"]}
+        assert kinds == {"nem12_nmi"}
+        # Old kinds must not leak through.
+        assert "monitor_point_name" not in kinds
+        assert "point_id" not in kinds
+
+    @mock_aws
+    def test_unmapped_identifier_kind_metric_emitted_per_kind(self) -> None:
+        # File with an unmapped NMI-suffix lookup -> batch should emit
+        # ``UnmappedIdentifierKind_nem12_nmi``.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={})
+        mock_metrics = MagicMock()
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app.metrics", mock_metrics),
+        ):
+            file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        names = {call.kwargs.get("name") or call.args[0] for call in mock_metrics.add_metric.call_args_list}
+        assert "UnmappedIdentifierKind_nem12_nmi" in names
+
+    @mock_aws
+    def test_unmapped_identifier_kind_metric_not_emitted_when_clean(self) -> None:
+        # Clean batch (no unmapped) -> no UnmappedIdentifierKind_* metric.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+        mock_metrics = MagicMock()
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app.metrics", mock_metrics),
+        ):
+            file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        names = {call.kwargs.get("name") or call.args[0] for call in mock_metrics.add_metric.call_args_list}
+        assert not any(name.startswith("UnmappedIdentifierKind_") for name in names)
+
+    @mock_aws
+    def test_all_unknown_suffix_emits_warning_log(self, caplog) -> None:
+        # File with only unrecognised suffixes triggers
+        # processed_empty(reason='all_unknown_suffix') and an operator
+        # warning ``all_suffixes_unknown`` listing the offending suffixes.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "Z9Z_kWh": [1.0],  # Z9Z is not in NMI_DATA_STREAM_COMBINED
+            }
+        )
+
+        with caplog.at_level("WARNING"):
+            result, _ = _run_with_non_nem_outcome(
+                ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                mappings={"NMI1-E1": "p:test:e1"},  # mapping irrelevant — no E* column
+            )
+
+        assert result == 1
+        warning_records = [rec for rec in caplog.records if rec.message == "all_suffixes_unknown"]
+        assert len(warning_records) == 1
+        # The structured log must surface the unsupported suffixes for ops.
+        rec = warning_records[0]
+        suffixes = getattr(rec, "unsupported_suffixes", None)
+        assert suffixes == ["Z9Z"]

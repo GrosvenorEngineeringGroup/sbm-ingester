@@ -70,6 +70,12 @@ class DemandBuildResult:
     unmapped_count: int
     rows_skipped: int
     skip_reasons: Counter[SkipReason] = field(default_factory=Counter)
+    # (kind, value) pairs of identifiers that missed mapping. Capped at 100
+    # per file (spec parser-outcome-semantics-design, signal-fields table)
+    # and deduplicated. Kind is "nmi" per spec identifier-kind table; value
+    # is the full mapping lookup key so dashboards can debug unmapped
+    # identifiers without reconstructing the suffix separately.
+    unmapped_identifiers: tuple[tuple[str, str], ...] = ()
 
 
 def _validate_required_headers(fieldnames: list[str] | None) -> None:
@@ -181,6 +187,10 @@ def _build_hudi_csv(
     candidate_row_count = 0
     rows_written = 0
     unmapped_count = 0
+    # Track the distinct mapping lookup keys that missed the mapping,
+    # capped at 100 per spec. We collect tuples directly so the
+    # build-result can pass them through verbatim.
+    unmapped_identifiers_set: set[tuple[str, str]] = set()
 
     for row in rows:
         nmi = (row.get("Identifier") or "").strip()
@@ -221,9 +231,12 @@ def _build_hudi_csv(
 
             row_produced_rows_or_unmapped = True
             candidate_row_count += 1
-            sensor_id = mappings.get(f"Optima_{nmi}-demand-{suffix}")
+            lookup_key = f"Optima_{nmi}-demand-{suffix}"
+            sensor_id = mappings.get(lookup_key)
             if not sensor_id:
                 unmapped_count += 1
+                if len(unmapped_identifiers_set) < 100:
+                    unmapped_identifiers_set.add(("nmi", lookup_key))
                 continue
 
             # Hudi format: sensorId,ts,val,unit,its,quality
@@ -246,6 +259,7 @@ def _build_hudi_csv(
         unmapped_count=unmapped_count,
         rows_skipped=rows_skipped,
         skip_reasons=skip_reasons,
+        unmapped_identifiers=tuple(sorted(unmapped_identifiers_set)),
     )
 
 
@@ -306,6 +320,7 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
                 unmapped_count=build.unmapped_count,
                 rows_skipped=build.rows_skipped,
                 skip_reasons=build.skip_reasons,
+                unmapped_identifiers=build.unmapped_identifiers,
             )
         if build.candidate_row_count == 0 and build.rows_skipped == 0:
             return ParserOutcome(
@@ -330,6 +345,7 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             unmapped_count=build.unmapped_count,
             rows_skipped=build.rows_skipped,
             skip_reasons=build.skip_reasons,
+            unmapped_identifiers=build.unmapped_identifiers,
             reason="all_skipped",
         )
 
@@ -361,4 +377,5 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         unmapped_count=build.unmapped_count,
         rows_skipped=build.rows_skipped,
         skip_reasons=build.skip_reasons,
+        unmapped_identifiers=build.unmapped_identifiers,
     )
