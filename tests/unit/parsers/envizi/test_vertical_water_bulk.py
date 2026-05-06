@@ -6,7 +6,14 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk
+
+
+def _processed_dfs(result: ParserOutcome):
+    assert result.status == "processed"
+    assert result.source_row_count > 0
+    return result.dfs
 
 
 class TestEnviziVerticalParserWaterBulk:
@@ -27,16 +34,16 @@ class TestEnviziVerticalParserWaterBulk:
             df.to_csv(filepath, index=False)
 
             result = envizi_vertical_parser_water_bulk(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert isinstance(result, list)
-            assert len(result) == 2  # Two unique serial numbers
+            assert len(result_dfs) == 2  # Two unique serial numbers
 
-            nmis = [nmi for nmi, _ in result]
+            nmis = [nmi for nmi, _ in result_dfs]
             assert "Envizi_12345" in nmis
             assert "Envizi_67890" in nmis
 
             # Check column naming
-            _, df_result = result[0]
+            _, df_result = result_dfs[0]
             assert "E1_kL" in df_result.columns
 
     def test_bulk_water_rejects_optima_generation_file(self, temp_directory: str) -> None:
@@ -53,7 +60,7 @@ class TestEnviziVerticalParserWaterBulk:
             )
             df.to_csv(filepath, index=False)
 
-            with pytest.raises(Exception, match="Not Relevant Parser"):
+            with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
                 envizi_vertical_parser_water_bulk(filepath, "error_log")
 
     def test_bulk_water_handles_multiple_meters(self, temp_directory: str) -> None:
@@ -76,9 +83,10 @@ class TestEnviziVerticalParserWaterBulk:
             df.to_csv(filepath, index=False)
 
             result = envizi_vertical_parser_water_bulk(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert len(result) == 3
-            nmis = sorted([nmi for nmi, _ in result])
+            assert len(result_dfs) == 3
+            nmis = sorted([nmi for nmi, _ in result_dfs])
             assert nmis == ["Envizi_111", "Envizi_222", "Envizi_333"]
 
 
@@ -99,6 +107,25 @@ class TestParserOutputConsistency:
             df.to_csv(filepath, index=False)
 
             result = envizi_vertical_parser_water_bulk(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            _, result_df = result[0]
+            _, result_df = result_dfs[0]
             assert result_df.index.name == "t_start"
+
+    def test_malformed_kl_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+        path = tmp_path / "bulk_water.csv"
+        path.write_text("Serial_No,Date_Time,kL\n12345,2026-05-01T00:00:00,not-a-number\n")
+
+        with pytest.raises(ParserError, match="Failed to parse Envizi bulk water kL values"):
+            envizi_vertical_parser_water_bulk(str(path), "error_log")
+
+    def test_blank_only_kl_values_return_processed_empty(self, tmp_path) -> None:
+        path = tmp_path / "bulk_water.csv"
+        path.write_text("Serial_No,Date_Time,kL\n12345,2026-05-01T00:00:00,\n12345,2026-05-01T00:30:00,   \n")
+
+        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 2
+        assert result.reason == "blank_values"
+        assert result.dfs == []

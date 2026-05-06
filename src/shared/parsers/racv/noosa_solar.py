@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-from shared.parsers import ParserResult
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ParserResult
 
 logger = Logger(service="noosa-solar-parser", child=True)
 
@@ -25,28 +25,37 @@ FRONIUS_MODE_MAP: dict[str, int] = {
 }
 
 
-def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserResult:
+def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     """Parse RACV Noosa Solar CSV with SkySpark point IDs as column headers."""
     if "RACV_Noosa_Solar" not in Path(file_name).name:
-        raise Exception("Not a Noosa Solar file")
+        raise NotRelevantParser("Not a Noosa Solar file")
 
-    df = pd.read_csv(file_name, encoding="utf-8-sig")
+    try:
+        df = pd.read_csv(file_name, encoding="utf-8-sig")
+    except Exception as e:
+        raise ParserError(f"Failed to read Noosa Solar file: {e}") from e
 
     # Validate expected format: first column must be 'timestamp'
-    if df.columns[0] != "timestamp":
-        raise Exception("Missing timestamp column in Noosa Solar file")
+    if df.columns.empty or df.columns[0] != "timestamp":
+        raise ParserError("Missing timestamp column in Noosa Solar file")
+    if not df.empty and not df["timestamp"].notna().any():
+        raise ParserError("Missing timestamp values in Noosa Solar file")
 
     # Strip timezone suffix (AEST/AEDT) and parse timestamps
-    tz_values = df["timestamp"].dropna().str.extract(r"\s+([A-Z]{3,4})$")[0].dropna().unique()
-    unexpected_tz = [tz for tz in tz_values if tz != "AEST"]
-    if len(unexpected_tz) > 0:
-        logger.warning(
-            "Unexpected timezone in Noosa Solar file",
-            extra={"timezones": unexpected_tz},
-        )
+    try:
+        timestamp_text = df["timestamp"].astype(str)
+        tz_values = timestamp_text.dropna().str.extract(r"\s+([A-Z]{3,4})$")[0].dropna().unique()
+        unexpected_tz = [tz for tz in tz_values if tz != "AEST"]
+        if len(unexpected_tz) > 0:
+            logger.warning(
+                "Unexpected timezone in Noosa Solar file",
+                extra={"timezones": unexpected_tz},
+            )
 
-    df["timestamp"] = df["timestamp"].str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%d-%b-%y %I:%M %p")
+        timestamp_text = timestamp_text.str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
+        df["timestamp"] = pd.to_datetime(timestamp_text, format="%d-%b-%y %I:%M %p")
+    except Exception as e:
+        raise ParserError(f"Failed to parse Noosa Solar timestamps: {e}") from e
 
     sensor_columns = [col for col in df.columns if col.startswith("p:")]
 
@@ -97,6 +106,10 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserResult:
             results.append((sensor_id, out_df))
 
     if not results:
-        raise Exception(f"No valid data in Noosa Solar file: {file_name}")
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=len(df),
+            reason="no_valid_point_rows",
+        )
 
-    return results
+    return ParserOutcome(status="processed", dfs=results, source_row_count=len(df))

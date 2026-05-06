@@ -2,23 +2,51 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-if TYPE_CHECKING:
-    from shared.parsers import ParserResult
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ParserResult
 
 logger = Logger(service="envizi-vertical-water-parser", child=True)
 
+ENVIZI_WATER_REQUIRED = {"Serial_No", "Interval_Start", "Interval_End", "Consumption", "Consumption Unit"}
 
-def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> ParserResult:
+
+def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> None:
+    series = raw_df[column]
+    parsed = pd.to_numeric(series, errors="coerce")
+    non_blank = series.notna() & series.astype(str).str.strip().ne("")
+    invalid = non_blank & parsed.isna()
+    if invalid.any():
+        bad_value = series.loc[invalid].iloc[0]
+        raise ParserError(f"Failed to parse Envizi water {column} values: {bad_value!r}")
+    raw_df[column] = parsed
+
+
+def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> ParserOutcome:
     if "OptimaGenerationData" in file_name:
-        raise Exception("Not Relevant Parser For File")
+        raise NotRelevantParser("Not Relevant Parser For File")
 
-    raw_df = pd.read_csv(file_name)
-    raw_df["Interval_Start"] = pd.to_datetime(raw_df["Interval_Start"])
+    try:
+        with Path(file_name).open("rb") as file:
+            if b"\x00" in file.read(4096):
+                raise ValueError("embedded null byte")
+        raw_df = pd.read_csv(file_name)
+    except Exception as e:
+        raise NotRelevantParser(f"Not readable as an Envizi CSV: {e}") from e
+
+    if not ENVIZI_WATER_REQUIRED.issubset(raw_df.columns):
+        raise NotRelevantParser("Not an Envizi water CSV")
+
+    try:
+        raw_df["Interval_Start"] = pd.to_datetime(raw_df["Interval_Start"])
+    except Exception as e:
+        raise ParserError(f"Failed to parse Envizi water timestamps: {e}") from e
+    _coerce_numeric_column(raw_df, "Consumption")
+    if not raw_df["Consumption"].notna().any():
+        return ParserOutcome(status="processed_empty", source_row_count=len(raw_df), reason="blank_values")
     raw_df["Serial_No"] = raw_df["Serial_No"].astype(str)
 
     dfs: ParserResult = []
@@ -40,4 +68,7 @@ def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> Parser
         buf_df = buf_df.set_index("t_start")
         dfs.append((f"Envizi_{name}", buf_df))
 
-    return dfs
+    if not dfs:
+        return ParserOutcome(status="processed_empty", source_row_count=len(raw_df), reason="no_rows")
+
+    return ParserOutcome(status="processed", dfs=dfs, source_row_count=len(raw_df))

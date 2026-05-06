@@ -7,7 +7,14 @@ import pandas as pd
 import pytest
 from conftest import create_envizi_water_csv
 
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
+
+
+def _processed_dfs(result: ParserOutcome):
+    assert result.status == "processed"
+    assert result.source_row_count > 0
+    return result.dfs
 
 
 class TestEnviziVerticalParserWater:
@@ -20,11 +27,11 @@ class TestEnviziVerticalParserWater:
             create_envizi_water_csv(filepath, serial_numbers=["12345"], rows_per_meter=5)
 
             result = envizi_vertical_parser_water(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert isinstance(result, list)
-            assert len(result) == 1
+            assert len(result_dfs) == 1
 
-            nmi, df = result[0]
+            nmi, df = result_dfs[0]
             assert nmi == "Envizi_12345"
             assert "t_start" in df.index.name or "t_start" in df.columns
             assert "E1_kL" in df.columns
@@ -36,9 +43,10 @@ class TestEnviziVerticalParserWater:
             create_envizi_water_csv(filepath, serial_numbers=["111", "222", "333"], rows_per_meter=3)
 
             result = envizi_vertical_parser_water(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert len(result) == 3
-            nmis = [nmi for nmi, df in result]
+            assert len(result_dfs) == 3
+            nmis = [nmi for nmi, df in result_dfs]
             assert "Envizi_111" in nmis
             assert "Envizi_222" in nmis
             assert "Envizi_333" in nmis
@@ -49,7 +57,7 @@ class TestEnviziVerticalParserWater:
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"])
 
-            with pytest.raises(Exception, match="Not Relevant Parser"):
+            with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
                 envizi_vertical_parser_water(filepath, "error_log")
 
     def test_logs_warning_for_multiple_units(self, temp_directory: str) -> None:
@@ -73,3 +81,28 @@ class TestEnviziVerticalParserWater:
 
             # Should log warning about multiple units
             assert mock_log.error.called
+
+    def test_malformed_consumption_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+        path = tmp_path / "water.csv"
+        path.write_text(
+            "Serial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
+            "12345,2026-05-01T00:00:00,2026-05-01T00:30:00,not-a-number,kL\n"
+        )
+
+        with pytest.raises(ParserError, match="Failed to parse Envizi water Consumption values"):
+            envizi_vertical_parser_water(str(path), "error_log")
+
+    def test_blank_only_consumption_values_return_processed_empty(self, tmp_path) -> None:
+        path = tmp_path / "water.csv"
+        path.write_text(
+            "Serial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
+            "12345,2026-05-01T00:00:00,2026-05-01T00:30:00,,kL\n"
+            "12345,2026-05-01T00:30:00,2026-05-01T01:00:00,   ,kL\n"
+        )
+
+        result = envizi_vertical_parser_water(str(path), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 2
+        assert result.reason == "blank_values"
+        assert result.dfs == []

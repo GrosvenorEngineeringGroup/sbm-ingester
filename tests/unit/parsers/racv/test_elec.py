@@ -9,6 +9,14 @@ import pytest
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
+
+
+def _processed_dfs(result: ParserOutcome):
+    assert result.status == "processed"
+    assert result.source_row_count > 0
+    return result.dfs
+
 
 class TestRacvElecParser:
     """Tests for racv_elec_parser function."""
@@ -32,10 +40,10 @@ Date,Start Time,Meter1 kWh,Meter2 kWh
                 f.write(content)
 
             result = racv_elec_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert isinstance(result, list)
             # Should have parsed meter columns
-            assert len(result) >= 1
+            assert len(result_dfs) >= 1
 
     def test_filters_zero_days(self, temp_directory: str) -> None:
         """Test that days with all zero values are filtered out."""
@@ -56,10 +64,11 @@ Date,Start Time,Meter1 kWh
                 f.write(content)
 
             result = racv_elec_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
             # Result should only have non-zero day data
-            if len(result) > 0:
-                _nmi, _df = result[0]
+            if len(result_dfs) > 0:
+                _nmi, _df = result_dfs[0]
                 # Should have filtered out Jan 1 (all zeros)
                 # Only Jan 2 data should remain
 
@@ -77,15 +86,15 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            with pytest.raises(Exception, match="Not Relevant Parser"):
+            with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
                 racv_elec_parser(filepath, "error_log")
 
 
 class TestRacvElecParserEdgeCases:
     """Edge case tests for racv_elec_parser function."""
 
-    def test_raises_exception_when_all_zeros(self, temp_directory: str) -> None:
-        """Test that racv_elec_parser raises exception when all data is zero."""
+    def test_returns_processed_empty_when_all_zeros(self, temp_directory: str) -> None:
+        """Test that racv_elec_parser returns processed_empty when all data is zero."""
         with patch("shared.parsers.racv.elec.logger"):
             from shared.parsers.racv.elec import racv_elec_parser
 
@@ -102,7 +111,72 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            with pytest.raises(Exception, match="No Valid Data"):
+            result = racv_elec_parser(filepath, "error_log")
+
+            assert result.status == "processed_empty"
+            assert result.reason == "all_zero_valid"
+            assert result.dfs == []
+
+    def test_whitespace_blank_kwh_values_are_empty_values(self, temp_directory: str) -> None:
+        """Whitespace-only kWh cells are valid blanks, not malformed values."""
+        with patch("shared.parsers.racv.elec.logger"):
+            from shared.parsers.racv.elec import racv_elec_parser
+
+            filepath = str(Path(temp_directory) / "blank_values.csv")
+            content = (
+                "Header Row 1\n"
+                "Header Row 2\n"
+                "Date,Start Time,Meter1 kWh\n"
+                "2024-01-01,00:00,0.0\n"
+                "2024-01-01,00:30,   \n"
+                "2024-01-02,00:00,\n"
+                "2024-01-02,00:30,0.0\n"
+            )
+            with Path(filepath).open("w") as f:
+                f.write(content)
+
+            result = racv_elec_parser(filepath, "error_log")
+
+            assert result.status == "processed_empty"
+            assert result.reason == "all_zero_valid"
+            assert result.dfs == []
+
+    def test_mixed_nonzero_and_blank_kwh_values_parse(self, temp_directory: str) -> None:
+        """Non-zero usable rows survive when the same file also contains blanks."""
+        with patch("shared.parsers.racv.elec.logger"):
+            from shared.parsers.racv.elec import racv_elec_parser
+
+            filepath = str(Path(temp_directory) / "mixed_blank_values.csv")
+            content = (
+                "Header Row 1\nHeader Row 2\nDate,Start Time,Meter1 kWh\n2024-01-01,00:00,   \n2024-01-01,00:30,5.5\n"
+            )
+            with Path(filepath).open("w") as f:
+                f.write(content)
+
+            result = racv_elec_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
+
+            assert len(result_dfs) == 1
+            nmi, df = result_dfs[0]
+            assert nmi == "Optima_Meter1"
+            assert df["E1_kWh"].dropna().tolist() == [5.5]
+            assert df["E1_kWh"].isna().sum() == 1
+
+    def test_non_blank_invalid_kwh_value_raises_parser_error(self, temp_directory: str) -> None:
+        """Non-blank non-numeric kWh cells are still malformed."""
+        with patch("shared.parsers.racv.elec.logger"):
+            from shared.parsers.racv.elec import racv_elec_parser
+
+            filepath = str(Path(temp_directory) / "invalid_value.csv")
+            content = """Header Row 1
+Header Row 2
+Date,Start Time,Meter1 kWh
+2024-01-01,00:00,not-a-number
+"""
+            with Path(filepath).open("w") as f:
+                f.write(content)
+
+            with pytest.raises(ParserError, match="Failed to parse RACV electricity values"):
                 racv_elec_parser(filepath, "error_log")
 
     def test_handles_mixed_zero_nonzero_meters(self, temp_directory: str) -> None:
@@ -123,8 +197,9 @@ Date,Start Time,ZeroMeter kWh,NonZeroMeter kWh
                 f.write(content)
 
             result = racv_elec_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
             # Should only have nonzero meter
-            assert len(result) == 1
-            nmi, _ = result[0]
+            assert len(result_dfs) == 1
+            nmi, _ = result_dfs[0]
             assert "NonZeroMeter" in nmi

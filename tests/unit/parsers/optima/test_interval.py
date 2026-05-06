@@ -7,13 +7,21 @@ import pandas as pd
 import pytest
 from conftest import create_optima_csv
 
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
+
+
+def _processed_dfs(result: ParserOutcome) -> list[tuple[str, pd.DataFrame]]:
+    assert result.status == "processed"
+    assert result.source_row_count > 0
+    return result.dfs
+
 
 class TestIntervalParser:
     """Tests for interval_parser function."""
 
-    def test_returns_empty_list_for_no_data_sentinel(self, temp_directory: str) -> None:
+    def test_returns_processed_empty_for_no_data_sentinel(self, temp_directory: str) -> None:
         """BidEnergy returns 148-byte 'No data is available' CSV when site has no data
-        for the requested range. Parser must return [] (not raise UFuncTypeError)."""
+        for the requested range. Parser must return processed_empty."""
         from pathlib import Path
 
         from shared.parsers.optima.interval import interval_parser
@@ -28,7 +36,128 @@ class TestIntervalParser:
 
         result = interval_parser(str(filepath), "error_log")
 
-        assert result == []
+        assert result.status == "processed_empty"
+        assert result.reason == "no_data_sentinel"
+        assert result.dfs == []
+
+    def test_pseudo_no_data_sentinel_with_malformed_usage_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text(
+            "BuyerShortName,Country,Commodity,Identifier,IdentifierType,DistributorId,"
+            "Date,Start Time,Usage,Generation,DemandKva,Reactive\n"
+            "No data is available,,,,,,,,not-a-number,,,\n"
+        )
+
+        with pytest.raises(ParserError, match="Failed to parse interval Usage values"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_missing_required_columns_is_not_relevant(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "not_interval.csv"
+        filepath.write_text("Identifier,Usage\nMETER001,1.0\n")
+
+        with pytest.raises(NotRelevantParser, match="Not an Optima interval CSV"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_invalid_timestamp_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Usage\nnot-a-date,00:00,METER001,1.0\n")
+
+        with pytest.raises(ParserError, match="Failed to parse interval timestamps"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_missing_value_channel_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,DemandKva\n2026-05-01,00:00,METER001,3.0\n")
+
+        with pytest.raises(ParserError, match="Missing interval value column"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_header_only_value_file_returns_processed_empty(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Usage\n")
+
+        result = interval_parser(str(filepath), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 0
+        assert result.reason == "blank_values"
+        assert result.dfs == []
+
+    def test_header_only_generation_file_returns_processed_empty(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Generation\n")
+
+        result = interval_parser(str(filepath), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 0
+        assert result.reason == "blank_values"
+        assert result.dfs == []
+
+    def test_blank_date_with_malformed_usage_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Usage\n,00:00,METER001,not-a-number\n")
+
+        with pytest.raises(ParserError, match="Failed to parse interval Usage values"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_blank_date_with_blank_usage_raises_timestamp_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Usage\n,00:00,METER001,\n")
+
+        with pytest.raises(ParserError, match="Failed to parse interval timestamps"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_blank_only_value_rows_return_processed_empty(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text(
+            "Date,Start Time,Identifier,Usage,Generation\n"
+            "2026-05-01,00:00,METER001,,   \n"
+            "2026-05-01,00:30,METER001,   ,\n"
+        )
+
+        result = interval_parser(str(filepath), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 2
+        assert result.reason == "blank_values"
+        assert result.dfs == []
+
+    def test_malformed_usage_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Usage\n2026-05-01,00:00,METER001,not-a-number\n")
+
+        with pytest.raises(ParserError, match="Failed to parse interval Usage values"):
+            interval_parser(str(filepath), "error_log")
+
+    def test_malformed_generation_after_schema_match_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        filepath = tmp_path / "interval.csv"
+        filepath.write_text("Date,Start Time,Identifier,Generation\n2026-05-01,00:00,METER001,not-a-number\n")
+
+        with pytest.raises(ParserError, match="Failed to parse interval Generation values"):
+            interval_parser(str(filepath), "error_log")
 
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
         """Test that generation data is parsed correctly."""
@@ -39,11 +168,11 @@ class TestIntervalParser:
             create_optima_csv(filepath, identifiers=["SOLAR001"], rows_per_id=5)
 
             result = interval_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert isinstance(result, list)
-            assert len(result) == 1
+            assert len(result_dfs) == 1
 
-            nmi, df = result[0]
+            nmi, df = result_dfs[0]
             assert nmi == "Optima_SOLAR001"
             assert "B1_kWh" in df.columns  # Generation uses B1
             assert "E1_kWh" in df.columns  # Usage uses E1
@@ -57,9 +186,10 @@ class TestIntervalParser:
             create_optima_csv(filepath, identifiers=["SOLAR001", "SOLAR002"], rows_per_id=3)
 
             result = interval_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            assert len(result) == 2
-            nmis = [nmi for nmi, df in result]
+            assert len(result_dfs) == 2
+            nmis = [nmi for nmi, df in result_dfs]
             assert "Optima_SOLAR001" in nmis
             assert "Optima_SOLAR002" in nmis
 
@@ -72,8 +202,9 @@ class TestIntervalParser:
             create_optima_csv(filepath, identifiers=["METER001"], rows_per_id=5)
 
             result = interval_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            _nmi, df = result[0]
+            _nmi, df = result_dfs[0]
             assert "E1_kWh" in df.columns
             # Verify values are correctly extracted (Usage = i * 0.5)
             assert df["E1_kWh"].iloc[0] == 0.0  # i=0 -> 0 * 0.5 = 0
@@ -91,8 +222,9 @@ class TestIntervalParser:
             )
 
             result = interval_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            nmi, df = result[0]
+            nmi, df = result_dfs[0]
             assert nmi == "Optima_SOLAR001"
             assert "B1_kWh" in df.columns
             assert "E1_kWh" not in df.columns  # No Usage column in source
@@ -108,8 +240,9 @@ class TestIntervalParser:
             )
 
             result = interval_parser(filepath, "error_log")
+            result_dfs = _processed_dfs(result)
 
-            nmi, df = result[0]
+            nmi, df = result_dfs[0]
             assert nmi == "Optima_METER001"
             assert "E1_kWh" in df.columns
             assert "B1_kWh" not in df.columns  # No Generation column in source
@@ -131,8 +264,9 @@ class TestIntervalParser:
                 '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:30,1.7,0.9,3.4,0.0\n'
             )
             result = interval_parser(str(csv_path), str(tmp_path / "err.log"))
-            assert len(result) == 1
-            nmi_key, df = result[0]
+            result_dfs = _processed_dfs(result)
+            assert len(result_dfs) == 1
+            nmi_key, df = result_dfs[0]
             assert nmi_key == "Optima_TEST"
             assert "E1_kWh" in df.columns
             assert "B1_kWh" in df.columns
@@ -155,9 +289,10 @@ class TestIntervalParserOnRealFixtures:
 
         path = str(self.FIXTURE_DIR / "interval_au_single_day.csv")
         result = interval_parser(path, "error_log")
+        result_dfs = _processed_dfs(result)
 
-        assert len(result) == 1
-        sensor_id, df = result[0]
+        assert len(result_dfs) == 1
+        sensor_id, df = result_dfs[0]
         assert sensor_id == "Optima_2002105104"
         assert list(df.columns) == ["E1_kWh", "B1_kWh"]
         assert len(df) == 48  # 30-min intervals x 24 h
@@ -169,9 +304,10 @@ class TestIntervalParserOnRealFixtures:
 
         path = str(self.FIXTURE_DIR / "interval_nz_single_day.csv")
         result = interval_parser(path, "error_log")
+        result_dfs = _processed_dfs(result)
 
-        assert len(result) == 1
-        sensor_id, df = result[0]
+        assert len(result_dfs) == 1
+        sensor_id, df = result_dfs[0]
         assert sensor_id == "Optima_0000010008MQCB6"
         assert len(df) == 48
 
@@ -181,17 +317,20 @@ class TestIntervalParserOnRealFixtures:
 
         path = str(self.FIXTURE_DIR / "interval_au_4month.csv")
         result = interval_parser(path, "error_log")
+        result_dfs = _processed_dfs(result)
 
-        assert len(result) == 1
-        sensor_id, df = result[0]
+        assert len(result_dfs) == 1
+        sensor_id, df = result_dfs[0]
         assert sensor_id == "Optima_2002105104"
         assert len(df) > 5000
         assert sorted(df.index.month.unique().tolist()) == [4, 5, 6, 7]
 
-    def test_empty_data_fixture_returns_empty_list(self) -> None:
+    def test_empty_data_fixture_returns_processed_empty(self) -> None:
         from shared.parsers.optima.interval import interval_parser
 
         path = str(self.FIXTURE_DIR / "interval_empty.csv")
         result = interval_parser(path, "error_log")
 
-        assert result == []
+        assert result.status == "processed_empty"
+        assert result.reason == "no_data_sentinel"
+        assert result.dfs == []

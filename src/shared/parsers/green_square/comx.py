@@ -2,41 +2,84 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import pandas as pd
 from aws_lambda_powertools import Logger
 
-if TYPE_CHECKING:
-    from shared.parsers import ParserResult
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 
 logger = Logger(service="green-square-comx-parser", child=True)
 
 
-def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_path: str) -> ParserResult:
-    first_rows = pd.read_csv(file_name, header=None, nrows=2)
-    if first_rows.iloc[1, 0] != "ComX510_Green_Square":
-        raise Exception("Not Relevant Parser For File")
+def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    try:
+        first_rows = pd.read_csv(file_name, header=None, nrows=2)
+    except Exception as e:
+        raise NotRelevantParser(f"Not readable as a Green Square ComX CSV: {e}") from e
 
-    site_name = first_rows.iloc[1, 4].replace(" ", "")
-    raw_df = pd.read_csv(file_name, header=6, skip_blank_lines=False)
+    try:
+        header_marker = first_rows.iloc[1, 0]
+    except IndexError as e:
+        raise NotRelevantParser("Not Relevant Parser For File") from e
 
+    if header_marker != "ComX510_Green_Square":
+        raise NotRelevantParser("Not Relevant Parser For File")
+
+    try:
+        raw_site_name = first_rows.iloc[1, 4]
+    except IndexError as e:
+        raise ParserError("Missing site name in ComX header") from e
+    if not isinstance(raw_site_name, str) or not raw_site_name.strip():
+        raise ParserError("Missing site name in ComX header")
+    site_name = raw_site_name.replace(" ", "")
+
+    try:
+        raw_df = pd.read_csv(file_name, header=6, skip_blank_lines=False)
+    except Exception as e:
+        raise ParserError(f"Failed to read Green Square ComX data rows: {e}") from e
+
+    source_row_count = len(raw_df)
     if "Active energy (Wh)" in raw_df.columns:
-        raw_df = raw_df[pd.to_numeric(raw_df["Active energy (Wh)"], errors="coerce").notnull()]
-        raw_df["Active energy (Wh)"] = raw_df["Active energy (Wh)"].astype(float) / 1000
         energy_col = "Active energy (Wh)"
+        divisor = 1000
     elif "Active energy (kWh)" in raw_df.columns:
-        raw_df = raw_df[pd.to_numeric(raw_df["Active energy (kWh)"], errors="coerce").notnull()]
-        raw_df["Active energy (kWh)"] = raw_df["Active energy (kWh)"].astype(float)
         energy_col = "Active energy (kWh)"
+        divisor = 1
     else:
-        raise Exception("Missing Active energy column in file.")
+        raise ParserError("Missing Active energy column in file.")
 
-    raw_df["Local Time Stamp"] = pd.to_datetime(raw_df["Local Time Stamp"], dayfirst=True)
+    energy_series = raw_df[energy_col]
+    parsed = pd.to_numeric(energy_series, errors="coerce")
+    non_blank = energy_series.notna() & energy_series.astype(str).str.strip().ne("")
+    invalid = non_blank & parsed.isna()
+    if invalid.any():
+        bad_value = energy_series.loc[invalid].iloc[0]
+        raise ParserError(f"Failed to parse Green Square ComX energy values: {bad_value!r}")
+
+    valid_energy = parsed.notna()
+    raw_df = raw_df.loc[valid_energy].copy()
+    raw_df[energy_col] = parsed.loc[valid_energy] / divisor
+
+    if "Local Time Stamp" not in raw_df.columns:
+        raise ParserError("Missing Local Time Stamp column in file.")
+    if raw_df.empty:
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=source_row_count,
+            reason="no_valid_energy_rows",
+        )
+
+    try:
+        raw_df["Local Time Stamp"] = pd.to_datetime(raw_df["Local Time Stamp"], dayfirst=True)
+    except Exception as e:
+        raise ParserError(f"Failed to parse Green Square ComX timestamps: {e}") from e
 
     buf_df = raw_df[["Local Time Stamp", energy_col]].rename(
         columns={"Local Time Stamp": "t_start", energy_col: "E1_kWh"}
     )
     buf_df = buf_df.set_index("t_start")
 
-    return [(f"GPWComX_{site_name}", buf_df)]
+    return ParserOutcome(
+        status="processed",
+        dfs=[(f"GPWComX_{site_name}", buf_df)],
+        source_row_count=source_row_count,
+    )

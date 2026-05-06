@@ -124,21 +124,24 @@ class TestDataFrameOutputFormat:
             water_file = str(Path(temp_directory) / "water.csv")
             create_envizi_water_csv(water_file, serial_numbers=["1"])
             result = envizi_vertical_parser_water(water_file, "error")
-            _, df = result[0]
+            assert result.status == "processed"
+            _, df = result.dfs[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
             # Test Envizi electricity
             elec_file = str(Path(temp_directory) / "elec.csv")
             create_envizi_electricity_csv(elec_file, serial_numbers=["1"])
             result = envizi_vertical_parser_electricity(elec_file, "error")
-            _, df = result[0]
+            assert result.status == "processed"
+            _, df = result.dfs[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
             # Test Optima generation
             gen_file = str(Path(temp_directory) / "OptimaGenerationData_test.csv")
             create_optima_csv(gen_file, identifiers=["1"])
             result = interval_parser(gen_file, "error")
-            _, df = result[0]
+            assert result.status == "processed"
+            _, df = result.dfs[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
 
