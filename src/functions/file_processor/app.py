@@ -351,20 +351,60 @@ def move_s3_file(bucket_name: str, source_key: str, dest_prefix: str) -> str | N
 
     source_key = f"newTBP/{file_name}"
     dest_key = f"{dest_prefix.rstrip('/')}/{file_name}"
+    copied_dest = False
 
     try:
         bucket = s3_resource.Bucket(bucket_name)
 
         copy_source = {"Bucket": bucket_name, "Key": source_key}
         bucket.Object(dest_key).copy(copy_source)
+        copied_dest = True
 
         bucket.Object(source_key).delete()
 
         return dest_key
 
     except Exception as e:
+        if copied_dest:
+            try:
+                s3_resource.Object(bucket_name, dest_key).delete()
+            except Exception as cleanup_error:
+                logger.warning(
+                    "Failed to clean up destination after source move failure",
+                    extra={"source": source_key, "dest": dest_key, "error": str(cleanup_error)},
+                )
         logger.error("File move failed", exc_info=True, extra={"source": source_key, "dest": dest_key, "error": str(e)})
         return None
+
+
+def _move_final_source_or_parse_error(
+    local_file_path: str,
+    dest_prefix: str,
+    csv_writer: "DirectCSVWriter",
+    logs_dict: dict[str, str],
+    timestamp_now: str,
+) -> bool:
+    """Move source to its final prefix, or roll back writer output and mark parse error."""
+    dest_key = move_s3_file(BUCKET_NAME, local_file_path, dest_prefix)
+    if dest_key is not None:
+        return True
+
+    csv_writer.abort()
+    error_message = f"Failed to move source file to {dest_prefix}"
+    logger.error(
+        "Final source move failed",
+        extra={"file": local_file_path, "dest_prefix": dest_prefix, "error": error_message},
+    )
+    logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {error_message}"
+
+    parse_error_key = move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+    if parse_error_key is None:
+        logger.error(
+            "Failed to move source file to parse error after final move failure",
+            extra={"file": local_file_path, "dest_prefix": PARSE_ERR_DIR},
+        )
+
+    return False
 
 
 def _upload_csv_to_s3(csv_content: str, output_key: str) -> None:
@@ -547,6 +587,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
 
             # Process each NMI's data - write directly to CSV, bypass DataFrame
             csv_writer = DirectCSVWriter(batch_timestamp, executor)
+            mapped_monitor_points_for_file = 0
             try:
                 if outcome.dfs:
                     candidate_row_count = 0
@@ -614,8 +655,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     csv_writer.flush()
                     csv_writer.commit()
 
-                    processed_monitor_points_count += mapped_monitor_points_count
-                    total_monitor_points_count += mapped_monitor_points_count
+                    mapped_monitor_points_for_file = mapped_monitor_points_count
 
                     if rows_written > 0:
                         final_status = "processed"
@@ -656,7 +696,18 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 parse_err_files_count += 1
                 continue
 
-            move_s3_file(BUCKET_NAME, local_file_path, dest_prefix)
+            if not _move_final_source_or_parse_error(
+                local_file_path,
+                dest_prefix,
+                csv_writer,
+                logs_dict,
+                timestamp_now,
+            ):
+                parse_err_files_count += 1
+                continue
+
+            processed_monitor_points_count += mapped_monitor_points_for_file
+            total_monitor_points_count += mapped_monitor_points_for_file
             if dest_prefix == PROCESSED_DIR:
                 valid_processed_files_count += 1
             else:

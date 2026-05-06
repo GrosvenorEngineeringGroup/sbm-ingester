@@ -1004,6 +1004,45 @@ class TestParserOutcomeDisposition:
         assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/second.csv"]
 
     @mock_aws
+    def test_dataframe_final_move_failure_cleans_hudi_output_and_moves_to_parse_err(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+        real_move_s3_file = file_processor_app.move_s3_file
+        move_attempts = 0
+
+        def move_s3_file_with_final_failure(bucket_name: str, source_key: str, dest_prefix: str) -> str | None:
+            nonlocal move_attempts
+            move_attempts += 1
+            if move_attempts == 1:
+                return None
+            return real_move_s3_file(bucket_name, source_key, dest_prefix)
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app.move_s3_file", side_effect=move_s3_file_with_final_failure),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFilesStaging/") == []
+
+    @mock_aws
     def test_dataframe_upload_failure_moves_to_new_parse_err(self) -> None:
         df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": [1.0]})
         s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
