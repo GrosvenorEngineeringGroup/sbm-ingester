@@ -280,8 +280,8 @@ def download_interval_zip(
     end_date: str,             # ISO YYYY-MM-DD
     project: str,
     nmi: str,
-) -> bytes | None:
-    """POST /BuyerReport/exportdailyusagecsv, return raw ZIP bytes (or None on failure).
+) -> tuple[bytes, str] | None:
+    """POST /BuyerReport/exportdailyusagecsv, return raw ZIP bytes plus suggested filename.
 
     Body validation: accepts only responses whose first two bytes are b"PK"
     (ZIP local file header magic). HTML responses (auth lost, wrong Content-Type)
@@ -317,7 +317,7 @@ Differences vs `demand_exporter/downloader.py`:
 - Body validation: first 2 bytes `b"PK"` instead of `Commodities:` header sniff. HTML rejection identical to demand pattern.
 - **No** `nmi` URL parameter (`nmi` arg used only for output filename construction).
 - Filename: `f"optima_{project.lower()}_interval_NMI#{nmi.upper()}_{start_date}_{end_date}_{timestamp}.csv"`
-- Two-step flow: `download_interval_zip` returns raw ZIP bytes; `extract_first_csv` returns the inner CSV bytes verbatim (including the 148-byte "No data is available" sentinel — handled downstream by the parser, not by synthesis here).
+- Two-step flow: `download_interval_zip` returns `(zip_bytes, filename)`; `extract_first_csv` returns the inner CSV bytes verbatim (including the 148-byte "No data is available" sentinel — handled downstream by the parser, not by synthesis here).
 
 ### `uploader.py`
 
@@ -427,17 +427,17 @@ Athena queries, SkySpark mappings, and downstream dashboards require **no change
 | `project` missing in event | Return `{"statusCode": 400, "body": "Missing required parameter: project"}`. No retry. |
 | `get_project_config(project)` returns None | Return `{"statusCode": 400, "body": "No credentials configured for project: <p>"}`. |
 | `get_sites_for_project(project)` returns `[]` | Return `{"statusCode": 404, "body": "No sites found for project <p>"}`. |
-| `login_bidenergy(...)` returns None | Return `{"statusCode": 401, "body": "Failed to authenticate with BidEnergy"}`. EventBridge default retry policy (max 1 retry, 60s delay) will re-attempt. |
+| `login_bidenergy(...)` returns None | Return `{"statusCode": 401, "body": "Failed to authenticate with BidEnergy"}`. EventBridge treats this as a successful Lambda invocation because the handler returned normally; it will not retry unless the handler raises. |
 | `start_date > end_date` (after resolution) | Return `{"statusCode": 400, ...}`. Defense-in-depth assertion. |
 | Per-site download HTTP 401/403/404/timeout/connection error | Per-site fail; counted; does not abort the run. |
 | **Per-site response is HTML (POST/Content-Type missed)** | Per-site fail; first 2 bytes ≠ `b"PK"` OR `Content-Type` contains `text/html` → reject; logged with response preview. |
-| **Per-site response is "No data is available" CSV** (148 B, ~25% of sites observed empirically) | **Treated as success.** `extract_first_csv` returns the bytes verbatim; processor uploads to S3. `result["success"] = True`, `result["empty_data"] = True`. Parser detects sentinel (`len==1` and `Date` is NaN), returns `[]`, file_processor routes source to `newIrrevFiles/` (zero `file_neptune_ids`). |
+| **Per-site response is "No data is available" CSV** (148 B, ~25% of sites observed empirically) | **Treated as success.** `extract_first_csv` returns the bytes verbatim; processor uploads to S3. `result["success"] = True`, `result["empty_data"] = True`. Parser detects sentinel (`len==1` and `Date` is NaN). Under the parser-outcome semantics plan, this becomes `processed_empty` and routes the source file to `newP/`; before that semantics change, legacy `[]` handling routed it to `newIrrevFiles/`. |
 | **ZIP parse failure** (corrupted, unexpected format — never observed in 8 samples) | Per-site fail; `result["error"] = "zip parse"`; logged. |
 | **CSV header mismatch downstream** (parser pandas raises) | file_processor moves source to `newParseErr/`; surfaced via existing CloudWatch parse-error log group. |
 | S3 PUT failure for individual site | Per-site fail; `result["error"] = "s3"`. Does not abort the run. |
 | Final tally has any errors | Return `statusCode 207` (Multi-Status), nem12/demand convention. |
 
-EventBridge sees 200/207/4xx all as successful invocations. Operational signal comes from existing CloudWatch alarm template (`optima-interval-exporter-errors` → SNS `sbm-ingester-alerts`).
+EventBridge sees 200/207/4xx all as successful invocations. The standard Lambda `Errors` alarm (`optima-interval-exporter-errors` → SNS `sbm-ingester-alerts`) only fires for unhandled exceptions, not for returned `statusCode` 207/4xx payloads. If auth failures or partial failures need paging, add a custom CloudWatch metric/alarm or raise for run-level fatal failures in a separate change.
 
 ## Configuration Surface
 
@@ -581,6 +581,7 @@ resource "aws_lambda_function" "optima_interval_exporter" {
 resource "aws_scheduler_schedule" "optima_bunnings_interval" {
   name       = "optima-bunnings-interval-daily"
   group_name = "default"
+  state      = "DISABLED" # stage A; enable only after code deploy + smoke test
   flexible_time_window { mode = "OFF" }
   schedule_expression          = "cron(0 14 * * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
@@ -589,11 +590,13 @@ resource "aws_scheduler_schedule" "optima_bunnings_interval" {
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "bunnings" })
   }
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
 }
 
 resource "aws_scheduler_schedule" "optima_racv_interval" {
   name       = "optima-racv-interval-daily"
   group_name = "default"
+  state      = "DISABLED" # stage A; enable only after code deploy + smoke test
   flexible_time_window { mode = "OFF" }
   schedule_expression          = "cron(0 14 * * ? *)"
   schedule_expression_timezone = "Australia/Sydney"
@@ -602,6 +605,7 @@ resource "aws_scheduler_schedule" "optima_racv_interval" {
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "racv" })
   }
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
 }
 
 resource "aws_cloudwatch_metric_alarm" "optima_interval_errors" {
@@ -636,9 +640,9 @@ Resource = [
 ]
 ```
 
-### Step 4: Disable NEM12 schedules
+### Step 4: Final schedule cutover after deploy smoke test
 
-Replace the existing `aws_scheduler_schedule.optima_bunnings_nem12` and `aws_scheduler_schedule.optima_racv_nem12` resource blocks with commented-out versions:
+Do not disable NEM12 schedules in the same apply that first creates the interval Lambda, because the S3 artifact may not yet contain `interval_exporter/`. First create/verify the Lambda and disabled interval schedules, verify the CI/CD policy, deploy the code through GitHub Actions, and run a single-NMI smoke test. Only after that, enable the interval schedules and replace the existing `aws_scheduler_schedule.optima_bunnings_nem12` and `aws_scheduler_schedule.optima_racv_nem12` resource blocks with commented-out versions:
 
 ```hcl
 # === DISABLED 2026-05-06 ===
@@ -659,29 +663,48 @@ Replace the existing `aws_scheduler_schedule.optima_bunnings_nem12` and `aws_sch
 #   }
 # }
 # resource "aws_scheduler_schedule" "optima_racv_nem12" {
-#   ... (mirror of above with project = "racv") ...
+#   name       = "optima-racv-nem12-daily"
+#   group_name = "default"
+#   flexible_time_window { mode = "OFF" }
+#   schedule_expression          = "cron(0 14 * * ? *)"
+#   schedule_expression_timezone = "Australia/Sydney"
+#   target {
+#     arn      = aws_lambda_function.optima_nem12_exporter.arn
+#     role_arn = aws_iam_role.optima_scheduler_role.arn
+#     input    = jsonencode({ project = "racv" })
+#   }
 # }
 ```
 
-### Expected `terraform plan` summary
+### Expected Terraform summaries
+
+Stage A, before code deploy:
 
 ```
-Plan: 5 to add, 1 to change, 2 to destroy.
+Plan: 5 to add, 1 to change, 0 to destroy.
   + aws_cloudwatch_log_group.optima_interval_exporter
   + aws_lambda_function.optima_interval_exporter
-  + aws_scheduler_schedule.optima_bunnings_interval
-  + aws_scheduler_schedule.optima_racv_interval
+  + aws_scheduler_schedule.optima_bunnings_interval  (state = DISABLED)
+  + aws_scheduler_schedule.optima_racv_interval      (state = DISABLED)
   + aws_cloudwatch_metric_alarm.optima_interval_errors
-  ~ aws_iam_role_policy.optima_scheduler_invoke_lambda  (in-place: add 4th ARN)
+  ~ aws_iam_role_policy.optima_scheduler_invoke_lambda  (in-place: add interval ARN)
+```
+
+Final cutover, after GitHub Actions deploy and smoke test:
+
+```
+Plan: 0 to add, 2 to change, 2 to destroy.
+  ~ aws_scheduler_schedule.optima_bunnings_interval  (state DISABLED -> ENABLED)
+  ~ aws_scheduler_schedule.optima_racv_interval      (state DISABLED -> ENABLED)
   - aws_scheduler_schedule.optima_bunnings_nem12       (commented out — intentional)
   - aws_scheduler_schedule.optima_racv_nem12           (commented out — intentional)
 ```
 
-The 2 destroys remove only EventBridge schedules; the `optima-nem12-exporter` Lambda function, log group, and error alarm remain for manual invoke / backup / debug. The `moved` blocks are also gone (Step 1) — Terraform should not reference them anywhere in plan output.
+The 2 final destroys remove only EventBridge schedules; the `optima-nem12-exporter` Lambda function, log group, and error alarm remain for manual invoke / backup / debug. The `moved` blocks are also gone (Step 1) — Terraform should not reference them anywhere in plan output.
 
 ### CI/CD policy update (manual step)
 
-Add `arn:aws:lambda:ap-southeast-2:318396632821:function:optima-interval-exporter` to `sbm-ingester-cicd-policy` v10 `LambdaUpdateFunctions` Resource list (current default version is v9 after demand exporter was added). Procedure documented in `sbm-ingester/CLAUDE.md` ("Manual Sync: CI/CD IAM Policy"). Failure mode if skipped: deploy fails with `AccessDeniedException: lambda:UpdateFunctionCode`.
+Verify `arn:aws:lambda:ap-southeast-2:318396632821:function:optima-interval-exporter` is present in the current default `sbm-ingester-cicd-policy` `LambdaUpdateFunctions` Resource list before relying on GitHub Actions deploy. As of the current repo docs, root `AGENTS.md` and `CLAUDE.md` record the policy as manually synced to default version `v10` and include `optima-interval-exporter`; create a new policy version only if live AWS verification shows the ARN is missing. Failure mode if skipped when missing: deploy fails with `AccessDeniedException: lambda:UpdateFunctionCode`.
 
 ### GitHub Actions workflow update
 
@@ -706,11 +729,11 @@ The `optima_exporter.zip` artefact is shared by all four Optima Lambdas (nem12, 
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Cutover gap: nem12 disabled, interval not yet running | Low | Low (1-day data gap at most) | Apply Terraform AFTER GitHub Actions deploy succeeds — schedules remain in old state until both deploy + apply complete. |
+| Cutover gap: nem12 disabled, interval not yet running | Low | Low (1-day data gap at most) | Use a two-stage cutover: first create the interval Lambda/schedules with interval schedules disabled while keeping NEM12 schedules, deploy code via GitHub Actions and smoke test, then apply the final schedule switch. |
 | Cutover overlap: both nem12 and interval write same Hudi sensors during the window between code deploy and Terraform apply | High (intentional) | None (Hudi upserts by sensorId+ts) | Acceptable; the second writer's value wins, both are effectively the same data. |
 | Empty-data CSVs (~25% of daily site responses) flood `newIrrevFiles/` | High (intentional) | None | Weekly archiver moves them to `archived/<week>/` after 7 days. 148 bytes × 532 sites × 365 days × 0.25 = ~7 MB/year — negligible. |
 | BidEnergy session timeout mid-run for large project (Bunnings 477 sites) | Low | Medium | 900s Lambda timeout vs ~50s expected runtime (20 workers) leaves 17× headroom. Single-NMI re-invoke supported via `event.nmi`. Demand exporter has run for 7 days at this volume without rate-limit responses — carry-over assumption. |
-| Forgetting to update `sbm-ingester-cicd-policy` v10 whitelist | Medium | High (deploy blocked) | Pre-merge checklist + this spec explicitly calls it out + `CLAUDE.md` documents the procedure. |
+| Forgetting to verify `sbm-ingester-cicd-policy` whitelist | Medium | High (deploy blocked) | Pre-merge checklist + this spec explicitly calls it out + root `AGENTS.md` / `CLAUDE.md` document the procedure and current v10 state. |
 | Forgetting to remove the 5 stale `moved` blocks before adding new resources | Medium | High (terraform plan errors out) | Spec Step 1 explicitly calls this out as the FIRST Terraform action. Plan should be inspected for "duplicate resource" errors and aborted if found. |
 | Existing `interval_parser` lacks a filename gate | Low | Low | The dispatcher (`non_nem_parsers.py`) tries parsers in order and catches exceptions — wrong-format files raise inside `pd.read_csv` and the dispatcher continues. Adding a defensive filename gate is a separate cleanup spec (out of scope here). |
 | `%b` is locale-dependent for `format_date_for_url` URL building | Low | Low (only impacts non-English dev locales) | Lambda runs on `C.UTF-8` (verified); CI runners same. If a developer with a non-English `LC_TIME` runs tests locally they may see e.g. "Mai" — would need locale override in test setup. Documented in downloader docstring. |

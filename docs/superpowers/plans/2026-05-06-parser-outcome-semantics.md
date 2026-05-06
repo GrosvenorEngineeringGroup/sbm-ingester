@@ -374,6 +374,8 @@ def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
 
 The generic `Exception` compatibility branch stays only until all parsers are migrated in later tasks. Keeping `get_non_nem_df()` as a list-returning wrapper prevents Task 2 from breaking the current `file_processor`, which still consumes raw DataFrame tuples until Task 6.
 
+**Deployment boundary:** Tasks 2-6 are compatibility checkpoints, not deployable production states. Do not push or deploy any intermediate commit until Task 7 removes generic exception swallowing and Task 9 verification passes. This prevents matched parser bugs from being hidden by the legacy dispatcher fallback.
+
 - [ ] **Step 4: Run dispatcher tests**
 
 Run:
@@ -645,7 +647,7 @@ def test_all_valid_billing_candidates_unmapped_returns_unmapped(_reset_mappings_
     src = FIXTURE_DIR / "bunnings_billing_sample.csv"
     dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
     dst.write_bytes(src.read_bytes())
-    monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+    monkeypatch.setattr(bp_mod, "get_nem12_mappings", lambda: {})
 
     result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
 
@@ -666,7 +668,7 @@ def test_bunnings_hudi_write_failure_raises_processing_error(_reset_mappings_cac
     for nmi in ("VCCCLG0019", "VAAA000266"):
         for _, suffix, _unit_source in bp_mod.CSV_FIELD_MAPPING:
             mappings[f"{nmi}-{suffix}"] = f"p:test:{nmi}:{suffix}"
-    monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: mappings)
+    monkeypatch.setattr(bp_mod, "get_nem12_mappings", lambda: mappings)
 
     with patch("shared.parsers.optima.bunnings_billing.boto3.client") as mock_client:
         mock_client.return_value.put_object.side_effect = RuntimeError("boom")
@@ -720,6 +722,7 @@ In `bunnings_billing.py`:
 - Import `dataclass`, typed parser classes, and `ProcessingError`.
 - Add `BillingBuildResult` with `body`, `source_row_count`, `candidate_row_count`, `rows_written`, `unmapped_count`, `invalid_count`.
 - Count a candidate only after a valid NMI, valid billing date, and non-blank field value exist.
+- Keep tests patching `bp_mod.get_nem12_mappings`, because the current parser imports `get_nem12_mappings` directly into `bunnings_billing.py`. If the implementation instead switches to module import (`from shared.parsers import _mappings as mappings_mod`), update the tests to patch that module reference consistently.
 - If all valid candidates miss mappings, return `ParserOutcome(status="unmapped", source_row_count=build.source_row_count, candidate_row_count=build.candidate_row_count, rows_written=0, unmapped_count=build.unmapped_count, reason="all_candidates_unmapped")`.
 - If source rows exist but all candidate formation fails because dates/values are invalid, raise `ParserError`.
 - Wrap `put_object` failures:
@@ -797,6 +800,7 @@ git commit -m "feat: return explicit billing parser outcomes"
 - Modify: `tests/unit/test_dispatcher.py`
 - Modify: `tests/unit/test_non_nem_parsers.py`
 - Modify: `tests/unit/test_non_nem_parsers_edge_cases.py`
+- Modify: `tests/unit/parsers/racv/test_elec.py`
 - Modify: `tests/unit/parsers/racv/test_noosa_solar.py`
 
 - [ ] **Step 1: Update interval direct parser tests**
@@ -887,7 +891,7 @@ For each standard parser:
 - Raise `NotRelevantParser` for filename/content/schema gates that prove the parser does not own the file.
 - For broad CSV parsers that appear early in `PARSERS`, missing parser-specific required columns must be `NotRelevantParser`, not `ParserError`, so later parsers can still run.
 - For broad CSV parsers that fail before the parser-specific schema gate, including decode/read failures, raise `NotRelevantParser`; without a passed gate the parser has not proved ownership.
-- Raise `ParserError` only after the parser-specific relevance gate passes, for malformed timestamps, invalid required values, or no valid parsed data in a matched file.
+- Raise `ParserError` only after the parser-specific relevance gate passes, for malformed timestamps or invalid required values. For matched files with valid structure but no usable rows, use parser-specific `processed_empty` semantics when documented below.
 - Return `ParserOutcome(status="processed", dfs=dfs, source_row_count=len(df))` instead of `dfs`.
 - Do not set `candidate_row_count`, `rows_written`, or `unmapped_count` in DataFrame-returning parsers. Those counts become final only after `file_processor` applies suffix filtering, null-value filtering, and mapping lookup.
 
@@ -981,6 +985,53 @@ return ParserOutcome(
 )
 ```
 
+Use this shape for RACV electricity:
+
+```python
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
+
+if "OptimaGenerationData" in file_name:
+    raise NotRelevantParser("Not Relevant Parser For File")
+
+try:
+    raw_df = pd.read_csv(file_name, skiprows=[0, 1])
+except Exception as e:
+    raise NotRelevantParser(f"Not readable as a RACV electricity CSV: {e}") from e
+
+required_columns = {"Date", "Start Time"}
+if not required_columns.issubset(raw_df.columns) or not any("kWh" in col for col in raw_df.columns):
+    raise NotRelevantParser("Not a RACV electricity CSV")
+
+try:
+    raw_df["Interval_Start"] = pd.to_datetime(raw_df["Date"] + " " + raw_df["Start Time"])
+except Exception as e:
+    raise ParserError(f"Failed to parse RACV electricity timestamps: {e}") from e
+
+dfs: list[tuple[str, pd.DataFrame]] = []
+for meter_col in [col for col in raw_df.columns if "kWh" in col]:
+    buf_df = raw_df[["Interval_Start", meter_col]].rename(columns={"Interval_Start": "t_start", meter_col: "E1_kWh"})
+    buf_df = buf_df.set_index("t_start")
+    daily_sum = buf_df.resample("D").sum(numeric_only=True)
+    non_zero_dates = daily_sum[daily_sum["E1_kWh"] != 0].index
+    buf_df = buf_df[buf_df.index.normalize().isin(non_zero_dates)]
+    if not non_zero_dates.empty:
+        dfs.append((f"Optima_{meter_col.split(' ')[0]}", buf_df))
+
+if not dfs:
+    return ParserOutcome(status="processed_empty", source_row_count=len(raw_df), reason="all_zero_valid")
+
+return ParserOutcome(status="processed", dfs=dfs, source_row_count=len(raw_df))
+```
+
+Update `tests/unit/parsers/racv/test_elec.py::test_raises_exception_when_all_zeros` to assert:
+
+```python
+result = racv_elec_parser(filepath, "error_log")
+assert result.status == "processed_empty"
+assert result.reason == "all_zero_valid"
+assert result.dfs == []
+```
+
 - [ ] **Step 5: Update tests that inspect raw parser results**
 
 For every direct parser call changed in tests:
@@ -1005,7 +1056,7 @@ assert len(result.dfs) == expected_count
 Run:
 
 ```bash
-uv run pytest tests/unit/test_dispatcher.py tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py tests/unit/parsers/optima/test_interval.py tests/unit/parsers/racv/test_noosa_solar.py -v
+uv run pytest tests/unit/test_dispatcher.py tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py tests/unit/parsers/optima/test_interval.py tests/unit/parsers/racv/test_elec.py tests/unit/parsers/racv/test_noosa_solar.py -v
 ```
 
 Expected: PASS.
@@ -1013,7 +1064,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/shared/parsers tests/unit/test_dispatcher.py tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py tests/unit/parsers/optima/test_interval.py tests/unit/parsers/racv/test_noosa_solar.py
+git add src/shared/parsers tests/unit/test_dispatcher.py tests/unit/test_non_nem_parsers.py tests/unit/test_non_nem_parsers_edge_cases.py tests/unit/parsers/optima/test_interval.py tests/unit/parsers/racv/test_elec.py tests/unit/parsers/racv/test_noosa_solar.py
 git commit -m "feat: return outcomes from dataframe parsers"
 ```
 
@@ -1371,6 +1422,99 @@ def test_quality_column_is_written_with_mapped_rows(temp_directory: str) -> None
 
 
 @mock_aws
+def test_dataframe_bad_timestamp_moves_to_new_parse_err(temp_directory: str) -> None:
+    from shared.parsers import ParserOutcome
+    from functions.file_processor.app import parse_and_write_data
+
+    s3_resource = boto3.resource("s3", region_name="ap-southeast-2")
+    s3_resource.create_bucket(Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"})
+    s3_resource.create_bucket(Bucket="hudibucketsrc", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"})
+    s3_resource.Object("sbm-file-ingester", "newTBP/bad_timestamp.csv").put(Body=b"ok")
+    s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({"Optima_4001260599-E1": "p:test:e1"}))
+
+    df = pd.DataFrame({"t_start": ["not-a-date"], "E1_kWh": [1.0]})
+
+    with (
+        patch("functions.file_processor.app.s3_resource", s3_resource),
+        patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+        patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+        patch(
+            "functions.file_processor.app.get_non_nem_outcome",
+            return_value=ParserOutcome(status="processed", dfs=[("Optima_4001260599", df)], source_row_count=1),
+            create=True,
+        ),
+    ):
+        result = parse_and_write_data(tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/bad_timestamp.csv"}])
+
+    assert result == 1
+    keys = [obj.key for obj in s3_resource.Bucket("sbm-file-ingester").objects.filter(Prefix="newParseErr/")]
+    assert keys == ["newParseErr/bad_timestamp.csv"]
+
+
+@mock_aws
+def test_dataframe_non_numeric_value_moves_to_new_parse_err(temp_directory: str) -> None:
+    from shared.parsers import ParserOutcome
+    from functions.file_processor.app import parse_and_write_data
+
+    s3_resource = boto3.resource("s3", region_name="ap-southeast-2")
+    s3_resource.create_bucket(Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"})
+    s3_resource.create_bucket(Bucket="hudibucketsrc", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"})
+    s3_resource.Object("sbm-file-ingester", "newTBP/non_numeric.csv").put(Body=b"ok")
+    s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({"Optima_4001260599-E1": "p:test:e1"}))
+
+    df = pd.DataFrame({"t_start": ["2026-01-01 00:00:00"], "E1_kWh": ["not-a-number"]})
+
+    with (
+        patch("functions.file_processor.app.s3_resource", s3_resource),
+        patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+        patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+        patch(
+            "functions.file_processor.app.get_non_nem_outcome",
+            return_value=ParserOutcome(status="processed", dfs=[("Optima_4001260599", df)], source_row_count=1),
+            create=True,
+        ),
+    ):
+        result = parse_and_write_data(tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/non_numeric.csv"}])
+
+    assert result == 1
+    keys = [obj.key for obj in s3_resource.Bucket("sbm-file-ingester").objects.filter(Prefix="newParseErr/")]
+    assert keys == ["newParseErr/non_numeric.csv"]
+
+
+@mock_aws
+def test_dataframe_upload_failure_moves_to_new_parse_err(temp_directory: str) -> None:
+    from shared.parsers import ParserOutcome
+    from functions.file_processor.app import parse_and_write_data
+
+    s3_resource = boto3.resource("s3", region_name="ap-southeast-2")
+    s3_resource.create_bucket(Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"})
+    s3_resource.create_bucket(Bucket="hudibucketsrc", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"})
+    s3_resource.Object("sbm-file-ingester", "newTBP/upload_failure.csv").put(Body=b"ok")
+    s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({"Optima_4001260599-E1": "p:test:e1"}))
+
+    df = pd.DataFrame({"t_start": ["2026-01-01 00:00:00"], "E1_kWh": [1.0]})
+
+    with (
+        patch("functions.file_processor.app.s3_resource", s3_resource),
+        patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+        patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+        patch(
+            "functions.file_processor.app.get_non_nem_outcome",
+            return_value=ParserOutcome(status="processed", dfs=[("Optima_4001260599", df)], source_row_count=1),
+            create=True,
+        ),
+        patch("functions.file_processor.app._upload_csv_to_s3", side_effect=RuntimeError("boom")),
+    ):
+        result = parse_and_write_data(tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/upload_failure.csv"}])
+
+    assert result == 1
+    parse_error_keys = [obj.key for obj in s3_resource.Bucket("sbm-file-ingester").objects.filter(Prefix="newParseErr/")]
+    processed_keys = [obj.key for obj in s3_resource.Bucket("sbm-file-ingester").objects.filter(Prefix="newP/")]
+    assert parse_error_keys == ["newParseErr/upload_failure.csv"]
+    assert processed_keys == []
+
+
+@mock_aws
 @pytest.mark.parametrize("exception_name", ["ParserError", "ProcessingError"])
 def test_parser_errors_move_to_new_parse_err(temp_directory: str, exception_name: str) -> None:
     from shared.parsers import ParserError, ProcessingError
@@ -1408,13 +1552,15 @@ Run:
 uv run pytest tests/unit/test_edge_cases.py -k "outcome_moves or dataframe_ or side_effect_processed or direct_point_id or quality_column or parser_errors_move" -v
 ```
 
-Expected: FAIL because `file_processor` still expects raw `dfs`, moves empty outcomes to `newIrrevFiles/`, does not derive DataFrame outcomes, does not preserve direct `p:` and quality-column behavior under outcomes, and does not route typed parser exceptions explicitly.
+Expected: FAIL because `file_processor` still expects raw `dfs`, moves empty outcomes to `newIrrevFiles/`, does not derive DataFrame outcomes, does not validate timestamp/value candidates, does not preserve direct `p:` and quality-column behavior under outcomes, may move the source before async Hudi upload success is known, and does not route typed parser exceptions explicitly.
 
 - [ ] **Step 3: Import parser outcome types in file processor**
 
 In `src/functions/file_processor/app.py`, replace the existing `get_non_nem_df` import with:
 
 ```python
+from dataclasses import dataclass
+
 from shared.non_nem_parsers import get_non_nem_outcome
 from shared.parsers import ParserError, ParserOutcome, ProcessingError
 ```
@@ -1424,6 +1570,13 @@ from shared.parsers import ParserError, ParserOutcome, ProcessingError
 Add near the existing helper functions:
 
 ```python
+@dataclass(frozen=True)
+class DataFrameCandidate:
+    ts: pd.Timestamp
+    val: float
+    quality: str = ""
+
+
 def _processed_destination_for_status(status: str) -> str:
     if status in {"processed", "processed_empty", "processed_external"}:
         return PROCESSED_DIR
@@ -1432,8 +1585,23 @@ def _processed_destination_for_status(status: str) -> str:
     raise ValueError(f"Unsupported parser outcome status: {status}")
 
 
-def _candidate_values(df: pd.DataFrame, col: str) -> list:
-    return [val for val in df[col] if not pd.isna(val)]
+def _candidate_values(df: pd.DataFrame, col: str, t_start_col: pd.Series, quality_col: pd.Series | None = None) -> list[DataFrameCandidate]:
+    candidates: list[DataFrameCandidate] = []
+    for idx, (ts, val) in enumerate(zip(t_start_col, df[col], strict=False)):
+        if pd.isna(val):
+            continue
+        try:
+            parsed_ts = pd.to_datetime(ts, errors="raise")
+            numeric_val = pd.to_numeric(pd.Series([val]), errors="raise").iloc[0]
+        except Exception as e:
+            raise ProcessingError(f"Invalid candidate row for {col}: ts={ts!r}, val={val!r}") from e
+
+        quality = ""
+        if quality_col is not None:
+            raw_quality = quality_col.iloc[idx]
+            quality = "" if pd.isna(raw_quality) else str(raw_quality)
+        candidates.append(DataFrameCandidate(ts=parsed_ts, val=float(numeric_val), quality=quality))
+    return candidates
 ```
 
 - [ ] **Step 5: Wrap NEM parser output in `ParserOutcome`**
@@ -1475,7 +1643,9 @@ try:
             if suffix not in NMI_DATA_STREAM_COMBINED:
                 continue
 
-            values = _candidate_values(df, col)
+            quality_col_name = f"quality_{suffix}"
+            quality_col = df[quality_col_name] if quality_col_name in df.columns else None
+            values = _candidate_values(df, col, t_start_col, quality_col)
             if not values:
                 continue
             candidate_row_count += len(values)
@@ -1492,21 +1662,9 @@ try:
 
             mapped_ids.append(neptune_id)
             unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
-            quality_col_name = f"quality_{suffix}"
-            quality_col = df[quality_col_name] if quality_col_name in df.columns else None
-
-            if quality_col is not None:
-                for ts, val, q in zip(t_start_col, df[col], quality_col, strict=False):
-                    if pd.isna(val):
-                        continue
-                    csv_writer.write_row(neptune_id, ts, val, unit_name, "" if pd.isna(q) else q)
-                    rows_written_count += 1
-            else:
-                for ts, val in zip(t_start_col, df[col], strict=False):
-                    if pd.isna(val):
-                        continue
-                    csv_writer.write_row(neptune_id, ts, val, unit_name)
-                    rows_written_count += 1
+            for candidate in values:
+                csv_writer.write_row(neptune_id, candidate.ts, candidate.val, unit_name, candidate.quality)
+                rows_written_count += 1
 
             processed_monitor_points_count += 1
             if csv_writer.row_count >= BATCH_SIZE:
@@ -1517,6 +1675,21 @@ except Exception as e:
     move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
     parse_err_files_count += 1
     continue
+```
+
+Before deriving and moving a `processed` DataFrame outcome, wait for writes for this source file:
+
+```python
+if outcome.dfs and rows_written_count > 0:
+    try:
+        csv_writer.flush()
+        csv_writer.wait_for_uploads()
+    except Exception as e:
+        logger.error("Failed to upload Hudi CSV for file", exc_info=True, extra={"file": local_file_path, "error": str(e)})
+        logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {e}"
+        move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+        parse_err_files_count += 1
+        continue
 ```
 
 After writing DataFrame rows:

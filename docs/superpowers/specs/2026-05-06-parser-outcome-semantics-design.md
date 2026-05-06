@@ -245,9 +245,12 @@ Add focused unit tests around disposition, not just parser output shape:
    - partial mapping remains `processed`
    - DataFrame outputs with only unsupported suffixes move to `newP/` as `processed_empty`, without writing header-only Hudi files
    - DataFrame outputs with only null values move to `newP/` as `processed_empty`, without writing header-only Hudi files
+   - DataFrame outputs with malformed timestamps move to `newParseErr/`, not `unmapped`
+   - DataFrame outputs with non-numeric values in mapped channel columns move to `newParseErr/`, not `unmapped`
    - direct `p:` point IDs bypass Neptune mapping and still write Hudi rows
    - `quality_<suffix>` columns continue to populate the Hudi `quality` column
    - side-effect parser outcomes with `rows_written > 0` move the source file to `newP/`
+   - S3 upload failure from the file processor's own Hudi writer moves the source file to `newParseErr/`; source files are not moved to `newP/` until the per-file upload futures complete successfully
 6. Dispatcher
    - `NotRelevantParser` continues
    - `ParserError` stops and propagates

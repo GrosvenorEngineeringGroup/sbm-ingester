@@ -10,6 +10,10 @@
 
 **Spec reference:** `docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md` (commit `86ab1bf`).
 
+**Current status after final review (2026-05-06):** This document is now a historical implementation plan plus reference. The current repo already contains the interval exporter code, GitHub Actions packaging/deploy blocks, Terraform resources, root `AGENTS.md`/`CLAUDE.md` documentation, and CI/CD policy notes. Do not execute this plan from Task 1 as a fresh build. For any remaining operational work, use the preflight checks and two-stage cutover notes below; if a resource or workflow block already exists, verify it instead of appending another copy.
+
+**Safe cutover rule:** Never create enabled interval schedules while the deployed `optima_exporter.zip` may not contain `interval_exporter/`. If rerunning infra work from a partially applied environment, first create/verify the Lambda and disabled interval schedules while keeping NEM12 schedules, then deploy code and smoke test, then perform the final schedule switch.
+
 **Verified truth (do not re-verify during implementation):**
 - BidEnergy CSV uses CRLF line endings, no BOM, double-quoted strings.
 - AU `IdentifierType=NMI` (numeric), NZ `IdentifierType=ICP` (alphanumeric); `interval_parser` reads `Identifier` column directly.
@@ -21,7 +25,9 @@
 
 ## File Structure
 
-**New files:**
+This section records the original implementation shape. In the current repo these files should already exist; verify before creating anything.
+
+**New files in the original implementation:**
 ```
 src/functions/optima_exporter/interval_exporter/
 ├── __init__.py            # empty package marker
@@ -38,14 +44,14 @@ tests/unit/optima_exporter/interval_exporter/
 └── test_uploader.py       # 4 tests — copied from demand_exporter
 ```
 
-**Modified files:**
+**Modified files in the original implementation:**
 ```
 src/shared/parsers/optima/interval.py         # +4 lines: empty-data sentinel short-circuit
 tests/unit/parsers/optima/test_interval.py    # add TestIntervalParserOnRealFixtures (4 tests)
 .github/workflows/main.yml                    # 1 cp -r line + 1 update-function-code block
 terraform/optima_exporter.tf                  # remove 5 moved blocks; add 5 new resources;
                                               # comment-out 2 nem12 schedules; +1 ARN to scheduler IAM
-sbm-ingester/CLAUDE.md                        # update Lambda table + CI/CD policy whitelist
+AGENTS.md / CLAUDE.md                         # verify Lambda table + CI/CD policy whitelist
 ```
 
 **Already in place (no changes needed):**
@@ -58,11 +64,11 @@ sbm-ingester/CLAUDE.md                        # update Lambda table + CI/CD poli
 
 ## Task Sequencing & Commit Strategy
 
-The 13 tasks below are ordered so each commit can stand on its own. Tasks 1-2 ship the parser fix + fixture tests as a first PR-able chunk (the parser bug crashes ~25% of daily site files today, so this is independently valuable). Tasks 3-8 build the new Lambda with TDD. Tasks 9-11 do infra wiring (Task 10 split into 10a/10b around the `terraform apply` user gate). Task 12 pushes + verifies.
+The original 13 tasks below were written for a greenfield implementation. In the current repo they should be treated as historical unless a preflight check proves that the relevant file/resource/block is missing. Tasks 1-8 describe the code/test implementation that is now present. Tasks 9-12 should be read as deployment/verification guidance, with the safe cutover rule above overriding the original single-step schedule swap.
 
 **Branch:** main (per user's standing workflow — push triggers GitHub Actions deploy).
 
-**Push gate:** Tasks 9, 10a, 10b, 11 each create commits but **NONE** of them push. The single `git push` happens in Task 12, after all four prerequisites are confirmed in place. This avoids deploying a Lambda whose function name is missing from the IAM whitelist (would 403) or whose code references a function that doesn't yet exist (would 404).
+**Push gate for reruns:** If the interval Lambda function does not exist yet, do not push the workflow update until Terraform stage A has created the Lambda and the CI/CD policy has been verified. If the Lambda already exists, verify the workflow block is present and avoid adding duplicate `cp -r` or `update-function-code` steps.
 
 ---
 
@@ -1839,7 +1845,9 @@ git commit -m "feat: add interval_exporter Lambda handler"
 - Modify: `.github/workflows/main.yml` — Build step (locate via `grep -n "Build Optima Exporter Lambda" .github/workflows/main.yml`)
 - Modify: `.github/workflows/main.yml` — Deploy step (locate via `grep -n "Upload Optima Exporter & Refresh" .github/workflows/main.yml`)
 
-> ⛔ **SEQUENCING RULE — READ BEFORE STARTING.** This task creates a commit only. **DO NOT `git push` in this task.** The push happens in Task 12, after Task 10 (terraform apply) and Task 11 (CI/CD policy v10) are both complete. If you push the commit from this task before Task 10+11, GitHub Actions will fail with `ResourceNotFoundException: Function not found: optima-interval-exporter` (Lambda doesn't exist yet) or `AccessDeniedException: lambda:UpdateFunctionCode` (whitelist doesn't include the new Lambda yet). The commit + push are intentionally split across tasks.
+> ⛔ **CURRENT-STATE PREFLIGHT — READ BEFORE STARTING.** In the current repo this workflow block already exists. Before editing, run `rg -n "interval_exporter|optima-interval-exporter" .github/workflows/main.yml`. If both the `cp -r src/functions/optima_exporter/interval_exporter` line and the `aws lambda update-function-code --function-name optima-interval-exporter` block are present, skip this task. Do not append duplicate workflow steps.
+>
+> If the block is missing in another checkout, the safe sequence is: Terraform stage A creates/verifies the Lambda with interval schedules disabled, CI/CD policy is verified, then this workflow change is pushed and GitHub Actions deploys the shared zip.
 
 - [ ] **Step 1: Add interval_exporter to the build step**
 
@@ -1918,7 +1926,7 @@ Expected: `OK`
 
 ```bash
 git add .github/workflows/main.yml
-# DO NOT git push — push happens in Task 12 after Task 10 + Task 11.
+# DO NOT git push until Terraform stage A and CI/CD policy verification are complete.
 git commit -m "ci: build and deploy optima-interval-exporter via GitHub Actions"
 ```
 
@@ -1926,14 +1934,14 @@ After committing, verify there are no uncommitted changes (`git status` clean) a
 
 ---
 
-### Task 10a: Edit Terraform + validate + plan (no apply)
+### Task 10a: Terraform stage A - create/verify disabled interval infra (no apply without approval)
 
 **Files:**
 - Modify: `terraform/optima_exporter.tf`
 
 **Why split:** Subagents cannot interactively prompt the user. This task does all the editing + `terraform plan` review and stops at the gate. The actual `terraform apply` happens in Task 10b after the orchestrator/user explicitly approves the plan output.
 
-**Pre-flight:** Ensure CI/CD policy v10 work (Task 11) is queued — if it's not done before push (Task 12), GitHub Actions will fail with `AccessDeniedException`.
+**Pre-flight:** First run `terraform state list | rg 'optima_interval_exporter|optima_bunnings_interval|optima_racv_interval'` and `rg -n 'optima_interval_exporter|optima_bunnings_interval|optima_racv_interval|optima_bunnings_nem12|optima_racv_nem12' terraform/optima_exporter.tf`. If the interval resources already exist, verify their current state instead of appending duplicate resources. Stage A must not destroy NEM12 schedules and must keep interval schedules disabled until code deploy and smoke test pass.
 
 - [ ] **Step 1: Remove the 5 stale `moved` blocks**
 
@@ -1975,61 +1983,9 @@ moved {
 }
 ```
 
-- [ ] **Step 2: Comment out the 2 NEM12 schedule resources**
+- [ ] **Step 2: Keep NEM12 schedules during stage A**
 
-First locate by anchor:
-
-```bash
-grep -n 'aws_scheduler_schedule" "optima_bunnings_nem12"\|aws_scheduler_schedule" "optima_racv_nem12"' terraform/optima_exporter.tf
-```
-
-Expected: 2 hits — the opening lines of `optima_bunnings_nem12` and `optima_racv_nem12` schedule resources (NOT the `..._weekly` variants which are already commented out). Find the comment line `# Bunnings NEM12 - Daily 2:00 PM Sydney` just above the first hit; that marks the start of the block to replace. The end is the closing `}` of `optima_racv_nem12`. Replace that whole range with this commented-out version:
-
-```hcl
-# === DISABLED 2026-05-06 ===
-# Replaced by optima-interval-exporter (uses POST /BuyerReport/exportdailyusagecsv).
-# The optima-nem12-exporter Lambda function, log group, and alarm are intentionally
-# kept for manual invoke / backup / debug. To re-enable: uncomment these two
-# resource blocks + run `terraform apply`.
-#
-# # Bunnings NEM12 - Daily 2:00 PM Sydney
-# resource "aws_scheduler_schedule" "optima_bunnings_nem12" {
-#   name       = "optima-bunnings-nem12-daily"
-#   group_name = "default"
-#
-#   flexible_time_window {
-#     mode = "OFF"
-#   }
-#
-#   schedule_expression          = "cron(0 14 * * ? *)"
-#   schedule_expression_timezone = "Australia/Sydney"
-#
-#   target {
-#     arn      = aws_lambda_function.optima_nem12_exporter.arn
-#     role_arn = aws_iam_role.optima_scheduler_role.arn
-#     input    = jsonencode({ project = "bunnings" })
-#   }
-# }
-#
-# # RACV NEM12 - Daily 2:00 PM Sydney
-# resource "aws_scheduler_schedule" "optima_racv_nem12" {
-#   name       = "optima-racv-nem12-daily"
-#   group_name = "default"
-#
-#   flexible_time_window {
-#     mode = "OFF"
-#   }
-#
-#   schedule_expression          = "cron(0 14 * * ? *)"
-#   schedule_expression_timezone = "Australia/Sydney"
-#
-#   target {
-#     arn      = aws_lambda_function.optima_nem12_exporter.arn
-#     role_arn = aws_iam_role.optima_scheduler_role.arn
-#     input    = jsonencode({ project = "racv" })
-#   }
-# }
-```
+Do not comment out or destroy `aws_scheduler_schedule.optima_bunnings_nem12` or `aws_scheduler_schedule.optima_racv_nem12` in stage A. They remain the active daily interval source until the interval Lambda has been deployed from CI and smoke-tested. The final schedule switch happens only in Task 12 after successful deploy verification.
 
 - [ ] **Step 3: Update the scheduler invoke-lambda IAM policy**
 
@@ -2112,6 +2068,7 @@ resource "aws_lambda_function" "optima_interval_exporter" {
 resource "aws_scheduler_schedule" "optima_bunnings_interval" {
   name       = "optima-bunnings-interval-daily"
   group_name = "default"
+  state      = "DISABLED"
 
   flexible_time_window {
     mode = "OFF"
@@ -2125,12 +2082,15 @@ resource "aws_scheduler_schedule" "optima_bunnings_interval" {
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "bunnings" })
   }
+
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
 }
 
 # RACV Interval - Daily 2:00 PM Sydney
 resource "aws_scheduler_schedule" "optima_racv_interval" {
   name       = "optima-racv-interval-daily"
   group_name = "default"
+  state      = "DISABLED"
 
   flexible_time_window {
     mode = "OFF"
@@ -2144,6 +2104,8 @@ resource "aws_scheduler_schedule" "optima_racv_interval" {
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "racv" })
   }
+
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
 }
 
 resource "aws_cloudwatch_metric_alarm" "optima_interval_errors" {
@@ -2184,7 +2146,7 @@ cd terraform && terraform plan -out=/tmp/interval.tfplan 2>&1 | tee /tmp/interva
 
 Expected summary:
 ```
-Plan: 5 to add, 1 to change, 2 to destroy.
+Plan: 5 to add, 1 to change, 0 to destroy.
 ```
 
 Specifically:
@@ -2194,10 +2156,8 @@ Specifically:
 - `+ aws_scheduler_schedule.optima_racv_interval`
 - `+ aws_cloudwatch_metric_alarm.optima_interval_errors`
 - `~ aws_iam_role_policy.optima_scheduler_invoke_lambda` (in-place: add 4th ARN)
-- `- aws_scheduler_schedule.optima_bunnings_nem12` (commented out)
-- `- aws_scheduler_schedule.optima_racv_nem12` (commented out)
 
-If the plan output mentions "moved" blocks anywhere, STOP — Step 1 was incomplete. If you see destroys for the NEM12 Lambda function, log group, or alarm, STOP — Step 2 over-deleted. The Lambda function/log group/alarm for `optima_nem12_exporter` must be untouched.
+The two new interval schedules must show `state = "DISABLED"`. If the plan output mentions "moved" blocks anywhere, STOP — Step 1 was incomplete. If you see any destroy in stage A, especially for NEM12 schedules, Lambda function, log group, or alarm, STOP. The active NEM12 schedules remain untouched until the final cutover in Task 12.
 
 - [ ] **Step 7: STOP — emit plan summary for orchestrator gate**
 
@@ -2211,7 +2171,7 @@ The orchestrator (parent session or user) will review the plan and dispatch Task
 
 ---
 
-### Task 10b: Apply Terraform plan + verify + commit
+### Task 10b: Apply Terraform stage A plan + verify + commit
 
 **Pre-requisites:** Task 10a complete; orchestrator/user has explicitly approved the plan; `/tmp/interval.tfplan` exists.
 
@@ -2224,7 +2184,7 @@ The orchestrator (parent session or user) will review the plan and dispatch Task
 cd terraform && terraform apply /tmp/interval.tfplan
 ```
 
-Expected: `Apply complete! Resources: 5 added, 1 changed, 2 destroyed.`
+Expected: `Apply complete! Resources: 5 added, 1 changed, 0 destroyed.`
 
 If the apply fails, report status `BLOCKED — terraform apply failed: <error>` and STOP. Do not retry without orchestrator instruction.
 
@@ -2236,37 +2196,38 @@ aws lambda get-function-configuration --function-name optima-interval-exporter -
 
 Expected: `name=optima-interval-exporter`, `handler=interval_exporter.app.lambda_handler`, `runtime=python3.13`, `memory=256`, `timeout=900`.
 
-The Lambda code at this point is whatever was in the existing `optima_exporter.zip` artefact in S3 (which does not yet contain `interval_exporter/`). Invoking it now would fail with `Unable to import module 'interval_exporter.app'`. That is fixed by Task 11 (CI/CD policy update) + Task 12 (push triggers GitHub Actions deploy).
+The interval schedules are disabled at this point, so no scheduled production run can invoke a stale S3 artifact. Do not invoke the Lambda until Task 11 verifies the CI/CD policy and Task 12 deploys the zip containing `interval_exporter/`.
 
 - [ ] **Step 3: Commit the Terraform change**
 
 ```bash
 git add terraform/optima_exporter.tf
-git commit -m "infra: add optima-interval-exporter Lambda + schedules; disable NEM12 schedules
+git commit -m "infra: add optima-interval-exporter Lambda with disabled schedules
 
 - Remove 5 stale 'moved' blocks (leftover from April rename).
-- Add aws_cloudwatch_log_group, aws_lambda_function, 2 aws_scheduler_schedule,
-  and aws_cloudwatch_metric_alarm for optima-interval-exporter.
+- Add aws_cloudwatch_log_group, aws_lambda_function, 2 disabled
+  aws_scheduler_schedule resources, and aws_cloudwatch_metric_alarm for
+  optima-interval-exporter.
 - Add the new Lambda ARN to the optima_scheduler_invoke_lambda IAM policy.
-- Comment out optima_bunnings_nem12 and optima_racv_nem12 schedules
-  (Lambda function/log group/alarm preserved for backup/debug).
+- Keep optima_bunnings_nem12 and optima_racv_nem12 schedules active until
+  post-deploy smoke testing passes.
 
-Applied: 5 added, 1 changed, 2 destroyed."
+Applied: 5 added, 1 changed, 0 destroyed."
 ```
 
 > ⛔ Same sequencing rule as Task 9: **DO NOT `git push` here.** Push happens in Task 12.
 
 ---
 
-### Task 11: Update CI/CD IAM policy (manual, then docs)
+### Task 11: Verify CI/CD IAM policy (manual update only if missing)
 
 **Files:**
-- Modify: `sbm-ingester/CLAUDE.md` (update whitelist + version number)
-- Manual AWS step: create v10 of `sbm-ingester-cicd-policy`
+- Modify only if stale: `AGENTS.md`, `CLAUDE.md` (update whitelist + version number)
+- Manual AWS step only if needed: create a new default version of `sbm-ingester-cicd-policy`
 
 **Why:** GitHub Actions deploys via the `sbm-ingester-github-actions` IAM user, whose `sbm-ingester-cicd-policy` whitelists Lambda function ARNs for `lambda:UpdateFunctionCode`. Without this update, the deploy from Task 9 will fail with `AccessDeniedException`.
 
-This is a manual step (the policy is intentionally not Terraform-managed — see `sbm-ingester/CLAUDE.md` "Manual Sync: CI/CD IAM Policy"). The plan documents it for the human; the agent should pause and request the user perform it.
+This is a manual verification/update step (the policy is intentionally not Terraform-managed — see root `AGENTS.md` / `CLAUDE.md` "Manual Sync: CI/CD IAM Policy"). Current repo docs record default version `v10` and include `optima-interval-exporter`; do not create another policy version unless live AWS verification shows the ARN is missing.
 
 - [ ] **Step 1: Fetch the current default policy**
 
@@ -2280,9 +2241,11 @@ aws iam get-policy-version \
 cat /tmp/policy-current.json | python3 -m json.tool | head -40
 ```
 
-Expected: Should be `v9` and contain 9 Lambda ARNs already (including `optima-demand-exporter`).
+Expected in the current environment: default version is already `v10` and the document contains `arn:aws:lambda:ap-southeast-2:318396632821:function:optima-interval-exporter`.
 
-- [ ] **Step 2: Edit policy to add `optima-interval-exporter`**
+- [ ] **Step 2: If missing, edit policy to add `optima-interval-exporter`**
+
+Skip this step if the ARN is already present.
 
 ```bash
 python3 - <<'PY'
@@ -2303,7 +2266,7 @@ print("Updated. Resource count now:",
 PY
 ```
 
-Expected: `Resource count now: 10`.
+Expected if this was needed: `Resource count now: 10` or higher, depending on any later Lambda additions.
 
 - [ ] **Step 3: If at 5 versions, delete the oldest non-default**
 
@@ -2320,7 +2283,7 @@ OLDEST=$(aws iam list-policy-versions --policy-arn arn:aws:iam::318396632821:pol
 aws iam delete-policy-version --policy-arn arn:aws:iam::318396632821:policy/sbm-ingester-cicd-policy --version-id "$OLDEST"
 ```
 
-- [ ] **Step 4: Create v10 and set as default**
+- [ ] **Step 4: Create a new default version only if Step 2 changed the policy**
 
 ```bash
 aws iam create-policy-version \
@@ -2330,11 +2293,11 @@ aws iam create-policy-version \
   --query 'PolicyVersion.{Version:VersionId,Default:IsDefaultVersion}' --output table
 ```
 
-Expected: `Version: v10`, `Default: True`.
+Expected: a new version id with `Default: True`. Do not assume it is `v10`; managed policy version numbers depend on prior cleanup.
 
-- [ ] **Step 5: Update `sbm-ingester/CLAUDE.md` with the new whitelist + version**
+- [ ] **Step 5: Verify root docs are current**
 
-In `sbm-ingester/CLAUDE.md`, find the `## ⚠️ Manual Sync: CI/CD IAM Policy` section. Update:
+In root `AGENTS.md` and `CLAUDE.md`, find the `## ⚠️ Manual Sync: CI/CD IAM Policy` section. If live AWS differs from the docs, update:
 1. The "as of last verified sync" date to today's date.
 2. Append `optima-interval-exporter` to the bullet list of whitelisted Lambdas.
 3. Update the Lambda functions table at line ~95 (the one starting with `| `sbm-files-ingester` | Python 3.13 | 512 MB | 900s |`) by adding a new row right after the existing `optima-demand-exporter` row:
@@ -2343,12 +2306,14 @@ In `sbm-ingester/CLAUDE.md`, find the `## ⚠️ Manual Sync: CI/CD IAM Policy` 
    ```
 4. (Optional but recommended) In the "Optima Exporter Tests" section near the bottom, add a row for the new test directory `tests/unit/optima_exporter/interval_exporter/` with the test counts after Task 12.
 
-- [ ] **Step 6: Commit docs update**
+- [ ] **Step 6: Commit docs update if files changed**
 
 ```bash
-git add sbm-ingester/CLAUDE.md
+git add AGENTS.md CLAUDE.md
 git commit -m "docs: document optima-interval-exporter in Lambda table and CI/CD whitelist"
 ```
+
+If no files changed, do not create an empty commit.
 
 ---
 
@@ -2447,7 +2412,32 @@ Expected: Recent rows for the smoke-test date showing both `cnt > 0` and a `max_
 
 If the mapping lookup raises `KeyError`, the smoke-test NMI's mapping has changed — pick another NMI from `aws s3 cp s3://sbm-file-ingester/nem12_mappings.json - | python3 -c "import json,sys; print([k for k in json.load(sys.stdin) if k.startswith('Optima_2002') and k.endswith('-E1')][:5])"` and re-run the smoke test from Step 4 with the chosen NMI.
 
-- [ ] **Step 9: Watch the first 14:00 scheduled run**
+- [ ] **Step 9: Final Terraform cutover after smoke test passes**
+
+Only after Steps 3-8 pass, edit `terraform/optima_exporter.tf` for the schedule switch:
+
+- Set `aws_scheduler_schedule.optima_bunnings_interval.state = "ENABLED"`.
+- Set `aws_scheduler_schedule.optima_racv_interval.state = "ENABLED"`.
+- Comment out or remove only `aws_scheduler_schedule.optima_bunnings_nem12` and `aws_scheduler_schedule.optima_racv_nem12`.
+- Keep the NEM12 Lambda function, log group, IAM, and alarm intact.
+
+Run:
+
+```bash
+cd terraform && terraform fmt -check optima_exporter.tf && terraform plan -out=/tmp/interval-cutover.tfplan
+```
+
+Expected: only the two interval schedule state changes plus two NEM12 schedule destroys. If the plan touches the NEM12 Lambda function/log group/alarm, STOP.
+
+After user approval:
+
+```bash
+cd terraform && terraform apply /tmp/interval-cutover.tfplan
+git add terraform/optima_exporter.tf
+git commit -m "infra: switch daily Optima interval schedules from NEM12 to CSV exporter"
+```
+
+- [ ] **Step 10: Watch the first 14:00 scheduled run**
 
 The next day at 14:00 Sydney, watch the alarm dashboard:
 
@@ -2458,14 +2448,14 @@ aws cloudwatch describe-alarms --alarm-names optima-interval-exporter-errors \
 
 Expected: `State: OK`. If `State: ALARM`, check `aws logs tail /aws/lambda/optima-interval-exporter --since 1h --region ap-southeast-2`.
 
-- [ ] **Step 10: Confirm the old NEM12 schedules no longer fire**
+- [ ] **Step 11: Confirm the old NEM12 schedules no longer fire**
 
 ```bash
 aws scheduler list-schedules --region ap-southeast-2 --name-prefix optima- \
   --query 'Schedules[*].{Name:Name,State:State}' --output table
 ```
 
-Expected: `optima-bunnings-nem12-daily` and `optima-racv-nem12-daily` should NOT appear (they were destroyed in Task 10). `optima-bunnings-interval-daily` and `optima-racv-interval-daily` should be present and `ENABLED`.
+Expected after final cutover: `optima-bunnings-nem12-daily` and `optima-racv-nem12-daily` should NOT appear. `optima-bunnings-interval-daily` and `optima-racv-interval-daily` should be present and `ENABLED`.
 
 ---
 
