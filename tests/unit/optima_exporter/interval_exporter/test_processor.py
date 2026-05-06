@@ -262,6 +262,47 @@ class TestProcessExport:
         assert result["statusCode"] == 400
         assert "invalid range" in result["body"].lower()
 
+    def test_invalid_start_date_returns_400_before_config_lookup(self) -> None:
+        processor_module = reload_interval_processor_module()
+
+        with patch("interval_exporter.processor.get_project_config") as get_project_config_mock:
+            result = processor_module.process_export(
+                project="bunnings",
+                start_date="2026-13-01",
+                end_date="2026-04-29",
+            )
+
+        assert result["statusCode"] == 400
+        assert "invalid date" in result["body"].lower()
+        get_project_config_mock.assert_not_called()
+
+    def test_invalid_end_date_returns_400_before_config_lookup(self) -> None:
+        processor_module = reload_interval_processor_module()
+
+        with patch("interval_exporter.processor.get_project_config") as get_project_config_mock:
+            result = processor_module.process_export(
+                project="bunnings",
+                start_date="2026-04-29",
+                end_date="2026-13-01",
+            )
+
+        assert result["statusCode"] == 400
+        assert "invalid date" in result["body"].lower()
+        get_project_config_mock.assert_not_called()
+
+    def test_invalid_single_end_date_returns_400_before_config_lookup(self) -> None:
+        processor_module = reload_interval_processor_module()
+
+        with patch("interval_exporter.processor.get_project_config") as get_project_config_mock:
+            result = processor_module.process_export(
+                project="bunnings",
+                end_date="2026-13-01",
+            )
+
+        assert result["statusCode"] == 400
+        assert "invalid date" in result["body"].lower()
+        get_project_config_mock.assert_not_called()
+
     def test_single_nmi_mode_uses_get_site_by_nmi(self) -> None:
         processor_module = reload_interval_processor_module()
         site = {"nmi": "Optima_X", "siteIdStr": "site-x"}

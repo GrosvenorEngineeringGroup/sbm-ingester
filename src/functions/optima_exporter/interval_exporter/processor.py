@@ -98,6 +98,20 @@ def process_site(
     return result
 
 
+def _parse_iso_date(date_str: str, field_name: str) -> date | dict[str, Any]:
+    try:
+        return date.fromisoformat(date_str)
+    except ValueError:
+        logger.warning(
+            "Export rejected: invalid date",
+            extra={"field_name": field_name, "date": date_str},
+        )
+        return {
+            "statusCode": 400,
+            "body": f"Invalid date for {field_name}: {date_str}. Expected YYYY-MM-DD",
+        }
+
+
 def process_export(
     project: str,
     nmi: str | None = None,
@@ -119,7 +133,15 @@ def process_export(
     """
     project = project.lower()
 
-    if start_date and end_date and date.fromisoformat(start_date) > date.fromisoformat(end_date):
+    parsed_start_date = _parse_iso_date(start_date, "start_date") if start_date else None
+    if isinstance(parsed_start_date, dict):
+        return parsed_start_date
+
+    parsed_end_date = _parse_iso_date(end_date, "end_date") if end_date else None
+    if isinstance(parsed_end_date, dict):
+        return parsed_end_date
+
+    if start_date and end_date and parsed_start_date > parsed_end_date:
         logger.warning(
             "Export rejected: startDate after endDate",
             extra={"project": project, "start_date": start_date, "end_date": end_date},
@@ -167,7 +189,7 @@ def process_export(
         if not end_date:
             end_date = (today - timedelta(days=1)).isoformat()
         if not start_date:
-            end_d = date.fromisoformat(end_date)
+            end_d = parsed_end_date or date.fromisoformat(end_date)
             start_date = (end_d - timedelta(days=OPTIMA_DAYS_BACK - 1)).isoformat()
 
     if date.fromisoformat(start_date) > date.fromisoformat(end_date):
