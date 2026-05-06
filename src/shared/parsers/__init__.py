@@ -1,7 +1,21 @@
-"""Non-NEM file parsers, organised by source platform."""
+"""Non-NEM file parser contracts."""
 
 from __future__ import annotations
 
-import pandas as pd
+from shared.parsers.outcome import (
+    NotRelevantParser,
+    ParserError,
+    ParserOutcome,
+    ParserResult,
+    ParserStatus,
+    ProcessingError,
+)
 
-ParserResult = list[tuple[str, pd.DataFrame]]
+__all__ = [
+    "NotRelevantParser",
+    "ParserError",
+    "ParserOutcome",
+    "ParserResult",
+    "ParserStatus",
+    "ProcessingError",
+]
