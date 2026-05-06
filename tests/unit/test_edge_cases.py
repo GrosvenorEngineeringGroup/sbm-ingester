@@ -1074,3 +1074,97 @@ class TestParserOutcomeDisposition:
         assert result == 1
         assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
         assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+
+class TestComputeDataFrameFinalStatus:
+    """Cover each branch of the spec's final-status calc ladder."""
+
+    def test_rows_written_positive_returns_processed(self) -> None:
+        from functions.file_processor.app import _compute_dataframe_final_status
+
+        status, reason = _compute_dataframe_final_status(
+            rows_written=5,
+            candidate_row_count=5,
+            unmapped_count=0,
+            unsupported_suffixes=frozenset(),
+            rows_skipped=0,
+            parser_reason=None,
+        )
+
+        assert status == "processed"
+        assert reason is None
+
+    def test_all_candidates_unmapped_returns_unmapped(self) -> None:
+        from functions.file_processor.app import _compute_dataframe_final_status
+
+        status, reason = _compute_dataframe_final_status(
+            rows_written=0,
+            candidate_row_count=7,
+            unmapped_count=7,
+            unsupported_suffixes=frozenset(),
+            rows_skipped=0,
+            parser_reason=None,
+        )
+
+        assert status == "unmapped"
+        assert reason is None
+
+    def test_no_candidates_with_unsupported_suffix_returns_all_unknown_suffix(self) -> None:
+        from functions.file_processor.app import _compute_dataframe_final_status
+
+        status, reason = _compute_dataframe_final_status(
+            rows_written=0,
+            candidate_row_count=0,
+            unmapped_count=0,
+            unsupported_suffixes=frozenset({"foo"}),
+            rows_skipped=0,
+            parser_reason=None,
+        )
+
+        assert status == "processed_empty"
+        assert reason == "all_unknown_suffix"
+
+    def test_rows_skipped_only_returns_all_skipped(self) -> None:
+        from functions.file_processor.app import _compute_dataframe_final_status
+
+        status, reason = _compute_dataframe_final_status(
+            rows_written=0,
+            candidate_row_count=0,
+            unmapped_count=0,
+            unsupported_suffixes=frozenset(),
+            rows_skipped=4,
+            parser_reason=None,
+        )
+
+        assert status == "processed_empty"
+        assert reason == "all_skipped"
+
+    def test_default_branch_inherits_parser_reason(self) -> None:
+        from functions.file_processor.app import _compute_dataframe_final_status
+
+        status, reason = _compute_dataframe_final_status(
+            rows_written=0,
+            candidate_row_count=0,
+            unmapped_count=0,
+            unsupported_suffixes=frozenset(),
+            rows_skipped=0,
+            parser_reason="all_blank",
+        )
+
+        assert status == "processed_empty"
+        assert reason == "all_blank"
+
+    def test_default_branch_with_no_parser_reason_yields_none(self) -> None:
+        from functions.file_processor.app import _compute_dataframe_final_status
+
+        status, reason = _compute_dataframe_final_status(
+            rows_written=0,
+            candidate_row_count=0,
+            unmapped_count=0,
+            unsupported_suffixes=frozenset(),
+            rows_skipped=0,
+            parser_reason=None,
+        )
+
+        assert status == "processed_empty"
+        assert reason is None

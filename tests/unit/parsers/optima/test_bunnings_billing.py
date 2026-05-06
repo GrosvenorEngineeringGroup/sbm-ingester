@@ -628,7 +628,7 @@ def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache,
 
     result = get_non_nem_outcome(str(dst), "dummy")
     assert result.status == "processed_external"
-    assert result.reason == "gegoptimareports"
+    assert result.reason == "external_gegoptimareports"
 
     # RACV parser copies to gegoptimareports — verify we hit it, not ours
     obj = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")

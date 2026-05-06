@@ -70,7 +70,7 @@ class TestRacvBillingParser:
                 result = racv_billing_parser(filepath, "error_log")
 
                 assert result.status == "processed_external"
-                assert result.reason == "gegoptimareports"
+                assert result.reason == "external_gegoptimareports"
 
                 # Verify file was uploaded
                 response = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")
@@ -90,7 +90,7 @@ def test_racv_billing_success_returns_processed_external(tmp_path) -> None:
         result = racv_billing_parser(str(path), "error_log")
 
     assert result.status == "processed_external"
-    assert result.reason == "gegoptimareports"
+    assert result.reason == "external_gegoptimareports"
     mock_logger.info.assert_called_once_with(
         "racv_billing_uploaded",
         extra={

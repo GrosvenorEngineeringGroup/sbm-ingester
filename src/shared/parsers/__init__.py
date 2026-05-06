@@ -6,16 +6,20 @@ from shared.parsers.outcome import (
     NotRelevantParser,
     ParserError,
     ParserOutcome,
+    ParserReason,
     ParserResult,
     ParserStatus,
     ProcessingError,
+    SkipReason,
 )
 
 __all__ = [
     "NotRelevantParser",
     "ParserError",
     "ParserOutcome",
+    "ParserReason",
     "ParserResult",
     "ParserStatus",
     "ProcessingError",
+    "SkipReason",
 ]

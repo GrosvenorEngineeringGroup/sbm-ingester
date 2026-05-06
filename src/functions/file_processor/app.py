@@ -34,7 +34,7 @@ from shared import (
     stream_as_data_frames,
 )
 from shared.non_nem_parsers import get_non_nem_outcome
-from shared.parsers import ParserError, ParserOutcome, ProcessingError
+from shared.parsers import ParserError, ParserOutcome, ParserReason, ParserStatus, ProcessingError
 
 # File stability check configuration
 FILE_STABILITY_CHECK_INTERVAL = 5  # seconds between checks
@@ -158,6 +158,37 @@ def _processed_destination_for_status(status: str) -> str:
     if status == "unmapped":
         return IRREVFILES_DIR
     raise ValueError(f"Unsupported parser outcome status: {status}")
+
+
+def _compute_dataframe_final_status(
+    rows_written: int,
+    candidate_row_count: int,
+    unmapped_count: int,
+    unsupported_suffixes: frozenset[str] | set[str],
+    rows_skipped: int,
+    parser_reason: ParserReason | None,
+) -> tuple[ParserStatus, ParserReason | None]:
+    """Compute final (status, reason) for the DataFrame path per spec ladder.
+
+    Ladder (in order):
+      1. rows_written > 0                                            -> processed
+      2. candidate_row_count > 0 and unmapped_count == candidate_row_count
+                                                                     -> unmapped
+      3. candidate_row_count == 0 and unsupported_suffixes
+                                                              -> processed_empty(all_unknown_suffix)
+      4. rows_skipped > 0 and rows_written == 0 and candidate_row_count == 0
+                                                              -> processed_empty(all_skipped)
+      5. else                                                 -> processed_empty(inherit parser_reason)
+    """
+    if rows_written > 0:
+        return ("processed", None)
+    if candidate_row_count > 0 and unmapped_count == candidate_row_count:
+        return ("unmapped", None)
+    if candidate_row_count == 0 and unsupported_suffixes:
+        return ("processed_empty", "all_unknown_suffix")
+    if rows_skipped > 0 and rows_written == 0 and candidate_row_count == 0:
+        return ("processed_empty", "all_skipped")
+    return ("processed_empty", parser_reason)
 
 
 def _is_blank_value(value: Any) -> bool:
@@ -559,6 +590,14 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             local_file_path = str(file_path)
             outcome: ParserOutcome
 
+            # NOTE: spec ParserReason "idempotency_skip" exists for per-file
+            # idempotency synthesis. The current pipeline uses Powertools
+            # @idempotent_function at batch granularity (parse_and_write_data),
+            # which short-circuits the entire batch on duplicate, so no per-file
+            # synthesis path exists today. When/if per-file idempotency is wired
+            # in (e.g., a sub-function decorated independently), reintroduce the
+            # synthesis here.
+
             # Try streaming parser first (memory efficient for large files)
             # Use peek pattern: get first item to validate, then chain with rest
             try:
@@ -657,15 +696,21 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
 
                     mapped_monitor_points_for_file = mapped_monitor_points_count
 
-                    if rows_written > 0:
-                        final_status = "processed"
-                    elif candidate_row_count > 0 and unmapped_count == candidate_row_count:
-                        final_status = "unmapped"
-                    else:
-                        final_status = "processed_empty"
+                    final_status, final_reason = _compute_dataframe_final_status(
+                        rows_written=rows_written,
+                        candidate_row_count=candidate_row_count,
+                        unmapped_count=unmapped_count,
+                        unsupported_suffixes=outcome.unsupported_suffixes,
+                        rows_skipped=outcome.rows_skipped,
+                        parser_reason=outcome.reason,
+                    )
+                    if final_status == "processed_empty":
                         logger.info(
                             "No valid candidate rows found",
-                            extra={"file": local_file_path, "reason": "no_valid_candidate_rows"},
+                            extra={
+                                "file": local_file_path,
+                                "reason": final_reason or "no_valid_candidate_rows",
+                            },
                         )
                 else:
                     final_status = outcome.status
