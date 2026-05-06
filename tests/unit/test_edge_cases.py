@@ -1552,3 +1552,211 @@ class TestMissingTStartIsParserError:
         assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
         assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
         assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+
+def _audit_sidecar_keys(s3_resource) -> list[str]:
+    return _list_keys(s3_resource, "hudibucketsrc", "audit/")
+
+
+class TestAuditSidecarIntegration:
+    """parse_and_write_data wires the audit sidecar correctly."""
+
+    @mock_aws
+    def test_file_with_skips_writes_audit_sidecar(self) -> None:
+        # Two valid rows + one malformed value -> skipped, sidecar emitted.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30", "2024-01-01 01:00"]),
+                "E1_kWh": [1.0, "not-number", 3.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        keys = _audit_sidecar_keys(s3_resource)
+        assert len(keys) == 1
+        assert keys[0].endswith("/outcome.csv.skipped.json")
+        body = s3_resource.Object("hudibucketsrc", keys[0]).get()["Body"].read()
+        payload = json.loads(body)
+        assert payload["source_file"] == "outcome.csv"
+        assert payload["outcome"]["status"] == "processed"
+        assert payload["outcome"]["rows_skipped"] == 1
+        assert payload["skip_reasons"].get("unparseable_value") == 1
+        # Sample carries the offending cell.
+        sample = payload["skipped_samples"][0]
+        assert sample["reason"] == "unparseable_value"
+        assert sample["column"] == "E1_kWh"
+        assert sample["value"] == "not-number"
+
+    @mock_aws
+    def test_file_without_skips_no_audit_sidecar(self) -> None:
+        # Clean file: all rows valid and mapped -> no audit sidecar.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, 2.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _audit_sidecar_keys(s3_resource) == []
+
+    @mock_aws
+    def test_file_with_unmapped_writes_audit_sidecar(self) -> None:
+        # Unmapped NMI -> file routed to newIrrevFiles, sidecar emitted with
+        # unmapped_identifiers populated.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={},  # no mapping for NMI1-E1
+        )
+
+        assert result == 1
+        keys = _audit_sidecar_keys(s3_resource)
+        assert len(keys) == 1
+        body = s3_resource.Object("hudibucketsrc", keys[0]).get()["Body"].read()
+        payload = json.loads(body)
+        assert payload["outcome"]["unmapped_count"] == 1
+        assert ["monitor_point_name", "NMI1-E1"] in payload["unmapped_identifiers"]
+
+    @mock_aws
+    def test_audit_sample_cap_enforced(self) -> None:
+        # Build a frame with 150 malformed values -> cap at 100 samples + truncation marker.
+        n = 150
+        timestamps = [pd.Timestamp("2024-01-01") + pd.Timedelta(minutes=30 * i) for i in range(n)]
+        values: list[Any] = ["bad"] * n
+        df = pd.DataFrame({"t_start": timestamps, "E1_kWh": values})
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        keys = _audit_sidecar_keys(s3_resource)
+        assert len(keys) == 1
+        body = s3_resource.Object("hudibucketsrc", keys[0]).get()["Body"].read()
+        payload = json.loads(body)
+        # 100 entries + truncation marker.
+        assert len(payload["skipped_samples"]) == 101
+        assert payload["skipped_samples"][-1].get("truncated") is True
+        assert payload["skipped_samples"][-1].get("total_skipped") == 150
+
+    @mock_aws
+    def test_audit_failure_does_not_fail_pipeline(self) -> None:
+        # Patch write_audit_sidecar to raise; pipeline must still succeed
+        # and source must move to newP/.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, "bad"],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch(
+                "functions.file_processor.app.write_audit_sidecar",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        assert result == 1
+        # Source still moved to newP/, no parse error, audit absent.
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+        assert _audit_sidecar_keys(s3_resource) == []
+
+
+class TestPartialRecognitionMetrics:
+    """parse_and_write_data emits partial-recognition CloudWatch metrics."""
+
+    @mock_aws
+    def test_partial_mapped_ratio_metric_emitted(self) -> None:
+        # File has one mapped channel and one unmapped channel; PartialMappedRatio
+        # must be emitted for the file.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, 2.0],
+                "E2_kWh": [3.0, 4.0],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+        mock_metrics = MagicMock()
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app.metrics", mock_metrics),
+        ):
+            file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        emitted = {call.kwargs.get("name") or call.args[0]: call for call in mock_metrics.add_metric.call_args_list}
+        assert "PartialMappedRatio" in emitted
+        # 2 unmapped of 4 candidates -> 50%.
+        partial = emitted["PartialMappedRatio"]
+        assert partial.kwargs.get("value", partial.args[2] if len(partial.args) > 2 else None) == 50.0
+
+    @mock_aws
+    def test_rows_skipped_ratio_metric_emitted(self) -> None:
+        # 1 skipped of 3 source rows -> RowsSkippedRatio ~33.33%.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30", "2024-01-01 01:00"]),
+                "E1_kWh": [1.0, "bad", 3.0],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+        mock_metrics = MagicMock()
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app.metrics", mock_metrics),
+        ):
+            file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        names = {call.kwargs.get("name") or call.args[0] for call in mock_metrics.add_metric.call_args_list}
+        assert "RowsSkippedRatio" in names
+        assert "MalformedValueCount" in names
+        assert "UnsupportedSuffixesFound" in names

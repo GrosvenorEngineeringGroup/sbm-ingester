@@ -34,6 +34,8 @@ from shared import (
     output_as_data_frames,
     stream_as_data_frames,
 )
+from shared.audit import SAMPLE_CAP as AUDIT_SAMPLE_CAP
+from shared.audit import write_audit_sidecar
 from shared.non_nem_parsers import get_non_nem_outcome
 from shared.parsers import ParserError, ParserOutcome, ParserReason, ParserStatus, ProcessingError
 from shared.parsers.outcome import SkipReason
@@ -228,6 +230,7 @@ def _candidate_values(
     t_start_col: pd.Series,
     quality_col: pd.Series | None = None,
     skip_counter: Counter[SkipReason] | None = None,
+    samples_sink: list[dict[str, Any]] | None = None,
 ) -> list[DataFrameCandidate]:
     """Return valid candidate rows; record row-level skips in ``skip_counter``.
 
@@ -244,21 +247,43 @@ def _candidate_values(
     against ``unparseable_timestamp``. Cells matched by both ``unparseable_value``
     and ``unparseable_timestamp`` are charged to whichever is detected first
     (timestamp), matching the row-level attribution policy in the spec.
+
+    When ``samples_sink`` is provided, each skipped cell is appended as
+    ``{"row": int, "column": str, "value": str, "reason": str}`` until the
+    sink reaches ``AUDIT_SAMPLE_CAP`` entries. The cap is enforced here so
+    callers can share a single sink across all DataFrames/columns of a file
+    without tracking length themselves.
     """
     candidates: list[DataFrameCandidate] = []
     value_col = df[col]
     quality_values = quality_col if quality_col is not None else [None] * len(value_col)
 
-    for ts_raw, val_raw, quality_raw in zip(t_start_col, value_col, quality_values, strict=False):
+    def _record_sample(row_idx: int, raw: Any, reason: str) -> None:
+        if samples_sink is None:
+            return
+        if len(samples_sink) >= AUDIT_SAMPLE_CAP:
+            return
+        samples_sink.append(
+            {
+                "row": row_idx,
+                "column": col,
+                "value": str(raw),
+                "reason": reason,
+            }
+        )
+
+    for row_idx, (ts_raw, val_raw, quality_raw) in enumerate(zip(t_start_col, value_col, quality_values, strict=False)):
         if pd.isna(val_raw) or _is_blank_value(val_raw):
             if skip_counter is not None:
                 skip_counter["blank_value"] += 1
+            _record_sample(row_idx, val_raw, "blank_value")
             continue
 
         ts = pd.to_datetime(ts_raw, errors="coerce")
         if pd.isna(ts):
             if skip_counter is not None:
                 skip_counter["unparseable_timestamp"] += 1
+            _record_sample(row_idx, ts_raw, "unparseable_timestamp")
             continue
 
         try:
@@ -266,11 +291,13 @@ def _candidate_values(
         except (TypeError, ValueError):
             if skip_counter is not None:
                 skip_counter["unparseable_value"] += 1
+            _record_sample(row_idx, val_raw, "unparseable_value")
             continue
 
         if pd.isna(val):
             if skip_counter is not None:
                 skip_counter["unparseable_value"] += 1
+            _record_sample(row_idx, val_raw, "unparseable_value")
             continue
 
         # Pass through ``None`` for missing vendor quality so the CSV writer
@@ -646,6 +673,17 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         total_monitor_points_count = 0
         ftp_files_count = 0
 
+        # Partial-recognition signal accumulators (Task 15 / spec lines 580-624).
+        # CloudWatch dimensions are kept batch-level rather than per-file to bound
+        # metric cardinality. Ratios are emitted once per affected file with the
+        # per-file value; counts are summed across the batch.
+        partial_mapped_ratio_total = 0.0
+        partial_mapped_ratio_files = 0
+        rows_skipped_ratio_total = 0.0
+        rows_skipped_ratio_files = 0
+        malformed_value_count_total = 0
+        unsupported_suffixes_files = 0
+
         for file_path in tmp_files_folder_path.iterdir():
             local_file_path = str(file_path)
             outcome: ParserOutcome
@@ -727,6 +765,17 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             # Process each NMI's data - write directly to CSV, bypass DataFrame
             csv_writer = DirectCSVWriter(batch_timestamp, executor)
             mapped_monitor_points_for_file = 0
+            # Per-file accumulators surfaced for audit sidecar + metrics.
+            file_candidate_row_count = 0
+            file_source_row_count = outcome.source_row_count
+            file_unmapped_count = 0
+            file_rows_written = 0
+            file_skip_counter: Counter[SkipReason] = Counter()
+            file_unsupported_suffixes: set[str] = set()
+            file_unmapped_identifiers: set[tuple[str, str]] = set()
+            file_skipped_samples: list[dict[str, Any]] = []
+            file_total_skipped_seen = 0
+            final_reason: ParserReason | None = outcome.reason
             try:
                 if outcome.dfs:
                     candidate_row_count = 0
@@ -737,6 +786,10 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     # signal so consumer-side accumulation is additive (gap G12).
                     skip_counter: Counter[SkipReason] = Counter(outcome.skip_reasons)
                     unsupported_suffixes: set[str] = set(outcome.unsupported_suffixes)
+                    # Seed per-file unmapped identifiers from the parser as well,
+                    # so the audit sidecar carries any mapping signal already
+                    # captured upstream.
+                    unmapped_identifiers: set[tuple[str, str]] = set(outcome.unmapped_identifiers)
 
                     for nmi, df in outcome.dfs:
                         # Reset index if t_start is the index
@@ -768,7 +821,14 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                             # Get per-channel quality column if available
                             quality_col_name = f"quality_{suffix}"
                             quality_col = df[quality_col_name] if quality_col_name in df.columns else None
-                            candidates = _candidate_values(df, col, t_start_col, quality_col, skip_counter)
+                            candidates = _candidate_values(
+                                df,
+                                col,
+                                t_start_col,
+                                quality_col,
+                                skip_counter,
+                                file_skipped_samples,
+                            )
 
                             if not candidates:
                                 continue
@@ -783,6 +843,14 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
 
                             if neptune_id is None:
                                 unmapped_count += len(candidates)
+                                # Record (kind, value) pair for audit sidecar.
+                                # Kind is the identifier kind we attempted to
+                                # resolve: "monitor_point_name" for synthetic
+                                # NMI-suffix lookups, "point_id" otherwise.
+                                if nmi.startswith("p:"):
+                                    unmapped_identifiers.add(("point_id", nmi))
+                                else:
+                                    unmapped_identifiers.add(("monitor_point_name", f"{nmi}-{suffix}"))
                                 continue
 
                             mapped_monitor_points_count += 1
@@ -829,6 +897,15 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                                 "reason": final_reason or "no_valid_candidate_rows",
                             },
                         )
+
+                    # Promote per-file accumulators for audit + metric emission.
+                    file_candidate_row_count = candidate_row_count
+                    file_unmapped_count = unmapped_count
+                    file_rows_written = rows_written
+                    file_skip_counter = skip_counter
+                    file_unsupported_suffixes = unsupported_suffixes
+                    file_unmapped_identifiers = unmapped_identifiers
+                    file_total_skipped_seen = rows_skipped_total
                 else:
                     final_status = outcome.status
 
@@ -875,6 +952,47 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             else:
                 irrev_files_count += 1
 
+            # Partial-recognition metric accumulation (Task 15).
+            if file_candidate_row_count > 0:
+                partial_mapped_ratio_total += (file_unmapped_count / file_candidate_row_count) * 100.0
+                partial_mapped_ratio_files += 1
+            denom_source_rows = max(file_source_row_count, file_candidate_row_count + file_total_skipped_seen)
+            if denom_source_rows > 0:
+                rows_skipped_ratio_total += (file_total_skipped_seen / denom_source_rows) * 100.0
+                rows_skipped_ratio_files += 1
+            malformed_value_count_total += int(file_skip_counter.get("unparseable_value", 0))
+            if file_unsupported_suffixes:
+                unsupported_suffixes_files += 1
+
+            # Sidecar audit log: emit only when the file shows partial-data-loss
+            # signal. Best-effort — failures log and continue.
+            if file_total_skipped_seen > 0 or file_unmapped_count > 0 or file_unsupported_suffixes:
+                try:
+                    write_audit_sidecar(
+                        batch_ts=batch_timestamp,
+                        source_filename=Path(local_file_path).name,
+                        outcome_summary={
+                            "status": final_status,
+                            "reason": final_reason,
+                            "source_row_count": file_source_row_count,
+                            "candidate_row_count": file_candidate_row_count,
+                            "rows_written": file_rows_written,
+                            "rows_skipped": file_total_skipped_seen,
+                            "unmapped_count": file_unmapped_count,
+                        },
+                        skip_reasons=dict(file_skip_counter),
+                        unmapped_identifiers=sorted(file_unmapped_identifiers),
+                        unsupported_suffixes=sorted(file_unsupported_suffixes),
+                        skipped_samples=file_skipped_samples,
+                        s3_client=s3_client,
+                        total_skipped=file_total_skipped_seen,
+                    )
+                except Exception as audit_err:
+                    logger.warning(
+                        "audit_sidecar_write_failed",
+                        extra={"file": local_file_path, "error": str(audit_err)},
+                    )
+
         for key, value in logs_dict.items():
             logger.warning("Runtime error", extra={"bad_file": key, "timestamp": value})
 
@@ -885,6 +1003,33 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         metrics.add_metric(name="FTPFiles", unit=MetricUnit.Count, value=ftp_files_count)
         metrics.add_metric(name="ProcessedMonitorPoints", unit=MetricUnit.Count, value=processed_monitor_points_count)
         metrics.add_metric(name="TotalMonitorPoints", unit=MetricUnit.Count, value=total_monitor_points_count)
+
+        # Partial-recognition signals (Task 15 / spec lines 580-624). Ratios are
+        # emitted as the batch-mean across files that contributed (i.e. files
+        # with non-zero denominators). Counts are batch-level sums. Per-file
+        # CloudWatch dimensions are intentionally omitted to bound cardinality.
+        if partial_mapped_ratio_files > 0:
+            metrics.add_metric(
+                name="PartialMappedRatio",
+                unit=MetricUnit.Percent,
+                value=partial_mapped_ratio_total / partial_mapped_ratio_files,
+            )
+        if rows_skipped_ratio_files > 0:
+            metrics.add_metric(
+                name="RowsSkippedRatio",
+                unit=MetricUnit.Percent,
+                value=rows_skipped_ratio_total / rows_skipped_ratio_files,
+            )
+        metrics.add_metric(
+            name="MalformedValueCount",
+            unit=MetricUnit.Count,
+            value=malformed_value_count_total,
+        )
+        metrics.add_metric(
+            name="UnsupportedSuffixesFound",
+            unit=MetricUnit.Count,
+            value=unsupported_suffixes_files,
+        )
 
         processing_end_time = pd.Timestamp.now().tz_localize("UTC").tz_convert("Australia/Sydney").isoformat()
         logger.info("Script finished", extra={"timestamp": processing_end_time})
