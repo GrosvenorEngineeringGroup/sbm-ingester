@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from shared.parsers import NotRelevantParser, ParserError
 from shared.parsers import _mappings as mappings_mod
 from shared.parsers.optima.demand import demand_parser
 
@@ -11,21 +12,21 @@ from shared.parsers.optima.demand import demand_parser
 class TestFilenameGate:
     def test_rejects_non_demand_files(self, write_demand_csv):
         path = write_demand_csv(filename="Bunnings_Interval_Usage.csv")
-        with pytest.raises(Exception, match="Not a Demand Profile"):
+        with pytest.raises(NotRelevantParser, match="Not a Demand Profile"):
             demand_parser(str(path), "/tmp/err.log")
 
-    def test_accepts_lowercase_user_download(self, write_demand_csv):
+    def test_accepts_lowercase_user_download(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
         # The user's manual download is named "Bunnings demand profile.csv"
         # (lowercase). Must accept this casing — i.e., the filename gate
         # MUST NOT raise. (The parser may still raise downstream because
         # the stub returns [] without reading content, but specifically
         # the filename-gate-mismatch exception must not fire.)
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+
         path = write_demand_csv(filename="Bunnings demand profile.csv")
-        try:
-            result = demand_parser(str(path), "/tmp/err.log")
-            assert result == [] or isinstance(result, list)
-        except Exception as e:
-            assert "filename mismatch" not in str(e), f"Filename gate rejected lowercase user download: {e}"
+        result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "unmapped"
 
 
 class TestContentGate:
@@ -35,12 +36,12 @@ class TestContentGate:
             filename="Bunnings_Demand_Profile.csv",
             body_override="Wrong,Header\nfoo,bar\n",
         )
-        with pytest.raises(Exception, match="missing metadata header"):
+        with pytest.raises(NotRelevantParser, match="missing metadata header"):
             demand_parser(str(path), "/tmp/err.log")
 
 
 class TestNoDataFoundSentinel:
-    def test_no_data_found_returns_empty_list_no_exception(self, write_demand_csv):
+    def test_no_data_found_returns_processed_empty(self, write_demand_csv):
         # BidEnergy returns this sentinel for sites with no demand data
         # (verified against NZ Bunnings sites 2026-05-05).
         body = (
@@ -56,15 +57,67 @@ class TestNoDataFoundSentinel:
         )
         path = write_demand_csv(filename="NZ demand profile.csv", body_override=body)
         result = demand_parser(str(path), "/tmp/err.log")
-        assert result == []
+
+        assert result.status == "processed_empty"
+        assert result.reason == "no_data_sentinel"
+        assert result.rows_written == 0
 
 
 class TestEmptyData:
-    def test_header_only_returns_empty_list(self, write_demand_csv):
+    def test_header_only_returns_processed_empty(self, write_demand_csv):
         # File has the column header but zero data rows
         path = write_demand_csv(filename="Bunnings_Demand_Profile.csv", rows=[])
         result = demand_parser(str(path), "/tmp/err.log")
-        assert result == []
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 0
+        assert result.reason == "blank_values"
+        assert result.rows_written == 0
+
+    def test_blank_value_rows_return_processed_empty_with_source_count(self, write_demand_csv, monkeypatch):
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+        rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "", "", "")]
+        path = write_demand_csv(rows=rows)
+
+        result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed_empty"
+        assert result.source_row_count == 1
+        assert result.reason == "blank_values"
+        assert result.rows_written == 0
+
+
+class TestHeaderValidation:
+    def test_missing_expected_demand_column_raises_parser_error(
+        self, write_demand_csv, monkeypatch, _reset_mappings_cache
+    ):
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+        body = "\n".join(
+            [
+                'Commodities:,"Electricity"',
+                'Sites (NMIs):,"4001260599"',
+                'Status:,"Active"',
+                "Country:, Australia",
+                "Start:,01-Feb-2026",
+                "End:,30-Apr-2026",
+                "",
+                "",
+                "Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVA,Power Factor,Site Name",
+                "Bunnings Australia,4001260599,NMI,01-Feb-2026 00:00:00,5.24,10.48,10.48,1.0000,BUN AUS Forbes",
+            ]
+        )
+        path = write_demand_csv(body_override=body)
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            with pytest.raises(ParserError, match="Missing demand columns"):
+                demand_parser(str(path), "/tmp/err.log")
+
+        mock_client.return_value.put_object.assert_not_called()
 
 
 @pytest.fixture
@@ -98,8 +151,11 @@ class TestMappingLookupAndHudiWrite:
             path = write_demand_csv()
             result = demand_parser(str(path), "/tmp/err.log")
 
-        # Assert: parser returned [] (signals dispatcher to not flow DataFrames)
-        assert result == []
+        assert result.status == "processed"
+        assert result.source_row_count == 3
+        assert result.candidate_row_count == 9
+        assert result.rows_written == 9
+        assert result.unmapped_count == 0
 
         # Assert: S3 PUT happened to the right place
         assert captured["bucket"] == "hudibucketsrc"
@@ -134,7 +190,11 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object = fake_put_object
             path = write_demand_csv()
-            demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.rows_written == 9
+        assert result.unmapped_count == 0
 
         body = captured_body[0]
         # Find a PF row: its unit field (4th CSV column) must be empty
@@ -167,7 +227,13 @@ class TestMappingLookupAndHudiWrite:
             # Use values that would lose precision via float() round-trip
             rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000")]
             path = write_demand_csv(rows=rows)
-            demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.source_row_count == 1
+        assert result.candidate_row_count == 3
+        assert result.rows_written == 3
+        assert result.unmapped_count == 0
 
         body = captured_body[0]
         # 1 input row x 3 mapped columns = 3 Hudi rows
@@ -202,13 +268,89 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object = fake_put_object
             path = write_demand_csv()
-            demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.source_row_count == 3
+        assert result.candidate_row_count == 9
+        assert result.rows_written == 3
+        assert result.unmapped_count == 6
 
         body = captured_body[0]
         data_lines = [L for L in body.strip().split("\n")[1:] if L]
         # 3 input rows x 1 mapped column = 3 Hudi rows
         assert len(data_lines) == 3
         assert all(L.startswith("p:bunnings:only-kw,") for L in data_lines)
+
+    def test_all_valid_candidates_unmapped_returns_unmapped(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            path = write_demand_csv()
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "unmapped"
+        assert result.source_row_count == 3
+        assert result.candidate_row_count == 9
+        assert result.rows_written == 0
+        assert result.unmapped_count == 9
+        mock_client.return_value.put_object.assert_not_called()
+
+    def test_mixed_bad_timestamp_and_unmapped_candidates_raise_parser_error(
+        self, write_demand_csv, monkeypatch, _reset_mappings_cache
+    ):
+        from shared.parsers import ParserError
+
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+        rows = [
+            ("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+            ("4001260599", "bad-date", "5.2400", "10.4800", "10.4800", "1.0000"),
+        ]
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            path = write_demand_csv(rows=rows)
+
+            with pytest.raises(ParserError, match="No valid demand candidates"):
+                demand_parser(str(path), "/tmp/err.log")
+
+        mock_client.return_value.put_object.assert_not_called()
+
+    def test_all_bad_timestamps_raise_parser_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        from shared.parsers import ParserError
+
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+        rows = [("4001260599", "bad-date", "5.2400", "10.4800", "10.4800", "1.0000")]
+        path = write_demand_csv(rows=rows)
+
+        with pytest.raises(ParserError, match="No valid demand candidates"):
+            demand_parser(str(path), "/tmp/err.log")
+
+    def test_all_non_numeric_values_raise_parser_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        from shared.parsers import ParserError
+
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+        rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "bad-kw", "bad-kva", "bad-pf")]
+        path = write_demand_csv(rows=rows)
+
+        with pytest.raises(ParserError, match="No valid demand candidates"):
+            demand_parser(str(path), "/tmp/err.log")
+
+    def test_put_object_failure_raises_processing_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        from shared.parsers import ProcessingError
+
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.side_effect = RuntimeError("boom")
+            path = write_demand_csv()
+
+            with pytest.raises(ProcessingError, match="Failed to write demand Hudi CSV"):
+                demand_parser(str(path), "/tmp/err.log")
 
 
 class TestDispatcherIntegration:
