@@ -69,12 +69,12 @@ Earlier draft flagged "NZ may lack `Optima_<ICP>` mappings" as a cutover risk. V
 | **Bunnings NZ** | **64** | **0** | **0** |
 | RACV | 55 | 3 | 1 |
 
-**The NZ mapping risk is removed from the risk table.** The 9 AU + 4 RACV gaps are pre-existing reality (sites without solar / un-mapped meters) and would route to `newIrrevFiles/` — same behaviour as today's NEM12 path; no regression.
+**The NZ mapping risk is removed from the risk table.** The 9 AU + 4 RACV gaps are pre-existing reality (sites without solar / un-mapped meters). Valid candidate rows with no mapped Neptune point return `unmapped` and route the source file to `newIrrevFiles/`; no-data sentinel files return `processed_empty` and route to `newP/`.
 
 ### Therefore this spec now covers
 
 1. The new EXPORTER Lambda (~85% of the work).
-2. A small fix to `interval_parser` to handle the `No data is available` sentinel by returning `[]`.
+2. A small fix to `interval_parser` to handle the `No data is available` sentinel by returning `ParserOutcome(status="processed_empty", reason="no_data_sentinel")`.
 3. Adding 4 real BidEnergy CSV samples (committed under `tests/unit/fixtures/optima_interval/`) + a regression test that runs `interval_parser` against each.
 
 **Out of scope (removed from previous revision):** `format=` argument, `conftest.py:create_optima_csv` realignment, multi-month regression test.
@@ -176,7 +176,7 @@ EventBridge Scheduler (cron 14:00 Sydney, per project — taking the slot vacate
       │   → file_processor splits column name → suffix=E1     │
       │   → mappings.get(f"Optima_{NMI}-E1") → Hudi sensorId  │
       │   → write_row(sensor_id, ts, val, unit="kwh")         │
-      │   → file moves to newP/ (file_neptune_ids non-empty)  │
+      │   → ParserOutcome(status="processed") moves to newP/  │
       └────────────────────────────────────────────────────────┘
               ↓
       Existing Glue job hourly picks up Hudi CSV → sensordata_default Athena table
@@ -242,8 +242,8 @@ terraform/optima_exporter.tf
 | Response | Plain CSV | **ZIP wrapping single CSV** |
 | Body validation | Body sniff `b"Commodities:"` | First 2 bytes `b"PK"` (ZIP magic) |
 | Filename prefix | `optima_<proj>_demand_profile_NMI#` | `optima_<proj>_interval_NMI#` |
-| Parser path | Custom `demand_parser` (writes Hudi directly, returns `[]`) | **Existing `interval_parser` (pandas DataFrame path through file_processor)** |
-| Source-file destination | `newIrrevFiles/` (parser returns `[]`) | **`newP/` for sites with data; `newIrrevFiles/` for "No data is available" sentinel** |
+| Parser path | Custom `demand_parser` (writes Hudi directly, returns `ParserOutcome`) | **Existing `interval_parser` (pandas DataFrame path through file_processor, with `ParserOutcome` for sentinel/no-row cases)** |
+| Source-file destination | `newP/` for `processed_external`/`processed_empty`; `newIrrevFiles/` for `unmapped` | **`newP/` for sites with data and for "No data is available" sentinel; `newIrrevFiles/` only for valid candidate data with no mapped points** |
 | Schedule | 14:30 Sydney | 14:00 Sydney (taking nem12's vacated slot) |
 
 ## Detailed Component Behaviour
@@ -268,7 +268,7 @@ Returns `{"statusCode": 400, "body": "Missing required parameter: project"}` if 
 Implements `process_export(project, nmi=None, start_date=None, end_date=None) -> dict`. Mirrors `demand_exporter/processor.py` exactly (same date-range resolution, same DynamoDB fetch, same login, same `ThreadPoolExecutor`, same per-site result accumulation, same statusCode 200/207/4xx return shape). Only differences vs demand:
 
 1. Calls `download_interval_zip` then `extract_first_csv` (two-step flow).
-2. Empty-data sentinel handling: `extract_first_csv` returns the BidEnergy CSV bytes verbatim — no synthesis, no special casing. If BidEnergy returns the 148-byte "No data is available" CSV, those exact bytes are uploaded to S3 for audit retention. The `interval_parser` (see fix below) detects the sentinel and returns `[]`, causing `file_processor` to route the source file to `newIrrevFiles/` with zero `file_neptune_ids`. Processor sets `result["empty_data"] = True` (analogous to demand's `result["no_data"]`) so the return body includes `empty_data_count` for operational visibility.
+2. Empty-data sentinel handling: `extract_first_csv` returns the BidEnergy CSV bytes verbatim — no synthesis, no special casing. If BidEnergy returns the 148-byte "No data is available" CSV, those exact bytes are uploaded to S3 for audit retention. The `interval_parser` (see fix below) detects the sentinel and returns `ParserOutcome(status="processed_empty", source_row_count=1, reason="no_data_sentinel")`, causing `file_processor` to route the source file to `newP/`. Processor sets `result["empty_data"] = True` (analogous to demand's `result["no_data"]`) so the return body includes `empty_data_count` for operational visibility.
 
 ### `downloader.py`
 
@@ -413,7 +413,7 @@ After this change, **the parsing/Hudi-write path for interval data is byte-ident
 | file_processor channel mapping | `<col>.split("_")[0]` → `<NMI>-<suffix>` | **same** |
 | Hudi sensor IDs | `Optima_<NMI>-E1`, `Optima_<NMI>-B1` (from mappings) | **same** |
 | Source-file destination after success (with data) | `newP/` | **same** |
-| Source-file destination after success (no data) | `newIrrevFiles/` | **same** (parser returns `[]` for sentinel) |
+| Source-file destination after success (no data) | Historical legacy path was `newIrrevFiles/` when parser outcomes were inferred from `[]` | **`newP/` via `ParserOutcome(status="processed_empty", reason="no_data_sentinel")`** |
 | Hudi unit | `kwh` | **same** |
 | Timestamp resolution | 30 min | **same** |
 | Hudi record key | `sensorId + ts` | **same** (upserts cleanly during cutover overlap) |
@@ -504,7 +504,7 @@ Unit tests for the new exporter mirror `tests/unit/optima_exporter/demand_export
 1. `aws lambda invoke --function-name optima-interval-exporter --payload '{"project":"bunnings","nmi":"Optima_4102026418"}' --cli-binary-format raw-in-base64-out --region ap-southeast-2 /tmp/out.json` — expect `success_count: 1`.
 2. `aws s3 ls s3://sbm-file-ingester/newTBP/ | grep "interval_NMI#OPTIMA_4102026418"` — exactly one file.
 3. `aws logs tail /aws/lambda/sbm-files-ingester --since 2m --region ap-southeast-2` — expect normal pandas-path processing log lines (no `demand_written`-style direct-Hudi log; instead expect channel mapping + write_row entries).
-4. `aws s3 ls s3://sbm-file-ingester/newP/ s3://sbm-file-ingester/newIrrevFiles/ | grep "interval_NMI#OPTIMA_4102026418"` — file routed to `newP/` (site has data) or `newIrrevFiles/` (empty-data sentinel).
+4. `aws s3 ls s3://sbm-file-ingester/newP/ s3://sbm-file-ingester/newIrrevFiles/ | grep "interval_NMI#OPTIMA_4102026418"` — file routed to `newP/` for site data or the empty-data sentinel; `newIrrevFiles/` only indicates valid candidate rows with no mapped points.
 5. After Glue job runs: Athena query for `Optima_4102026418-E1` sensor_id with new timestamps — expect ~48 new rows for 1-day interval (or upserts of existing rows if NEM12 wrote earlier same day).
 
 ## Infrastructure (Terraform)
@@ -731,14 +731,14 @@ The `optima_exporter.zip` artefact is shared by all four Optima Lambdas (nem12, 
 |---|---|---|---|
 | Cutover gap: nem12 disabled, interval not yet running | Low | Low (1-day data gap at most) | Use a two-stage cutover: first create the interval Lambda/schedules with interval schedules disabled while keeping NEM12 schedules, deploy code via GitHub Actions and smoke test, then apply the final schedule switch. |
 | Cutover overlap: both nem12 and interval write same Hudi sensors during the window between code deploy and Terraform apply | High (intentional) | None (Hudi upserts by sensorId+ts) | Acceptable; the second writer's value wins, both are effectively the same data. |
-| Empty-data CSVs (~25% of daily site responses) flood `newIrrevFiles/` | High (intentional) | None | Weekly archiver moves them to `archived/<week>/` after 7 days. 148 bytes × 532 sites × 365 days × 0.25 = ~7 MB/year — negligible. |
+| Empty-data CSVs (~25% of daily site responses) accumulate in `newP/` | High (intentional) | None | Parser returns `processed_empty`, so weekly archiver moves them to `newP/archived/<week>/` after 7 days. 148 bytes × 532 sites × 365 days × 0.25 = ~7 MB/year — negligible. |
 | BidEnergy session timeout mid-run for large project (Bunnings 477 sites) | Low | Medium | 900s Lambda timeout vs ~50s expected runtime (20 workers) leaves 17× headroom. Single-NMI re-invoke supported via `event.nmi`. Demand exporter has run for 7 days at this volume without rate-limit responses — carry-over assumption. |
 | Forgetting to verify `sbm-ingester-cicd-policy` whitelist | Medium | High (deploy blocked) | Pre-merge checklist + this spec explicitly calls it out + root `AGENTS.md` / `CLAUDE.md` document the procedure and current v10 state. |
 | Forgetting to remove the 5 stale `moved` blocks before adding new resources | Medium | High (terraform plan errors out) | Spec Step 1 explicitly calls this out as the FIRST Terraform action. Plan should be inspected for "duplicate resource" errors and aborted if found. |
 | Existing `interval_parser` lacks a filename gate | Low | Low | The dispatcher (`non_nem_parsers.py`) tries parsers in order and catches exceptions — wrong-format files raise inside `pd.read_csv` and the dispatcher continues. Adding a defensive filename gate is a separate cleanup spec (out of scope here). |
 | `%b` is locale-dependent for `format_date_for_url` URL building | Low | Low (only impacts non-English dev locales) | Lambda runs on `C.UTF-8` (verified); CI runners same. If a developer with a non-English `LC_TIME` runs tests locally they may see e.g. "Mai" — would need locale override in test setup. Documented in downloader docstring. |
 | DST transition day (annual, early Oct in Sydney) | Annual | Low (1-hour gap or duplicate slot per site/year) | Hudi upserts by `sensorId+ts` so duplicates merge cleanly. Behaviour will be observed on first October run; no proactive handling needed. |
-| 13 pre-existing partial mapping gaps (9 AU no-solar B1 + 3 RACV E1 + 1 RACV B1) | Existing | None | Same behaviour as today's NEM12 path — those rows route to `newIrrevFiles/`. No regression. |
+| 13 pre-existing partial mapping gaps (9 AU no-solar B1 + 3 RACV E1 + 1 RACV B1) | Existing | None | Valid candidate rows with no mapped points return `unmapped` and route the source file to `newIrrevFiles/`. No-data sentinel files are separate `processed_empty` outcomes and route to `newP/`. |
 
 ## Open Questions
 

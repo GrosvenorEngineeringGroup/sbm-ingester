@@ -30,7 +30,7 @@ The parser persists three of the columns: `kW`, `kVa`, `Power Factor`. The `E` (
 
 The `file_processor` Lambda inspects each parser's output DataFrame columns and gates by `suffix in NMI_DATA_STREAM_COMBINED` (where suffixes are NEM12 channel codes like `E1`, `B1`, `K1`). It then resolves Neptune IDs via `f"{nmi}-{suffix}"`. Demand metrics (`kw`, `kva`, `pf`) are not NEM12 channel codes and would be silently dropped.
 
-The `bunnings_billing_parser` solves the same problem by **writing Hudi rows directly to `s3://hudibucketsrc/sensorDataFiles/`** and returning `[]` to the dispatcher. The dispatcher treats the empty list as "parser handled this file, no DataFrame to flow through file_processor". This spec adopts the same pattern.
+The `bunnings_billing_parser` solves the same problem by **writing Hudi rows directly to `s3://hudibucketsrc/sensorDataFiles/`** and returning a `ParserOutcome` to the dispatcher. The dispatcher treats `processed`, `processed_empty`, `processed_external`, and `unmapped` as explicit parser outcomes instead of inferring file disposition from an empty list. This spec adopts the same explicit outcome pattern.
 
 ## Scope
 
@@ -170,12 +170,15 @@ Once `import_demand_points.py` completes successfully, the next hourly run of th
 
 ### File: `src/shared/parsers/optima/demand.py` (NEW)
 
-**Pattern: mirrors `bunnings_billing_parser`** — read CSV, look up sensor IDs from `nem12_mappings.json`, write Hudi rows directly to S3, return `[]` to the dispatcher.
+**Pattern: mirrors `bunnings_billing_parser`** — read CSV, look up sensor IDs from `nem12_mappings.json`, write Hudi rows directly to S3, return `ParserOutcome` to the dispatcher.
 
 ### Function signature
 
 ```python
-def demand_parser(file_name: str, error_file_path: str) -> ParserResult:
+from shared.parser_contract import ParserError, ParserOutcome
+
+
+def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     """Parse a BidEnergy Demand Profile CSV and write Hudi sensor rows directly.
 
     Persists three columns per interval per NMI:
@@ -206,13 +209,13 @@ CSV_FIELD_MAPPING: list[tuple[str, str, str]] = [
 ```python
 # 1. Fast filename reject (no I/O) — CASE-INSENSITIVE
 if "demand profile" not in Path(file_name).name.lower():
-    raise Exception("Not a Demand Profile file (filename mismatch)")
+    raise ParserError("Not a Demand Profile file (filename mismatch)")
 
 # 2. Content sniff (read first line only)
 with open(file_name) as f:
     first_line = f.readline()
 if not first_line.startswith("Commodities:"):
-    raise Exception("Not a Demand Profile file (missing metadata header)")
+    raise ParserError("Not a Demand Profile file (missing metadata header)")
 ```
 
 Case-insensitive on purpose — the user's manual download is `Bunnings demand profile.csv` (lowercase), but a future automated exporter (Step 4) might use a different casing. Both must accept. The substring `"demand profile"` (with space) is unique enough that case-insensitive match won't false-positive.
@@ -249,7 +252,7 @@ def _parse_demand_rows(file_path: str) -> list[dict[str, str]]:
     return [row for row in reader if row.get("Identifier")]
 ```
 
-The parser's main body then short-circuits: if `_parse_demand_rows` returns no candidate rows, log `demand_no_data` and return `ParserOutcome` without writing S3.
+The parser's main body then short-circuits: if `_parse_demand_rows` detects the BidEnergy no-data sentinel, log `demand_no_data` and return `ParserOutcome(status="processed_empty", reason="no_data_sentinel")` without writing S3. Header-only or otherwise valid files with no candidate rows should also return `processed_empty`; files with valid candidate rows but no mappings return `unmapped`.
 
 ### Per-row processing
 
@@ -365,15 +368,15 @@ from shared.parsers._mappings import get_nem12_mappings
 
 Where `mappings_mod` is `from shared.parsers import _mappings as mappings_mod` (or similar import alias for the patch target). Each test that asserts on logger/mappings call counts must verify the new patch target after the change. Failure mode if not updated: tests still pass (patch targets a no-longer-imported name) but mocks are silently ineffective.
 
-### ⚠️ Operational note: source file moves to `newIrrevFiles/`
+### Operational note: source file disposition follows `ParserOutcome.status`
 
-After the parser returns `[]`, `file_processor` finds `file_neptune_ids` empty and routes the source CSV to `newIrrevFiles/` (not `newP/`). This is **correct and expected** — it matches `bunnings_billing_parser`'s behaviour. The Hudi rows are written *as a side effect* during parser execution, not via the standard NMI-mapped flow that determines the destination directory.
+After the parser returns `ParserOutcome`, `file_processor` routes the source CSV from the explicit status rather than from `file_neptune_ids`. Successful demand CSVs with Hudi rows use `processed_external` and move to `newP/`. Valid no-data sentinel or header-only files use `processed_empty` and also move to `newP/`. Valid candidate data with no mapped demand points uses `unmapped` and moves to `newIrrevFiles/`.
 
-**Operator-facing implication:** demand CSVs **will appear in `newIrrevFiles/archived/<week>/`**, not `newP/`. Anyone auditing demand ingestion success should look at:
+**Operator-facing implication:** demand CSVs with successful parser outcomes **will appear in `newP/archived/<week>/`**, not `newIrrevFiles/`. Anyone auditing demand ingestion success should look at:
 - CloudWatch logs for `service=optima-demand-parser` lines `"demand_written"` (rows count) and `"demand_no_rows_written"` (skip cases)
 - Hudi `default.sensordata_default` table filtered on `sensorid LIKE 'p:bunnings:%'` AND `unit IN ('kw', 'kva', '')`
 
-NOT at the source file's S3 destination directory.
+`newIrrevFiles/` is reserved for valid candidate rows that cannot be mapped to Neptune sensor IDs.
 
 ### Dispatcher wire-up
 
@@ -383,7 +386,7 @@ In `src/shared/non_nem_parsers.py`:
 from shared.parsers.optima.demand import demand_parser
 # (alphabetic position, so between bunnings_billing and interval)
 
-def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
+def get_non_nem_outcome(file_name: str, error_file_path: str) -> ParserOutcome:
     parsers = [
         noosa_solar_parser,
         envizi_vertical_parser_water,
@@ -409,13 +412,13 @@ At minimum 7 tests; mirror the structure of `tests/unit/parsers/optima/test_bunn
 
 | Test | Verifies |
 |---|---|
-| `test_filename_gate_rejects_non_demand_files` | Filename without "demand profile" (case-insensitive) → raises |
+| `test_filename_gate_rejects_non_demand_files` | Filename without "demand profile" (case-insensitive) → raises `ParserError` |
 | `test_filename_gate_accepts_lowercase_user_download` | `Bunnings demand profile.csv` (lowercase) is accepted |
-| `test_content_gate_rejects_files_without_commodities_header` | Filename matches but first line wrong → raises |
+| `test_content_gate_rejects_files_without_commodities_header` | Filename matches but first line wrong → raises `ParserError` |
 | `test_parses_kw_kva_pf_to_correct_sensor_ids` | All three measurements written with correct sensor IDs and units |
 | `test_unmapped_nmis_skipped_with_log` | Mapping returns None for some sensors → those rows skipped, others written |
-| `test_no_data_found_sentinel_skips_s3_put` | BidEnergy "No data found" body → no S3 PUT, returns `[]`, no exception |
-| `test_empty_data_skips_s3_put` | Header-only file → no S3 PUT, returns `[]` |
+| `test_no_data_found_sentinel_skips_s3_put` | BidEnergy "No data found" body → no S3 PUT, returns `ParserOutcome(status="processed_empty", reason="no_data_sentinel")`, no exception |
+| `test_empty_data_skips_s3_put` | Header-only file → no S3 PUT, returns `ParserOutcome(status="processed_empty")` |
 | `test_pf_unit_is_empty_string` | Power Factor row's unit field is `""` |
 | `test_dispatcher_routes_demand_file` | End-to-end through `get_non_nem_df` |
 

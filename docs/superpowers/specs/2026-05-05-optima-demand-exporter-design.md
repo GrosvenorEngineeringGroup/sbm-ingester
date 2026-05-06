@@ -205,7 +205,7 @@ Promoting this to `optima_shared/` is a follow-up cleanup task — keeping a cop
                 → existing Glue job picks up Hudi CSV
 ```
 
-For sites with no demand meter installed, the CSV body is the BidEnergy "No data found" sentinel form. `demand_parser` detects this sentinel at `src/shared/parsers/optima/demand.py:57-58` and returns `[]` without raising. With an empty `file_neptune_ids` set, `file_processor/app.py:512-513` then routes the source CSV to `IRREVFILES_DIR` (`newIrrevFiles/`) — verified against `src/shared/common.py:9-11` and `src/functions/file_processor/app.py:507-514`. Audit retention is provided by the file's presence in `newIrrevFiles/` (and its weekly `archived/<ISO-week>/` rollup by `sbm-weekly-archiver`).
+For sites with no demand meter installed, the CSV body is the BidEnergy "No data found" sentinel form. `demand_parser` detects this sentinel and returns `ParserOutcome(status="processed_empty", reason="no_data_sentinel")` without raising or writing Hudi rows. `file_processor` routes `processed_empty` source CSVs to `newP/`; valid candidate data with no mapped demand points remains `unmapped` and routes to `newIrrevFiles/`. Audit retention is provided by the file's presence in `newP/` (and its weekly `archived/<ISO-week>/` rollup by `sbm-weekly-archiver`).
 
 ## Error Handling
 
@@ -435,7 +435,7 @@ The `optima_exporter.zip` artefact is shared by all three Optima Lambdas (nem12,
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| Many sites have no demand meter → S3 fills with sentinel CSVs | High | Low (audit-required) | Weekly archiver already moves `newIrrevFiles/` to `archived/<week>/`. Sentinel CSVs are < 500 bytes each; 477 × 365 = ~84 MB/year per project — negligible. |
+| Many sites have no demand meter → S3 fills with sentinel CSVs | High | Low (audit-required) | Parser returns `processed_empty`, so weekly archiver moves them from `newP/` to `newP/archived/<week>/`. Sentinel CSVs are < 500 bytes each; 477 × 365 = ~84 MB/year per project — negligible. |
 | BidEnergy session timeout mid-run for large project (Bunnings ~477 sites × ~2s = ~16 min serial; 24 parallel batches ~50s) | Low | Medium | 900s Lambda timeout vs ~50s expected runtime (with 20 workers) leaves 17× headroom. If timeouts surface, single-NMI re-invoke supported via `event.nmi`. |
 | BidEnergy rate-limits / throttles | Low | Medium | 14:30 stagger keeps demand exporter off-peak from nem12 (14:00). `OPTIMA_MAX_WORKERS` env-tunable without redeploy. |
 | Forgetting to update `sbm-ingester-cicd-policy` whitelist | Medium | High (deploy blocked) | Pre-merge checklist + this spec explicitly calls it out + `CLAUDE.md` documents the procedure. |
