@@ -3,7 +3,6 @@
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -887,7 +886,9 @@ class TestParserOutcomeDisposition:
         assert "p:test:e1,2024-01-01 00:30:00,2.0,kwh,2024-01-01 00:30:00,\n" in body
 
     @mock_aws
-    def test_dataframe_bad_timestamp_moves_to_new_parse_err(self) -> None:
+    def test_dataframe_bad_timestamp_only_row_processes_empty(self) -> None:
+        # Single bad-timestamp row: nothing written, but file processed
+        # (no ParserError, no ProcessingError); source moved to newP/.
         df = pd.DataFrame({"t_start": ["not-a-date"], "E1_kWh": [1.0]})
 
         result, s3_resource = _run_with_non_nem_outcome(
@@ -896,11 +897,13 @@ class TestParserOutcomeDisposition:
         )
 
         assert result == 1
-        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
         assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
 
     @mock_aws
-    def test_dataframe_non_numeric_value_moves_to_new_parse_err(self) -> None:
+    def test_dataframe_non_numeric_only_row_processes_empty(self) -> None:
+        # Single non-numeric row: nothing written, but file processed.
         df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": ["not-number"]})
 
         result, s3_resource = _run_with_non_nem_outcome(
@@ -909,24 +912,68 @@ class TestParserOutcomeDisposition:
         )
 
         assert result == 1
-        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
         assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
 
     @mock_aws
-    def test_partial_flush_validation_error_cleans_hudi_output(self) -> None:
-        class DelayedBadValue:
-            def __float__(self) -> float:
-                time.sleep(0.1)
-                raise ValueError("not-number")
-
+    def test_dataframe_partial_bad_rows_writes_good_rows(self) -> None:
+        # Mix of valid and invalid rows: valid rows land in Hudi, invalid rows
+        # are skipped silently and the file is marked processed.
         df = pd.DataFrame(
             {
-                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
-                "E1_kWh": [1.0],
-                "B1_kWh": [DelayedBadValue()],
+                "t_start": [
+                    pd.Timestamp("2024-01-01 00:00"),
+                    pd.NaT,  # unparseable timestamp -> skip
+                    pd.Timestamp("2024-01-01 00:30"),
+                    pd.Timestamp("2024-01-01 01:00"),
+                    pd.Timestamp("2024-01-01 01:30"),
+                ],
+                "E1_kWh": [1.0, 2.0, "not-number", 3.0, ""],
             }
         )
-        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1", "NMI1-B1": "p:test:b1"})
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+        hudi_keys = _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/")
+        assert len(hudi_keys) == 1
+        body = s3_resource.Object("hudibucketsrc", hudi_keys[0]).get()["Body"].read().decode()
+        # Two valid rows written.
+        assert "p:test:e1,2024-01-01 00:00:00,1.0,kwh,2024-01-01 00:00:00," in body
+        assert "p:test:e1,2024-01-01 01:00:00,3.0,kwh,2024-01-01 01:00:00," in body
+        # Bad rows omitted.
+        assert "not-number" not in body
+        assert "NaT" not in body
+
+    @mock_aws
+    def test_partial_flush_upload_error_cleans_hudi_output(self) -> None:
+        # Row-level bad values no longer raise (Task 16); the partial-flush
+        # cleanup path is now exercised by an upload failure on the second
+        # batch flush. With BATCH_SIZE=1 and two valid rows, the first flush
+        # succeeds and the second raises -> writer.abort() must clean both
+        # the staging and the previously-committed final keys.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, 2.0],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+
+        call_count = {"n": 0}
+        real_upload = file_processor_app._upload_csv_to_s3
+
+        def upload_with_second_failure(csv_content: str, output_key: str) -> None:
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                raise RuntimeError("simulated upload failure")
+            real_upload(csv_content, output_key)
 
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
@@ -937,6 +984,7 @@ class TestParserOutcomeDisposition:
                 return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.BATCH_SIZE", 1),
+            patch("functions.file_processor.app._upload_csv_to_s3", side_effect=upload_with_second_failure),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
@@ -950,11 +998,9 @@ class TestParserOutcomeDisposition:
 
     @mock_aws
     def test_collision_after_partial_flush_keeps_prior_file_output(self) -> None:
-        class DelayedBadValue:
-            def __float__(self) -> float:
-                time.sleep(0.1)
-                raise ValueError("not-number")
-
+        # Two source files; the second file's second-batch upload fails. The
+        # first file's Hudi output must be preserved while the second file's
+        # writer cleans up its staged/committed objects.
         success_df = pd.DataFrame(
             {
                 "t_start": pd.to_datetime(["2024-01-01 00:00"]),
@@ -963,13 +1009,12 @@ class TestParserOutcomeDisposition:
         )
         failing_df = pd.DataFrame(
             {
-                "t_start": pd.to_datetime(["2024-01-01 00:30"]),
-                "E1_kWh": [2.0],
-                "B1_kWh": [DelayedBadValue()],
+                "t_start": pd.to_datetime(["2024-01-01 00:30", "2024-01-01 01:00"]),
+                "E1_kWh": [2.0, 3.0],
             }
         )
         s3_resource = _create_outcome_test_buckets(
-            mappings={"NMI1-E1": "p:test:e1", "NMI1-B1": "p:test:b1"},
+            mappings={"NMI1-E1": "p:test:e1"},
             file_name="first.csv",
         )
         s3_resource.Object("sbm-file-ingester", "newTBP/second.csv").put(Body=b"test")
@@ -979,6 +1024,17 @@ class TestParserOutcomeDisposition:
                 return ParserOutcome(status="processed", dfs=[("NMI1", success_df)])
             return ParserOutcome(status="processed", dfs=[("NMI1", failing_df)])
 
+        # The first file emits one batch (1 upload). The second file emits two
+        # batches; the second batch's upload raises -> abort path runs.
+        call_count = {"n": 0}
+        real_upload = file_processor_app._upload_csv_to_s3
+
+        def upload_third_call_fails(csv_content: str, output_key: str) -> None:
+            call_count["n"] += 1
+            if call_count["n"] == 3:
+                raise RuntimeError("simulated upload failure")
+            real_upload(csv_content, output_key)
+
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
@@ -986,6 +1042,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.get_non_nem_outcome", side_effect=get_outcome),
             patch("functions.file_processor.app.BATCH_SIZE", 1),
             patch("functions.file_processor.app.random.randint", return_value=12345),
+            patch("functions.file_processor.app._upload_csv_to_s3", side_effect=upload_third_call_fails),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[
@@ -1168,3 +1225,178 @@ class TestComputeDataFrameFinalStatus:
 
         assert status == "processed_empty"
         assert reason is None
+
+
+class TestCandidateValuesSkipAndCount:
+    """Direct unit tests for `_candidate_values` skip-and-count behaviour."""
+
+    def test_one_unparseable_timestamp_skipped_and_counted(self) -> None:
+        from collections import Counter
+
+        from functions.file_processor.app import _candidate_values
+
+        # 100 rows; row 17 has a bogus timestamp -> skip, others valid.
+        timestamps = [pd.Timestamp("2024-01-01") + pd.Timedelta(minutes=30 * i) for i in range(100)]
+        timestamps[17] = "definitely-not-a-timestamp"
+        df = pd.DataFrame({"t_start": timestamps, "E1_kWh": [float(i) for i in range(100)]})
+        skip_counter: Counter = Counter()
+
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"], None, skip_counter)
+
+        assert len(candidates) == 99
+        assert skip_counter["unparseable_timestamp"] == 1
+        assert skip_counter["unparseable_value"] == 0
+        assert skip_counter["blank_value"] == 0
+
+    def test_one_unparseable_value_skipped_and_counted(self) -> None:
+        from collections import Counter
+
+        from functions.file_processor.app import _candidate_values
+
+        # 100 rows; row 5 has a non-numeric value.
+        timestamps = [pd.Timestamp("2024-01-01") + pd.Timedelta(minutes=30 * i) for i in range(100)]
+        values: list[Any] = [float(i) for i in range(100)]
+        values[5] = "abc"
+        df = pd.DataFrame({"t_start": timestamps, "E1_kWh": values})
+        skip_counter: Counter = Counter()
+
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"], None, skip_counter)
+
+        assert len(candidates) == 99
+        assert skip_counter["unparseable_value"] == 1
+        assert skip_counter["unparseable_timestamp"] == 0
+        assert skip_counter["blank_value"] == 0
+
+    def test_blank_string_value_counted_as_blank(self) -> None:
+        from collections import Counter
+
+        from functions.file_processor.app import _candidate_values
+
+        df = pd.DataFrame({"t_start": [pd.Timestamp("2024-01-01")], "E1_kWh": [""]})
+        skip_counter: Counter = Counter()
+
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"], None, skip_counter)
+
+        assert candidates == []
+        assert skip_counter["blank_value"] == 1
+        assert skip_counter["unparseable_value"] == 0
+
+    def test_whitespace_value_counted_as_blank(self) -> None:
+        from collections import Counter
+
+        from functions.file_processor.app import _candidate_values
+
+        df = pd.DataFrame({"t_start": [pd.Timestamp("2024-01-01")], "E1_kWh": ["   "]})
+        skip_counter: Counter = Counter()
+
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"], None, skip_counter)
+
+        assert candidates == []
+        assert skip_counter["blank_value"] == 1
+
+    def test_nan_value_counted_as_blank(self) -> None:
+        from collections import Counter
+
+        import numpy as np
+
+        from functions.file_processor.app import _candidate_values
+
+        df = pd.DataFrame({"t_start": [pd.Timestamp("2024-01-01")], "E1_kWh": [np.nan]})
+        skip_counter: Counter = Counter()
+
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"], None, skip_counter)
+
+        assert candidates == []
+        assert skip_counter["blank_value"] == 1
+
+    def test_does_not_raise_on_any_row_level_issue(self) -> None:
+        from functions.file_processor.app import _candidate_values
+
+        df = pd.DataFrame(
+            {
+                "t_start": ["bad-ts", pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")],
+                "E1_kWh": ["x", "y", ""],
+            }
+        )
+
+        # Must not raise even though every row is bad.
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"])
+
+        assert candidates == []
+
+    def test_skip_counter_optional(self) -> None:
+        from functions.file_processor.app import _candidate_values
+
+        df = pd.DataFrame({"t_start": [pd.Timestamp("2024-01-01")], "E1_kWh": [1.0]})
+        # No skip_counter argument; must not error.
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"])
+
+        assert len(candidates) == 1
+
+
+class TestProcessorUnsupportedSuffixAccumulation:
+    """Verify that unknown suffix columns are recorded (gap G12)."""
+
+    @mock_aws
+    def test_unsupported_suffix_with_no_known_columns_processes_empty(self) -> None:
+        # All data columns have an unknown suffix -> no candidates, file
+        # processed_empty (all_unknown_suffix), source moved to newP/.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "Z9Z_kWh": [1.0, 2.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-Z9Z": "p:test:z"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_known_and_unknown_suffix_processes_known_rows(self) -> None:
+        # File has one known suffix (E1) and one unknown suffix (Z9Z); the
+        # known channel writes Hudi rows, the unknown is ignored silently
+        # but must not break processing.
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+                "Z9Z_kWh": [9.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        hudi_keys = _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/")
+        assert len(hudi_keys) == 1
+
+
+class TestMissingTStartIsParserError:
+    """`Missing t_start column` is a parser-output structural error."""
+
+    @mock_aws
+    def test_missing_t_start_column_routes_to_parse_err(self) -> None:
+        from shared.parsers import ParserOutcome
+
+        # DataFrame has no t_start column at all -> ParserError -> newParseErr/.
+        df = pd.DataFrame({"E1_kWh": [1.0, 2.0]})
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []

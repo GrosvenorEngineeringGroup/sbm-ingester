@@ -7,6 +7,7 @@ import tempfile
 import time
 import traceback
 import uuid
+from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import chain
@@ -35,6 +36,7 @@ from shared import (
 )
 from shared.non_nem_parsers import get_non_nem_outcome
 from shared.parsers import ParserError, ParserOutcome, ParserReason, ParserStatus, ProcessingError
+from shared.parsers.outcome import SkipReason
 
 # File stability check configuration
 FILE_STABILITY_CHECK_INTERVAL = 5  # seconds between checks
@@ -200,30 +202,51 @@ def _candidate_values(
     col: str,
     t_start_col: pd.Series,
     quality_col: pd.Series | None = None,
+    skip_counter: Counter[SkipReason] | None = None,
 ) -> list[DataFrameCandidate]:
+    """Return valid candidate rows; record row-level skips in ``skip_counter``.
+
+    Per the parser-outcome contract, row-level data quality issues never raise.
+    Bad rows are skipped silently with the disqualifying reason recorded in
+    ``skip_counter`` (mutated in place when supplied).
+
+    Skip taxonomy:
+      * ``blank_value`` — value cell is NaN, empty, or whitespace.
+      * ``unparseable_value`` — non-empty value cell that fails numeric coercion.
+      * ``unparseable_timestamp`` — timestamp cell fails datetime coercion or is NaT.
+
+    Blank-value rows are filtered first so a blank value is not also charged
+    against ``unparseable_timestamp``. Cells matched by both ``unparseable_value``
+    and ``unparseable_timestamp`` are charged to whichever is detected first
+    (timestamp), matching the row-level attribution policy in the spec.
+    """
     candidates: list[DataFrameCandidate] = []
     value_col = df[col]
     quality_values = quality_col if quality_col is not None else [None] * len(value_col)
 
-    for row_idx, (ts_raw, val_raw, quality_raw) in enumerate(zip(t_start_col, value_col, quality_values, strict=False)):
+    for ts_raw, val_raw, quality_raw in zip(t_start_col, value_col, quality_values, strict=False):
         if pd.isna(val_raw) or _is_blank_value(val_raw):
+            if skip_counter is not None:
+                skip_counter["blank_value"] += 1
+            continue
+
+        ts = pd.to_datetime(ts_raw, errors="coerce")
+        if pd.isna(ts):
+            if skip_counter is not None:
+                skip_counter["unparseable_timestamp"] += 1
             continue
 
         try:
-            ts = pd.to_datetime(ts_raw, errors="raise")
-        except Exception as e:
-            raise ProcessingError(f"Malformed timestamp in column {col} at row {row_idx}: {ts_raw!r}") from e
-
-        if pd.isna(ts):
-            raise ProcessingError(f"Missing timestamp in column {col} at row {row_idx}")
-
-        try:
             val = float(val_raw)
-        except (TypeError, ValueError) as e:
-            raise ProcessingError(f"Non-numeric value in column {col} at row {row_idx}: {val_raw!r}") from e
+        except (TypeError, ValueError):
+            if skip_counter is not None:
+                skip_counter["unparseable_value"] += 1
+            continue
 
         if pd.isna(val):
-            raise ProcessingError(f"Non-numeric value in column {col} at row {row_idx}: {val_raw!r}")
+            if skip_counter is not None:
+                skip_counter["unparseable_value"] += 1
+            continue
 
         quality = "" if pd.isna(quality_raw) else str(quality_raw)
         candidates.append(DataFrameCandidate(ts=ts, val=val, quality=quality))
@@ -598,8 +621,24 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             # in (e.g., a sub-function decorated independently), reintroduce the
             # synthesis here.
 
-            # Try streaming parser first (memory efficient for large files)
-            # Use peek pattern: get first item to validate, then chain with rest
+            # Try streaming parser first (memory efficient for large files).
+            # Use peek pattern: get first item to validate, then chain with rest.
+            # The catch is narrowed to exceptions that genuinely mean "not a NEM12
+            # file" or "no data" (ValueError, KeyError, IndexError, AssertionError,
+            # UnicodeDecodeError, StopIteration). nemreader does not expose its
+            # own exception types today; the narrowing is partial pending a
+            # nemreader API that surfaces a structured "not a NEM file" signal.
+            # Other unexpected exceptions (RuntimeError, AttributeError, etc.)
+            # propagate so genuine NEM12 parser bugs surface instead of silently
+            # routing to the non-NEM dispatcher.
+            _NEM_FALLTHROUGH_ERRORS: tuple[type[BaseException], ...] = (
+                ValueError,
+                KeyError,
+                IndexError,
+                AssertionError,
+                UnicodeDecodeError,
+                StopIteration,
+            )
             try:
                 stream = stream_as_data_frames(local_file_path, split_days=True)
                 first_item = next(stream, None)
@@ -607,14 +646,14 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     raise ValueError("No data parsed from file")
                 # Chain first item back with the rest of the stream
                 outcome = ParserOutcome(status="processed", dfs=chain([first_item], stream))
-            except Exception:
+            except _NEM_FALLTHROUGH_ERRORS:
                 # Fall back to batch parser
                 try:
                     dfs = output_as_data_frames(local_file_path, split_days=True)
                     if not dfs:
                         raise ValueError("No data parsed from file")
                     outcome = ParserOutcome(status="processed", dfs=dfs)
-                except Exception:
+                except _NEM_FALLTHROUGH_ERRORS:
                     # Try non-NEM parsers as last resort
                     try:
                         outcome = get_non_nem_outcome(local_file_path, PARSE_ERROR_LOG_GROUP)
@@ -633,6 +672,10 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     unmapped_count = 0
                     rows_written = 0
                     mapped_monitor_points_count = 0
+                    # Skip counts and unsupported suffixes seeded from parser-side
+                    # signal so consumer-side accumulation is additive (gap G12).
+                    skip_counter: Counter[SkipReason] = Counter(outcome.skip_reasons)
+                    unsupported_suffixes: set[str] = set(outcome.unsupported_suffixes)
 
                     for nmi, df in outcome.dfs:
                         # Reset index if t_start is the index
@@ -640,7 +683,10 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                             df = df.reset_index()
 
                         if "t_start" not in df.columns:
-                            raise ProcessingError(f"Missing t_start column for {nmi}")
+                            # Parser produced a DataFrame without the required
+                            # column; this is a structural parser-output issue,
+                            # not an IO failure -> ParserError.
+                            raise ParserError(f"Missing t_start column for {nmi}")
 
                         # Get t_start column for iteration
                         t_start_col = df["t_start"]
@@ -648,12 +694,20 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         for col in df.columns:
                             suffix = col.split("_")[0]
                             if suffix not in NMI_DATA_STREAM_COMBINED:
+                                # Skip non-data columns silently (t_start, t_end,
+                                # quality_*, event_code, event_desc, etc.). Only
+                                # record genuine vendor-supplied data columns
+                                # whose suffix is unrecognised.
+                                if col not in {"t_start", "t_end", "event_code", "event_desc"} and not col.startswith(
+                                    "quality_"
+                                ):
+                                    unsupported_suffixes.add(suffix)
                                 continue
 
                             # Get per-channel quality column if available
                             quality_col_name = f"quality_{suffix}"
                             quality_col = df[quality_col_name] if quality_col_name in df.columns else None
-                            candidates = _candidate_values(df, col, t_start_col, quality_col)
+                            candidates = _candidate_values(df, col, t_start_col, quality_col, skip_counter)
 
                             if not candidates:
                                 continue
@@ -696,12 +750,14 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
 
                     mapped_monitor_points_for_file = mapped_monitor_points_count
 
+                    rows_skipped_total = sum(skip_counter.values())
+
                     final_status, final_reason = _compute_dataframe_final_status(
                         rows_written=rows_written,
                         candidate_row_count=candidate_row_count,
                         unmapped_count=unmapped_count,
-                        unsupported_suffixes=outcome.unsupported_suffixes,
-                        rows_skipped=outcome.rows_skipped,
+                        unsupported_suffixes=frozenset(unsupported_suffixes),
+                        rows_skipped=rows_skipped_total,
                         parser_reason=outcome.reason,
                     )
                     if final_status == "processed_empty":
