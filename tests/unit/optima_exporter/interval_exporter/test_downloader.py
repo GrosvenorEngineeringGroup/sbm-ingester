@@ -1,8 +1,4 @@
-"""Unit tests for interval_exporter/downloader.py module.
-
-Tests POST /BuyerReport/exportdailyusagecsv contract, ZIP magic byte validation,
-ZIP to CSV extraction, and graceful handling of every observed error mode.
-"""
+"""Unit tests for interval_exporter/downloader.py date formatting helpers."""
 
 
 class TestFormatDateForUrl:
