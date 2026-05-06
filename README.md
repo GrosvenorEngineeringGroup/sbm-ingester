@@ -162,6 +162,7 @@ flowchart LR
 | `optima-nem12-exporter` | Python 3.13 | 256 MB | 900s | Daily export - downloads BidEnergy NEM12 files to S3 |
 | `optima-billing-exporter` | Python 3.13 | 128 MB | 120s | Monthly export - triggers BidEnergy billing report (email delivery) |
 | `optima-demand-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:30 PM Sydney) - downloads BidEnergy Demand Profile CSVs (kW/kVa/PF) |
+| `optima-interval-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:00 PM Sydney) - downloads BidEnergy interval CSVs, uploads to S3 |
 | `cim-report-exporter` | Python 3.13 | 1024 MB | 300s | Daily job (8 AM Sydney) - Playwright browser automation for CIM AFDD reports |
 
 ### Glue ETL Job
@@ -246,11 +247,12 @@ sbm-ingester/
 │   │   │   └── app.py
 │   │   ├── glue_trigger/        # Glue trigger Lambda
 │   │   │   └── app.py
-│   │   ├── optima_exporter/     # Optima/BidEnergy exporter (3 Lambdas)
+│   │   ├── optima_exporter/     # Optima/BidEnergy exporter (4 Lambdas)
 │   │   │   ├── optima_shared/   # Auth, config, DynamoDB
 │   │   │   ├── nem12_exporter/  # NEM12 CSV download Lambda
 │   │   │   ├── billing_exporter/ # Billing report trigger Lambda
-│   │   │   └── demand_exporter/ # Demand profile CSV download Lambda
+│   │   │   ├── demand_exporter/ # Demand profile CSV download Lambda
+│   │   │   └── interval_exporter/ # Interval CSV download Lambda
 │   │   └── cim_exporter/        # CIM AFDD report exporter (Docker)
 │   │       ├── Dockerfile
 │   │       ├── requirements.txt
@@ -441,9 +443,9 @@ curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem1
 
 **Rate Limit:** 500 requests/day
 
-## In Progress
+## Recent Work
 
-- **`optima-interval-exporter`** — new Lambda being built to replace `optima-nem12-exporter` as the primary interval data source (NEM12 Lambda kept as backup). Uses BidEnergy's `POST /BuyerReport/exportdailyusagecsv` endpoint, which returns a ZIP wrapping a single per-NMI 12-column CSV. Includes a fix for the existing `interval_parser` to gracefully handle the "No data is available" sentinel CSV.
+- **`optima-interval-exporter`** — primary interval data source replacing the daily schedules for `optima-nem12-exporter` (NEM12 Lambda kept as backup/manual invoke). Uses BidEnergy's `POST /BuyerReport/exportdailyusagecsv` endpoint, which returns a ZIP wrapping a single per-NMI 12-column CSV. Includes a fix for the existing `interval_parser` to gracefully handle the "No data is available" sentinel CSV.
   - Spec: [`docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md`](docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md)
   - Plan: [`docs/superpowers/plans/2026-05-06-optima-interval-exporter.md`](docs/superpowers/plans/2026-05-06-optima-interval-exporter.md) (13 tasks)
   - Real BidEnergy CSV fixtures already committed at `tests/unit/fixtures/optima_interval/`.

@@ -1,8 +1,10 @@
 # Optima Exporter
 
-Exports energy data from BidEnergy/Optima platform. This module contains two Lambda functions that operate independently:
+Exports energy data from BidEnergy/Optima platform. This module contains four Lambda functions that operate independently:
 
-- **NEM12 Exporter** - Downloads NEM12 CSV files and uploads to S3 for ingestion
+- **Interval Exporter** - Downloads ZIP-wrapped interval CSV files and uploads to S3 for ingestion
+- **NEM12 Exporter** - Downloads NEM12 CSV files and uploads to S3 for ingestion (backup/manual invoke)
+- **Demand Exporter** - Downloads demand profile CSV files and uploads to S3 for ingestion
 - **Billing Exporter** - Triggers monthly billing report generation (delivered via email)
 
 ## Table of Contents
@@ -35,18 +37,30 @@ optima_exporter/
 │   ├── __init__.py
 │   ├── app.py               # Lambda handler
 │   └── trigger.py           # Monthly Usage and Spend report API
+├── demand_exporter/         # Lambda 3: Demand profile export
+│   ├── __init__.py
+│   ├── app.py
+│   ├── downloader.py
+│   ├── processor.py
+│   └── uploader.py
+├── interval_exporter/       # Lambda 4: Interval CSV export
+│   ├── __init__.py
+│   ├── app.py
+│   ├── downloader.py
+│   ├── processor.py
+│   └── uploader.py
 └── tmp/                     # Local development test files (not deployed)
 ```
 
 ## Data Flow
 
-### NEM12 Exporter
+### Interval Exporter
 
 ```
 EventBridge (daily)
     │
     ▼
-Lambda (optima-nem12-exporter)
+Lambda (optima-interval-exporter)
     │
     ├─→ DynamoDB (sbm-optima-config) ─→ Get site list by project
     │
@@ -54,10 +68,12 @@ Lambda (optima-nem12-exporter)
     │
     ├─→ For each site (parallel, max 20 workers):
     │       │
-    │       ├─→ Download CSV from BidEnergy API
-    │       │       (/BuyerReportRead/Intervalread)
+    │       ├─→ Download ZIP from BidEnergy API
+    │       │       (POST /BuyerReport/exportdailyusagecsv)
     │       │
-    │       └─→ Upload to S3 (sbm-file-ingester/newTBP/)
+    │       ├─→ Extract inner CSV
+    │       │
+    │       └─→ Upload CSV to S3 (sbm-file-ingester/newTBP/)
     │
     └─→ Files processed by sbm-files-ingester pipeline
 ```
@@ -95,14 +111,16 @@ Lambda (optima-billing-exporter)
 
 | Function | Memory | Timeout | Purpose |
 |----------|--------|---------|---------|
-| `optima-nem12-exporter` | 256 MB | 900s (15min) | Downloads NEM12 CSV files for all sites, uploads to S3 |
+| `optima-interval-exporter` | 256 MB | 900s (15min) | Downloads interval CSV files for all sites, uploads to S3 |
+| `optima-nem12-exporter` | 256 MB | 900s (15min) | Downloads NEM12 CSV files for all sites, uploads to S3 (backup/manual invoke) |
+| `optima-demand-exporter` | 256 MB | 900s (15min) | Downloads demand profile CSV files for all sites, uploads to S3 |
 | `optima-billing-exporter` | 128 MB | 120s | Triggers billing report generation (async, email delivery) |
 
 **Note:** X-Ray tracing is disabled to avoid "Message too long" errors from large parallel operations.
 
 ## Event Parameters
 
-### NEM12 Exporter
+### Interval/NEM12/Demand Exporters
 
 ```json
 {
@@ -113,7 +131,7 @@ Lambda (optima-billing-exporter)
 }
 ```
 
-If `startDate`/`endDate` are not provided, defaults to yesterday only (1 day back; configurable via `OPTIMA_DAYS_BACK`).
+If `startDate`/`endDate` are not provided, defaults to yesterday only (1 day back; configurable via `OPTIMA_DAYS_BACK`). The interval exporter accepts AU NMIs and NZ ICP identifiers.
 
 ### Billing Exporter
 
@@ -139,7 +157,7 @@ If `startDate`/`endDate` are not provided, defaults to the past 12 months (confi
 | `S3_UPLOAD_BUCKET` | S3 bucket for uploads | `sbm-file-ingester` |
 | `S3_UPLOAD_PREFIX` | S3 key prefix | `newTBP/` |
 
-### NEM12 Exporter Configuration
+### Interval/NEM12/Demand Exporter Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -202,13 +220,21 @@ Configured via EventBridge Scheduler in Terraform (`terraform/optima_exporter.tf
 
 | Schedule | Lambda | Description |
 |----------|--------|-------------|
-| `cron(0 14 * * ? *)` (Australia/Sydney) | nem12-exporter | Daily at 14:00 Sydney time |
+| `cron(0 14 * * ? *)` (Australia/Sydney) | interval-exporter | Daily at 14:00 Sydney time |
+| Manual invoke only | nem12-exporter | Backup interval export path |
+| `cron(30 14 * * ? *)` (Australia/Sydney) | demand-exporter | Daily at 14:30 Sydney time |
 | `cron(0 7 1 * ? *)` (Australia/Sydney) | billing-exporter | 1st of each month at 07:00 Sydney time |
 
 ### Manual Invocation
 
 ```bash
-# Invoke NEM12 exporter for specific NMI
+# Invoke interval exporter for specific NMI/ICP
+aws lambda invoke \
+  --function-name optima-interval-exporter \
+  --payload '{"project":"bunnings","nmi":"NMI001"}' \
+  response.json
+
+# Invoke NEM12 exporter backup path for specific NMI
 aws lambda invoke \
   --function-name optima-nem12-exporter \
   --payload '{"project":"bunnings","nmi":"NMI001"}' \
@@ -223,7 +249,7 @@ aws lambda invoke \
 
 ## Testing
 
-Tests are located in `tests/unit/optima_exporter/` with 122 tests covering all modules:
+Tests are located in `tests/unit/optima_exporter/` covering all modules:
 
 ```
 tests/unit/optima_exporter/
@@ -239,6 +265,11 @@ tests/unit/optima_exporter/
 │   ├── test_processor.py          # 29 tests
 │   ├── test_prefix_scoping.py     # 2 tests - NMI prefix scoping
 │   └── test_uploader.py           # 7 tests
+├── interval_exporter/
+│   ├── test_app.py
+│   ├── test_downloader.py
+│   ├── test_processor.py
+│   └── test_uploader.py
 └── billing_exporter/
     ├── test_app.py                # 2 tests
     └── test_trigger.py            # 8 tests
