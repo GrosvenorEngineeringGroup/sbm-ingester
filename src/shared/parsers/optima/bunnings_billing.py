@@ -217,6 +217,20 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
     mappings = get_nem12_mappings()
     build = _build_hudi_csv(rows, mappings)
 
+    if build.invalid_count > 0:
+        logger.info(
+            "bunnings_billing_invalid_rows",
+            extra={
+                "file": file_name,
+                "source_rows": build.source_row_count,
+                "candidates": build.candidate_row_count,
+                "rows_written": build.rows_written,
+                "invalid": build.invalid_count,
+                "unmapped": build.unmapped_count,
+            },
+        )
+        raise ParserError(f"No valid Bunnings billing candidates in {file_name}")
+
     if build.rows_written == 0:
         if build.candidate_row_count == 0 and build.invalid_count == 0:
             return ParserOutcome(

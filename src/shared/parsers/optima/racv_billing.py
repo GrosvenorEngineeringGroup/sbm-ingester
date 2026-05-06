@@ -38,4 +38,5 @@ def racv_billing_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         s3.put_object(Bucket=S3_BUCKET, Key=S3_KEY, Body=file_data)
     except Exception as e:
         raise ProcessingError(f"Failed to upload RACV billing report: {e}") from e
+    logger.info("racv_billing_uploaded", extra={"bucket": S3_BUCKET, "key": S3_KEY})
     return ParserOutcome(status="processed_external", reason="gegoptimareports")

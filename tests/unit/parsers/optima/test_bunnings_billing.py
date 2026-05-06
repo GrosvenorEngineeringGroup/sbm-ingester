@@ -472,6 +472,26 @@ def test_invalid_date_skipped(_reset_mappings_cache, tmp_path) -> None:
 
 
 @mock_aws
+def test_mixed_mapped_row_and_invalid_billing_value_raises_without_upload(_reset_mappings_cache, tmp_path) -> None:
+    mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+    text = src.read_bytes().decode("utf-16-le").lstrip("\ufeff")
+    lines = text.rstrip("\n").split("\n")
+    header = lines[7].split(",")
+    invalid_row = lines[8].split(",")
+    invalid_row[header.index("Peak")] = "not-a-number"
+    lines.append(",".join(invalid_row))
+    src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
+
+    with pytest.raises(ParserError, match="No valid Bunnings billing candidates"):
+        bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 0
+
+
+@mock_aws
 def test_unit_selection_in_output(_reset_mappings_cache, tmp_path) -> None:
     """Usage fields use kWh; spend fields use AUD."""
     mappings = {

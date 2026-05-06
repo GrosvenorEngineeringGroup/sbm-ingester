@@ -190,6 +190,20 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     mappings = _mappings_mod.get_nem12_mappings()
     build = _build_hudi_csv(parsed.rows, mappings)
 
+    if build.invalid_count > 0:
+        logger.info(
+            "demand_invalid_rows",
+            extra={
+                "file": file_name,
+                "source_rows": build.source_row_count,
+                "candidates": build.candidate_row_count,
+                "rows_written": build.rows_written,
+                "invalid": build.invalid_count,
+                "unmapped": build.unmapped_count,
+            },
+        )
+        raise ParserError(f"No valid demand candidates in {file_name}")
+
     if build.rows_written == 0:
         if (
             build.invalid_count == 0

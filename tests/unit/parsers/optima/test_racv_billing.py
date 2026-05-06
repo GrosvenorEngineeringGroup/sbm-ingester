@@ -82,12 +82,22 @@ def test_racv_billing_success_returns_processed_external(tmp_path) -> None:
     path = tmp_path / "20260414-RACV-Usage and Spend Report.csv"
     path.write_text("a,b\n1,2\n")
 
-    with patch("shared.parsers.optima.racv_billing.boto3.client") as mock_client:
+    with (
+        patch("shared.parsers.optima.racv_billing.boto3.client") as mock_client,
+        patch("shared.parsers.optima.racv_billing.logger") as mock_logger,
+    ):
         mock_client.return_value.put_object.return_value = {"ETag": "etag"}
         result = racv_billing_parser(str(path), "error_log")
 
     assert result.status == "processed_external"
     assert result.reason == "gegoptimareports"
+    mock_logger.info.assert_called_once_with(
+        "racv_billing_uploaded",
+        extra={
+            "bucket": "gegoptimareports",
+            "key": "usageAndSpendReports/racvUsageAndSpend.csv",
+        },
+    )
 
 
 def test_racv_billing_upload_failure_raises_processing_error(tmp_path) -> None:

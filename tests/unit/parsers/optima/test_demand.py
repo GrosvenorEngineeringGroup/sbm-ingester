@@ -315,6 +315,28 @@ class TestMappingLookupAndHudiWrite:
 
         mock_client.return_value.put_object.assert_not_called()
 
+    def test_mixed_mapped_row_and_bad_timestamp_raise_parser_error_without_upload(
+        self, write_demand_csv, monkeypatch, _reset_mappings_cache
+    ):
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+        rows = [
+            ("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+            ("4001260599", "bad-date", "5.2400", "10.4800", "10.4800", "1.0000"),
+        ]
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            path = write_demand_csv(rows=rows)
+
+            with pytest.raises(ParserError, match="No valid demand candidates"):
+                demand_parser(str(path), "/tmp/err.log")
+
+        mock_client.return_value.put_object.assert_not_called()
+
     def test_all_bad_timestamps_raise_parser_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
         from shared.parsers import ParserError
 
