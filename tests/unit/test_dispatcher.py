@@ -140,3 +140,80 @@ class TestDataFrameOutputFormat:
             result = interval_parser(gen_file, "error")
             _, df = result[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
+
+
+class TestOutcomeDispatcher:
+    def test_wraps_legacy_parser_result_as_processed_outcome(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+
+        def parser(file_name: str, error_file_path: str):
+            df = pd.DataFrame({"t_start": ["2026-01-01 00:00:00"], "E1_kWh": [1.0]})
+            return [("NMI1", df)]
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
+
+        result = get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+
+        assert result.status == "processed"
+        assert len(result.dfs) == 1
+
+    def test_legacy_get_non_nem_df_still_returns_raw_dfs(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_df
+
+        def parser(file_name: str, error_file_path: str):
+            df = pd.DataFrame({"t_start": ["2026-01-01 00:00:00"], "E1_kWh": [1.0]})
+            return [("NMI1", df)]
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
+
+        result = get_non_nem_df(str(tmp_path / "file.csv"), "error_log")
+
+        assert isinstance(result, list)
+        assert result[0][0] == "NMI1"
+
+    def test_not_relevant_parser_continues_to_next_parser(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers import NotRelevantParser, ParserOutcome
+
+        def first_parser(file_name: str, error_file_path: str):
+            raise NotRelevantParser("not mine")
+
+        def second_parser(file_name: str, error_file_path: str):
+            return ParserOutcome(status="processed_empty", reason="matched")
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+
+        result = get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.reason == "matched"
+
+    def test_parser_error_stops_dispatch(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers import NotRelevantParser, ParserError
+
+        def first_parser(file_name: str, error_file_path: str):
+            raise ParserError("matched but malformed")
+
+        def second_parser(file_name: str, error_file_path: str):
+            raise NotRelevantParser("should not run")
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+
+        with pytest.raises(ParserError, match="matched but malformed"):
+            get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+
+    def test_processing_error_stops_dispatch(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers import NotRelevantParser, ProcessingError
+
+        def first_parser(file_name: str, error_file_path: str):
+            raise ProcessingError("s3 write failed")
+
+        def second_parser(file_name: str, error_file_path: str):
+            raise NotRelevantParser("should not run")
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+
+        with pytest.raises(ProcessingError, match="s3 write failed"):
+            get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")

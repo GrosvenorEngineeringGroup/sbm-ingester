@@ -2,7 +2,13 @@
 
 from aws_lambda_powertools import Logger
 
-from shared.parsers import ParserResult
+from shared.parsers import (
+    NotRelevantParser,
+    ParserError,
+    ParserOutcome,
+    ParserResult,
+    ProcessingError,
+)
 from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity
 from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_water_bulk
@@ -16,26 +22,46 @@ from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
 
+PARSERS = [
+    noosa_solar_parser,
+    envizi_vertical_parser_water,
+    envizi_vertical_parser_electricity,
+    racv_elec_parser,
+    racv_billing_parser,
+    bunnings_billing_parser,
+    demand_parser,
+    interval_parser,
+    envizi_vertical_parser_water_bulk,
+    green_square_private_wire_schneider_comx_parser,
+]
 
-def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
-    parsers = [
-        noosa_solar_parser,
-        envizi_vertical_parser_water,
-        envizi_vertical_parser_electricity,
-        racv_elec_parser,
-        racv_billing_parser,
-        bunnings_billing_parser,
-        demand_parser,
-        interval_parser,
-        envizi_vertical_parser_water_bulk,
-        green_square_private_wire_schneider_comx_parser,
-    ]
 
-    for parser in parsers:
+def _as_outcome(result: ParserOutcome | ParserResult) -> ParserOutcome:
+    if isinstance(result, ParserOutcome):
+        return result
+    return ParserOutcome(status="processed", dfs=result)
+
+
+def get_non_nem_outcome(file_name: str, error_file_path: str) -> ParserOutcome:
+    for parser in PARSERS:
         try:
-            return parser(file_name, error_file_path)
+            return _as_outcome(parser(file_name, error_file_path))
+        except NotRelevantParser as e:
+            logger.debug(
+                "Parser not relevant",
+                extra={"parser": parser.__name__, "file": file_name, "error": str(e)},
+            )
+        except (ParserError, ProcessingError):
+            raise
         except Exception as e:
-            logger.debug("Parser failed", extra={"parser": parser.__name__, "file": file_name, "error": str(e)})
+            logger.debug(
+                "Legacy parser failed",
+                extra={"parser": parser.__name__, "file": file_name, "error": str(e)},
+            )
 
     logger.error("No valid parser found", extra={"file": file_name})
-    raise Exception(f"get_non_nem_df: {file_name}: No Valid Parser Found")
+    raise ParserError(f"get_non_nem_outcome: {file_name}: No Valid Parser Found")
+
+
+def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
+    return get_non_nem_outcome(file_name, error_file_path).dfs
