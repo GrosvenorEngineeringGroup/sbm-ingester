@@ -163,6 +163,60 @@ def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -
 
 
 @mock_aws
+def test_quality_cell_is_empty_for_billing_rows(_reset_mappings_cache, tmp_path) -> None:
+    """Bunnings billing exports do not carry vendor quality codes — quality
+    cell must be empty (zero-length) so Athena reads it as NULL. Spec line 570.
+    """
+    s3 = boto3.client("s3", region_name="ap-southeast-2")
+    s3.create_bucket(
+        Bucket="sbm-file-ingester",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    s3.create_bucket(
+        Bucket="hudibucketsrc",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    mappings: dict[str, str] = {}
+    for nmi in ("VCCCLG0019", "VAAA000266"):
+        for _, suffix, _unit_source in bp_mod.CSV_FIELD_MAPPING:
+            mappings[f"{nmi}-{suffix}"] = f"p:bunnings:mock-{nmi}-{suffix}"
+    s3.put_object(
+        Bucket="sbm-file-ingester",
+        Key="nem12_mappings.json",
+        Body=json.dumps(mappings).encode(),
+    )
+
+    src = FIXTURE_DIR / "bunnings_billing_sample.csv"
+    dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
+    dst.write_bytes(src.read_bytes())
+
+    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    assert result.status == "processed"
+
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    keys = [o["Key"] for o in listed.get("Contents", [])]
+    assert len(keys) == 1
+    body = s3.get_object(Bucket="hudibucketsrc", Key=keys[0])["Body"].read().decode()
+    data_lines = [L for L in body.strip().split("\n")[1:] if L]
+
+    # Every data line must end with ``,`` (zero characters between the final
+    # comma and the line terminator) — never the literal ``""``.
+    for line in data_lines:
+        fields = line.split(",")
+        assert len(fields) == 6
+        assert fields[5] == "", f"quality must be empty cell, got {fields[5]!r}"
+        assert line.endswith(",")  # raw bytes: trailing empty cell
+
+    # Sanity: csv.reader yields zero-length string for the quality column.
+    import csv
+    import io
+
+    rows = list(csv.reader(io.StringIO(body)))
+    for row in rows[1:]:
+        assert row[-1] == ""
+
+
+@mock_aws
 def test_whitespace_only_unit_falls_back_to_default(_reset_mappings_cache, tmp_path) -> None:
     """Whitespace-only Usage Measurement Unit / Spend Currency must fall
     back to defaults (kwh/aud), not pass through as a garbage unit."""

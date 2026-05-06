@@ -301,6 +301,49 @@ class TestMappingLookupAndHudiWrite:
             # CSV: sensorId, ts, val, unit, its, quality
             assert fields[3] == "", f"PF unit should be empty string, got {fields[3]!r}"
 
+    def test_quality_cell_is_empty_for_demand_rows(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        """Demand exports do not carry vendor quality codes — quality cell
+        must be empty (zero-length) so Athena reads it as NULL. Spec line 570.
+        """
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+
+        captured_body = []
+
+        def fake_put_object(**kwargs):
+            captured_body.append(kwargs["Body"].decode())
+            return {"ETag": "fake-etag"}
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object = fake_put_object
+            path = write_demand_csv()
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        body = captured_body[0]
+        data_lines = [L for L in body.strip().split("\n")[1:] if L]
+        assert len(data_lines) == 9
+
+        # Every data line must end with ``,`` (zero characters between the
+        # final comma and the line terminator) — never the literal ``""``.
+        for line in data_lines:
+            fields = line.split(",")
+            assert len(fields) == 6
+            assert fields[5] == "", f"quality must be empty cell, got {fields[5]!r}"
+            assert line.endswith(",")  # raw bytes: trailing empty cell
+
+        # Sanity: parsing back with csv.reader yields zero-length string
+        import csv
+        import io
+
+        rows = list(csv.reader(io.StringIO(body)))
+        for row in rows[1:]:  # skip header
+            assert row[-1] == ""
+
     def test_preserves_source_value_precision(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
         # Source CSV uses 4-decimal precision (e.g. "0.8800", "1.0000").
         # Hudi rows should preserve the raw string representation rather

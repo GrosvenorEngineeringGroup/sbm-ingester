@@ -151,7 +151,7 @@ class TestDirectCSVWriterQuality:
         executor.shutdown(wait=False)
 
     def test_write_row_default_empty_quality(self) -> None:
-        """Test that write_row defaults to empty quality (becomes NULL in Spark)."""
+        """Default ``quality=None`` writes an empty cell (Athena reads as NULL)."""
         from concurrent.futures import ThreadPoolExecutor
 
         import pandas as pd
@@ -168,7 +168,7 @@ class TestDirectCSVWriterQuality:
         executor.shutdown(wait=False)
 
     def test_write_row_none_quality_becomes_empty(self) -> None:
-        """Test that None quality is written as empty field (becomes NULL in Spark)."""
+        """``quality=None`` is serialised as an empty cell (no ``None`` literal)."""
         from concurrent.futures import ThreadPoolExecutor
 
         import pandas as pd
@@ -177,16 +177,84 @@ class TestDirectCSVWriterQuality:
 
         executor = ThreadPoolExecutor(max_workers=1)
         writer = DirectCSVWriter("test_batch", executor)
-        # Simulate what happens when file_processor passes "" if q is None else q
-        q = None
-        writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", "" if q is None else q)
+        # Caller passes ``None`` directly — the writer must NOT render
+        # ``str(None)`` ("None") in the cell.
+        writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", None)
 
         content = writer.buffer.getvalue()
         lines = content.strip().split("\n")
-        # Should end with trailing comma (empty quality field)
+        # Should end with trailing comma (empty quality field) and contain
+        # the literal ``,\n`` byte sequence — NOT ``,None\n``.
         assert lines[1].endswith(",")
         assert lines[1].count(",") == 5  # 6 fields = 5 commas
+        assert "None" not in content
+        # Raw bytes: zero characters between the final comma and newline.
+        assert content.endswith(",\n")
         executor.shutdown(wait=False)
+
+    def test_write_row_vendor_quality_strings_verbatim(self) -> None:
+        """Vendor-supplied quality codes (A, E, S14) survive verbatim."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        import pandas as pd
+
+        from functions.file_processor.app import DirectCSVWriter
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        writer = DirectCSVWriter("test_batch", executor)
+        for code in ("A", "E", "S14"):
+            writer.write_row("s", pd.Timestamp("2024-01-01"), 1.0, "kwh", code)
+
+        lines = writer.buffer.getvalue().strip().split("\n")
+        assert lines[1].endswith(",A")
+        assert lines[2].endswith(",E")
+        assert lines[3].endswith(",S14")
+        executor.shutdown(wait=False)
+
+    def test_write_row_none_quality_csv_reader_yields_empty_string(self) -> None:
+        """csv.reader parses the empty cell back as zero-length string."""
+        import csv
+        import io
+        from concurrent.futures import ThreadPoolExecutor
+
+        import pandas as pd
+
+        from functions.file_processor.app import DirectCSVWriter
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        writer = DirectCSVWriter("test_batch", executor)
+        writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", None)
+
+        content = writer.buffer.getvalue()
+        rows = list(csv.reader(io.StringIO(content)))
+        # rows[0] is header, rows[1] is the data row
+        assert len(rows) == 2
+        assert rows[1][-1] == ""  # quality cell is zero-length string
+        assert len(rows[1]) == 6
+        executor.shutdown(wait=False)
+
+    def test_candidate_values_passes_none_for_missing_quality(self) -> None:
+        """``_candidate_values`` propagates ``None`` (not ``""``) for missing quality."""
+        from collections import Counter
+
+        import numpy as np
+        import pandas as pd
+
+        from functions.file_processor.app import _candidate_values
+
+        df = pd.DataFrame(
+            {
+                "t_start": [pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-01 00:30")],
+                "E1_kWh": [1.0, 2.0],
+                "quality_E1": ["A", np.nan],
+            }
+        )
+        skip_counter: Counter = Counter()
+        candidates = _candidate_values(df, "E1_kWh", df["t_start"], df["quality_E1"], skip_counter)
+
+        assert len(candidates) == 2
+        assert candidates[0].quality == "A"  # vendor code preserved verbatim
+        assert candidates[1].quality is None  # missing → None, not ""
 
     def test_flush_preserves_quality(self) -> None:
         """Test that quality data survives buffer flush."""

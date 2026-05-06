@@ -144,7 +144,11 @@ sqs_client = boto3.client("sqs")
 class DataFrameCandidate:
     ts: Any
     val: float
-    quality: str
+    # ``None`` means "vendor did not provide a quality value" — the CSV writer
+    # serialises this as an empty cell so Athena/Presto reads it as NULL. A
+    # non-None string is forwarded verbatim to preserve vendor codes
+    # (``A``/``E``/``S14``/etc.). Spec line 570: never write empty string.
+    quality: str | None
 
 
 @dataclass(frozen=True)
@@ -269,7 +273,9 @@ def _candidate_values(
                 skip_counter["unparseable_value"] += 1
             continue
 
-        quality = "" if pd.isna(quality_raw) else str(quality_raw)
+        # Pass through ``None`` for missing vendor quality so the CSV writer
+        # emits an empty cell (Athena reads as NULL). See spec line 570.
+        quality = None if pd.isna(quality_raw) else str(quality_raw)
         candidates.append(DataFrameCandidate(ts=ts, val=val, quality=quality))
 
     return candidates
@@ -521,11 +527,21 @@ class DirectCSVWriter:
         self.upload_jobs: list[CSVUploadJob] = []
         self.committed_final_keys: list[str] = []
 
-    def write_row(self, sensor_id: str, ts: Any, val: float, unit: str, quality: str = "") -> None:
-        """Write a single row to the buffer."""
+    def write_row(self, sensor_id: str, ts: Any, val: float, unit: str, quality: str | None = None) -> None:
+        """Write a single row to the buffer.
+
+        ``quality=None`` (vendor did not supply a quality value) is serialised
+        as an empty cell — i.e. zero characters between the trailing commas —
+        so Athena/Presto reads the column as NULL. Vendor-supplied codes
+        (``A``/``E``/``S14``/etc.) pass through verbatim. Per spec line 570,
+        we must never write the literal empty string ``""`` (Athena/Presto
+        does NOT coerce ``""`` to NULL).
+        """
         ts_str = ts.strftime(self.TS_FORMAT) if hasattr(ts, "strftime") else str(ts)
+        # ``str(None)`` would render as "None"; force empty cell instead.
+        quality_field = "" if quality is None else quality
         # CSV format: sensorId,ts,val,unit,its,quality (its = ts)
-        self.buffer.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str},{quality}\n")
+        self.buffer.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str},{quality_field}\n")
         self.row_count += 1
 
     def flush(self) -> None:
