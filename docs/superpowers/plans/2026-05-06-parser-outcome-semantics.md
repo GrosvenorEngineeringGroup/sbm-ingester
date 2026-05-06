@@ -2322,6 +2322,13 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - Create: `tests/unit/parsers/test_outcome_invariants.py` (or extend `test_outcome.py`)
 - Possibly modify: a shared test helper at `tests/conftest.py` to expose the assertion utility
 
+**Pre-decision (resolve before writing the helper):** Tasks 10 and 11 implementations count `skip_reasons` at cell-level granularity (one bad numeric cell → `skip_reasons["unparseable_value"] += 1` even if the row partially writes Hudi output). Spec line 389 invariant says `sum(skip_reasons.values()) == rows_skipped`. These are inconsistent. Pick ONE policy:
+
+- **Option A (recommended)**: redefine `skip_reasons` as **row-level** counts (one increment per skipped row, attributed to the row's dominant disqualifying reason). Cell-level invalidity that does not cause a row to be skipped lives in `MalformedValueCount` metric (Task 15), not in `skip_reasons`. Update spec line 271 to clarify "Source-row count by skip reason; multi-reason rows attribute to first disqualifying reason in this order: row_shape_mismatch, row_anchor_failure, unparseable_timestamp, unparseable_value, blank_value." Then amend Tasks 10/11 implementations to row-level. The `==` invariant holds.
+- **Option B**: relax invariant to `sum(skip_reasons.values()) >= rows_skipped`. Keep cell-level counting. Spec line 389 changes. Task 22 inherits a non-strict invariant.
+
+Document the decision in this task's commit message before implementing the helper.
+
 **Steps:**
 - [ ] Create a test helper `assert_parser_outcome_invariants(outcome: ParserOutcome) -> None` that checks:
   - `status="processed"` → `rows_written >= 1`
