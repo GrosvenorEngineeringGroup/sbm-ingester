@@ -419,7 +419,7 @@ class DirectCSVWriter:
             return
 
         csv_content = self.buffer.getvalue()
-        batch_file_name = f"batch_{self.batch_timestamp}_{random.randint(1, 1000000)}.csv"
+        batch_file_name = f"batch_{self.batch_timestamp}_{self.writer_token}_{random.randint(1, 1000000)}.csv"
         staging_key = f"sensorDataFilesStaging/{self.writer_token}/{batch_file_name}"
         final_key = f"sensorDataFiles/{batch_file_name}"
 
@@ -467,7 +467,7 @@ class DirectCSVWriter:
                     extra={"staging_key": job.staging_key, "final_key": job.final_key, "error": str(e)},
                 )
 
-        keys_to_delete = [job.staging_key for job in jobs] + [job.final_key for job in jobs] + self.committed_final_keys
+        keys_to_delete = [job.staging_key for job in jobs] + self.committed_final_keys
         seen_keys: set[str] = set()
         for key in keys_to_delete:
             if key in seen_keys:

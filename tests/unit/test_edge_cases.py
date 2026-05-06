@@ -949,6 +949,61 @@ class TestParserOutcomeDisposition:
         assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFilesStaging/") == []
 
     @mock_aws
+    def test_collision_after_partial_flush_keeps_prior_file_output(self) -> None:
+        class DelayedBadValue:
+            def __float__(self) -> float:
+                time.sleep(0.1)
+                raise ValueError("not-number")
+
+        success_df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [1.0],
+            }
+        )
+        failing_df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:30"]),
+                "E1_kWh": [2.0],
+                "B1_kWh": [DelayedBadValue()],
+            }
+        )
+        s3_resource = _create_outcome_test_buckets(
+            mappings={"NMI1-E1": "p:test:e1", "NMI1-B1": "p:test:b1"},
+            file_name="first.csv",
+        )
+        s3_resource.Object("sbm-file-ingester", "newTBP/second.csv").put(Body=b"test")
+
+        def get_outcome(local_file_path: str, _parse_error_log_group: str) -> ParserOutcome:
+            if Path(local_file_path).name == "first.csv":
+                return ParserOutcome(status="processed", dfs=[("NMI1", success_df)])
+            return ParserOutcome(status="processed", dfs=[("NMI1", failing_df)])
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.get_non_nem_outcome", side_effect=get_outcome),
+            patch("functions.file_processor.app.BATCH_SIZE", 1),
+            patch("functions.file_processor.app.random.randint", return_value=12345),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[
+                    {"bucket": "sbm-file-ingester", "file_name": "newTBP/first.csv"},
+                    {"bucket": "sbm-file-ingester", "file_name": "newTBP/second.csv"},
+                ]
+            )
+
+        assert result == 1
+        hudi_keys = _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/")
+        assert len(hudi_keys) == 1
+        body = s3_resource.Object("hudibucketsrc", hudi_keys[0]).get()["Body"].read().decode()
+        assert "p:test:e1,2024-01-01 00:00:00,1.0,kwh,2024-01-01 00:00:00," in body
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFilesStaging/") == []
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/first.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/second.csv"]
+
+    @mock_aws
     def test_dataframe_upload_failure_moves_to_new_parse_err(self) -> None:
         df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": [1.0]})
         s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
