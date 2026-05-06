@@ -8,6 +8,7 @@ import time
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -29,10 +30,11 @@ from shared import (
     PARSE_ERR_DIR,
     PARSE_ERROR_LOG_GROUP,
     PROCESSED_DIR,
-    get_non_nem_df,
     output_as_data_frames,
     stream_as_data_frames,
 )
+from shared.non_nem_parsers import get_non_nem_outcome
+from shared.parsers import ParserError, ParserOutcome, ProcessingError
 
 # File stability check configuration
 FILE_STABILITY_CHECK_INTERVAL = 5  # seconds between checks
@@ -134,6 +136,61 @@ idempotency_config = IdempotencyConfig(
 s3_resource = boto3.resource("s3")
 s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
+
+
+@dataclass(frozen=True)
+class DataFrameCandidate:
+    ts: Any
+    val: float
+    quality: str
+
+
+def _processed_destination_for_status(status: str) -> str:
+    if status in {"processed", "processed_empty", "processed_external"}:
+        return PROCESSED_DIR
+    if status == "unmapped":
+        return IRREVFILES_DIR
+    raise ValueError(f"Unsupported parser outcome status: {status}")
+
+
+def _is_blank_value(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() == ""
+
+
+def _candidate_values(
+    df: pd.DataFrame,
+    col: str,
+    t_start_col: pd.Series,
+    quality_col: pd.Series | None = None,
+) -> list[DataFrameCandidate]:
+    candidates: list[DataFrameCandidate] = []
+    value_col = df[col]
+    quality_values = quality_col if quality_col is not None else [None] * len(value_col)
+
+    for row_idx, (ts_raw, val_raw, quality_raw) in enumerate(zip(t_start_col, value_col, quality_values, strict=False)):
+        if pd.isna(val_raw) or _is_blank_value(val_raw):
+            continue
+
+        try:
+            ts = pd.to_datetime(ts_raw, errors="raise")
+        except Exception as e:
+            raise ProcessingError(f"Malformed timestamp in column {col} at row {row_idx}: {ts_raw!r}") from e
+
+        if pd.isna(ts):
+            raise ProcessingError(f"Missing timestamp in column {col} at row {row_idx}")
+
+        try:
+            val = float(val_raw)
+        except (TypeError, ValueError) as e:
+            raise ProcessingError(f"Non-numeric value in column {col} at row {row_idx}: {val_raw!r}") from e
+
+        if pd.isna(val):
+            raise ProcessingError(f"Non-numeric value in column {col} at row {row_idx}: {val_raw!r}")
+
+        quality = "" if pd.isna(quality_raw) else str(quality_raw)
+        candidates.append(DataFrameCandidate(ts=ts, val=val, quality=quality))
+
+    return candidates
 
 
 @tracer.capture_method
@@ -368,9 +425,11 @@ class DirectCSVWriter:
 
     def wait_for_uploads(self) -> None:
         """Wait for all pending S3 uploads to complete."""
-        for future in self.futures:
-            future.result()  # Raises exception if upload failed
-        self.futures.clear()
+        try:
+            for future in self.futures:
+                future.result()  # Raises exception if upload failed
+        finally:
+            self.futures.clear()
 
 
 @idempotent_function(persistence_store=persistence_layer, config=idempotency_config, data_keyword_argument="tbp_files")
@@ -406,13 +465,9 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         total_monitor_points_count = 0
         ftp_files_count = 0
 
-        # Direct CSV writer with parallel S3 uploads
-        csv_writer = DirectCSVWriter(batch_timestamp, executor)
-
         for file_path in tmp_files_folder_path.iterdir():
             local_file_path = str(file_path)
-            dfs = None
-            parse_failed = False
+            outcome: ParserOutcome
 
             # Try streaming parser first (memory efficient for large files)
             # Use peek pattern: get first item to validate, then chain with rest
@@ -422,78 +477,111 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 if first_item is None:
                     raise ValueError("No data parsed from file")
                 # Chain first item back with the rest of the stream
-                dfs = chain([first_item], stream)
+                outcome = ParserOutcome(status="processed", dfs=chain([first_item], stream))
             except Exception:
                 # Fall back to batch parser
                 try:
                     dfs = output_as_data_frames(local_file_path, split_days=True)
                     if not dfs:
                         raise ValueError("No data parsed from file")
+                    outcome = ParserOutcome(status="processed", dfs=dfs)
                 except Exception:
                     # Try non-NEM parsers as last resort
                     try:
-                        dfs = get_non_nem_df(local_file_path, PARSE_ERROR_LOG_GROUP)
-                    except Exception:
-                        logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}]"
+                        outcome = get_non_nem_outcome(local_file_path, PARSE_ERROR_LOG_GROUP)
+                    except (ParserError, ProcessingError) as e:
+                        logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}] {e}"
                         move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
                         parse_err_files_count += 1
-                        parse_failed = True
-
-            if parse_failed:
-                continue
-
-            file_neptune_ids = []
+                        continue
 
             # Process each NMI's data - write directly to CSV, bypass DataFrame
+            csv_writer = DirectCSVWriter(batch_timestamp, executor)
             try:
-                for nmi, df in dfs:
-                    # Reset index if t_start is the index
-                    if "t_start" not in df.columns and df.index.name == "t_start":
-                        df = df.reset_index()
+                if outcome.dfs:
+                    candidate_row_count = 0
+                    unmapped_count = 0
+                    rows_written = 0
+                    mapped_monitor_points_count = 0
 
-                    # Get t_start column for iteration
-                    t_start_col = df["t_start"]
+                    for nmi, df in outcome.dfs:
+                        # Reset index if t_start is the index
+                        if "t_start" not in df.columns and df.index.name == "t_start":
+                            df = df.reset_index()
 
-                    for col in df.columns:
-                        suffix = col.split("_")[0]
-                        if suffix not in NMI_DATA_STREAM_COMBINED:
-                            continue
+                        if "t_start" not in df.columns:
+                            raise ProcessingError(f"Missing t_start column for {nmi}")
 
-                        if nmi.startswith("p:"):
-                            neptune_id = nmi
-                        else:
-                            monitor_point_name = f"{nmi}-{suffix}"
-                            neptune_id = nem12_mappings.get(monitor_point_name)
+                        # Get t_start column for iteration
+                        t_start_col = df["t_start"]
 
-                        if neptune_id is None:
-                            continue
+                        for col in df.columns:
+                            suffix = col.split("_")[0]
+                            if suffix not in NMI_DATA_STREAM_COMBINED:
+                                continue
 
-                        file_neptune_ids.append(neptune_id)
+                            # Get per-channel quality column if available
+                            quality_col_name = f"quality_{suffix}"
+                            quality_col = df[quality_col_name] if quality_col_name in df.columns else None
+                            candidates = _candidate_values(df, col, t_start_col, quality_col)
 
-                        # Extract unit from column name (e.g., "E1_kWh" -> "kwh")
-                        unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
+                            if not candidates:
+                                continue
 
-                        # Get per-channel quality column if available
-                        quality_col_name = f"quality_{suffix}"
-                        quality_col = df[quality_col_name] if quality_col_name in df.columns else None
+                            candidate_row_count += len(candidates)
 
-                        # Write rows directly to CSV buffer (no DataFrame construction)
-                        val_col = df[col]
-                        if quality_col is not None:
-                            for ts, val, q in zip(t_start_col, val_col, quality_col, strict=False):
-                                csv_writer.write_row(neptune_id, ts, val, unit_name, "" if pd.isna(q) else q)
-                        else:
-                            for ts, val in zip(t_start_col, val_col, strict=False):
-                                csv_writer.write_row(neptune_id, ts, val, unit_name)
+                            if nmi.startswith("p:"):
+                                neptune_id = nmi
+                            else:
+                                monitor_point_name = f"{nmi}-{suffix}"
+                                neptune_id = nem12_mappings.get(monitor_point_name)
 
-                        processed_monitor_points_count += 1
+                            if neptune_id is None:
+                                unmapped_count += len(candidates)
+                                continue
 
-                        # Flush buffer when it reaches BATCH_SIZE rows
-                        if csv_writer.row_count >= BATCH_SIZE:
-                            csv_writer.flush()
+                            mapped_monitor_points_count += 1
+
+                            # Extract unit from column name (e.g., "E1_kWh" -> "kwh")
+                            unit_name = col.split("_")[1].lower() if "_" in col else "kwh"
+
+                            # Write rows directly to CSV buffer (no DataFrame construction)
+                            for candidate in candidates:
+                                csv_writer.write_row(
+                                    neptune_id,
+                                    candidate.ts,
+                                    candidate.val,
+                                    unit_name,
+                                    candidate.quality,
+                                )
+                                rows_written += 1
+
+                                # Flush buffer when it reaches BATCH_SIZE rows
+                                if csv_writer.row_count >= BATCH_SIZE:
+                                    csv_writer.flush()
+
+                    # Flush and wait before moving the source file.
+                    csv_writer.flush()
+                    csv_writer.wait_for_uploads()
+
+                    processed_monitor_points_count += mapped_monitor_points_count
+                    total_monitor_points_count += mapped_monitor_points_count
+
+                    if rows_written > 0:
+                        final_status = "processed"
+                    elif candidate_row_count > 0 and unmapped_count == candidate_row_count:
+                        final_status = "unmapped"
+                    else:
+                        final_status = "processed_empty"
+                        logger.info(
+                            "No valid candidate rows found",
+                            extra={"file": local_file_path, "reason": "no_valid_candidate_rows"},
+                        )
+                else:
+                    final_status = outcome.status
 
             except Exception as e:
-                # Handle errors during streaming iteration
+                # Handle errors during streaming iteration or per-file uploads
                 logger.error(
                     "Error processing NMI data",
                     exc_info=True,
@@ -504,18 +592,24 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 parse_err_files_count += 1
                 continue
 
-            # Move source file based on whether any data was mapped
-            if file_neptune_ids:
-                total_monitor_points_count += len(file_neptune_ids)
-                move_s3_file(BUCKET_NAME, local_file_path, PROCESSED_DIR)
+            try:
+                dest_prefix = _processed_destination_for_status(final_status)
+            except ValueError as e:
+                logger.error(
+                    "Unsupported parser outcome status",
+                    exc_info=True,
+                    extra={"file": local_file_path, "status": final_status, "error": str(e)},
+                )
+                logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {e}"
+                move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                parse_err_files_count += 1
+                continue
+
+            move_s3_file(BUCKET_NAME, local_file_path, dest_prefix)
+            if dest_prefix == PROCESSED_DIR:
                 valid_processed_files_count += 1
             else:
-                move_s3_file(BUCKET_NAME, local_file_path, IRREVFILES_DIR)
                 irrev_files_count += 1
-
-        # Flush remaining buffer and wait for all uploads to complete
-        csv_writer.flush()
-        csv_writer.wait_for_uploads()
 
         for key, value in logs_dict.items():
             logger.warning("Runtime error", extra={"bad_file": key, "timestamp": value})

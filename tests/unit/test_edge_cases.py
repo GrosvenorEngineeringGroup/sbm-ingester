@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import boto3
 import pandas as pd
+import pytest
 from moto import mock_aws
 
 # Add src to path for imports
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 # Import app module early before any Logger patches
 import functions.file_processor.app as file_processor_app
+from shared.parsers import ParserError, ParserOutcome, ProcessingError
 
 
 class TestMoveS3FileEdgeCases:
@@ -676,3 +678,267 @@ class TestExceptionHandling:
 
 # TestMetricsEdgeCases removed - these functions (dailyInitializeMetricsDict, metricsDictPopulateValues)
 # have been replaced by Powertools Metrics and no longer exist
+
+
+def _create_outcome_test_buckets(
+    mappings: dict[str, str] | None = None,
+    file_name: str = "outcome.csv",
+    body: bytes = b"not,nem\n",
+):
+    os.environ["AWS_ACCESS_KEY_ID"] = "testing"
+    os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
+    os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-2"
+
+    s3_resource = boto3.resource("s3", region_name="ap-southeast-2")
+    s3_resource.create_bucket(
+        Bucket="sbm-file-ingester", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
+    )
+    s3_resource.create_bucket(
+        Bucket="hudibucketsrc", CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"}
+    )
+
+    logs = boto3.client("logs", region_name="ap-southeast-2")
+    for log_group in [
+        "sbm-ingester-error-log",
+        "sbm-ingester-execution-log",
+        "sbm-ingester-metrics-log",
+        "sbm-ingester-parse-error-log",
+        "sbm-ingester-runtime-error-log",
+    ]:
+        logs.create_log_group(logGroupName=log_group)
+
+    s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps(mappings or {}))
+    s3_resource.Object("sbm-file-ingester", f"newTBP/{file_name}").put(Body=body)
+    return s3_resource
+
+
+def _list_keys(s3_resource, bucket: str, prefix: str) -> list[str]:
+    return [obj.key for obj in s3_resource.Bucket(bucket).objects.filter(Prefix=prefix)]
+
+
+def _run_with_non_nem_outcome(
+    outcome_or_error: ParserOutcome | Exception,
+    mappings: dict[str, str] | None = None,
+    file_name: str = "outcome.csv",
+):
+    s3_resource = _create_outcome_test_buckets(mappings=mappings, file_name=file_name)
+
+    outcome_patch = (
+        patch("functions.file_processor.app.get_non_nem_outcome", side_effect=outcome_or_error)
+        if isinstance(outcome_or_error, Exception)
+        else patch("functions.file_processor.app.get_non_nem_outcome", return_value=outcome_or_error)
+    )
+
+    with (
+        patch("functions.file_processor.app.s3_resource", s3_resource),
+        patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+        patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+        outcome_patch,
+    ):
+        result = file_processor_app.parse_and_write_data(
+            tbp_files=[{"bucket": "sbm-file-ingester", "file_name": f"newTBP/{file_name}"}]
+        )
+
+    return result, s3_resource
+
+
+class TestParserOutcomeDisposition:
+    @mock_aws
+    def test_processed_empty_outcome_moves_to_newp(self) -> None:
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed_empty", reason="no rows"))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_processed_external_outcome_moves_to_newp(self) -> None:
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed_external"))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_unmapped_outcome_moves_to_new_irrev_files(self) -> None:
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="unmapped"))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newIrrevFiles/") == ["newIrrevFiles/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_dataframe_all_unmapped_moves_to_new_irrev_files(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, 2.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dfs=[("NMI1", df)]))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newIrrevFiles/") == ["newIrrevFiles/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_dataframe_partial_mapping_moves_to_newp(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, 2.0],
+                "B1_kWh": [3.0, 4.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        hudi_keys = _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/")
+        assert len(hudi_keys) == 1
+        body = s3_resource.Object("hudibucketsrc", hudi_keys[0]).get()["Body"].read().decode()
+        assert "p:test:e1,2024-01-01 00:00:00,1.0,kwh,2024-01-01 00:00:00," in body
+        assert "3.0" not in body
+
+    @mock_aws
+    def test_side_effect_processed_outcome_moves_to_newp(self) -> None:
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed"))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_dataframe_unsupported_suffix_moves_to_newp_without_hudi_write(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "X1_kWh": [1.0],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dfs=[("NMI1", df)]))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_dataframe_nan_values_move_to_newp_without_hudi_write(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30", "2024-01-01 01:00"]),
+                "E1_kWh": [pd.NA, float("nan"), ""],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_direct_point_id_bypasses_mapping_and_moves_to_newp(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00"]),
+                "E1_kWh": [5.5],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dfs=[("p:direct:id", df)]))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
+        hudi_keys = _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/")
+        assert len(hudi_keys) == 1
+        body = s3_resource.Object("hudibucketsrc", hudi_keys[0]).get()["Body"].read().decode()
+        assert "p:direct:id,2024-01-01 00:00:00,5.5,kwh,2024-01-01 00:00:00," in body
+
+    @mock_aws
+    def test_quality_column_is_written_with_mapped_rows(self) -> None:
+        df = pd.DataFrame(
+            {
+                "t_start": pd.to_datetime(["2024-01-01 00:00", "2024-01-01 00:30"]),
+                "E1_kWh": [1.0, 2.0],
+                "quality_E1": ["A", pd.NA],
+            }
+        )
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        hudi_keys = _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/")
+        body = s3_resource.Object("hudibucketsrc", hudi_keys[0]).get()["Body"].read().decode()
+        assert "p:test:e1,2024-01-01 00:00:00,1.0,kwh,2024-01-01 00:00:00,A" in body
+        assert "p:test:e1,2024-01-01 00:30:00,2.0,kwh,2024-01-01 00:30:00,\n" in body
+
+    @mock_aws
+    def test_dataframe_bad_timestamp_moves_to_new_parse_err(self) -> None:
+        df = pd.DataFrame({"t_start": ["not-a-date"], "E1_kWh": [1.0]})
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_dataframe_non_numeric_value_moves_to_new_parse_err(self) -> None:
+        df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": ["not-number"]})
+
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            mappings={"NMI1-E1": "p:test:e1"},
+        )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
+
+    @mock_aws
+    def test_dataframe_upload_failure_moves_to_new_parse_err(self) -> None:
+        df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": [1.0]})
+        s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
+            patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ),
+            patch("functions.file_processor.app._upload_csv_to_s3", side_effect=RuntimeError("boom")),
+        ):
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
+            )
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+
+    @mock_aws
+    @pytest.mark.parametrize("error_cls", [ParserError, ProcessingError])
+    def test_parser_errors_move_to_new_parse_err(self, error_cls: type[Exception]) -> None:
+        result, s3_resource = _run_with_non_nem_outcome(error_cls("bad parser"))
+
+        assert result == 1
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == ["newParseErr/outcome.csv"]
+        assert _list_keys(s3_resource, "hudibucketsrc", "sensorDataFiles/") == []
