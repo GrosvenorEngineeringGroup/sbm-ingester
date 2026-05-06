@@ -19,10 +19,6 @@ Invariants:
 - rows_skipped <= sum(skip_reasons.values())
   (cell-level skip counts can exceed row count when a row contributes
   multiple value-column skips — see Tasks 10/11/16.)
-
-Exception: ``reason="idempotency_skip"`` bypasses all invariants. The
-file_processor synthesizes this outcome for the duplicate-skip case
-(currently dead code per Task 12 amend, but reserved).
 """
 
 from __future__ import annotations
@@ -39,9 +35,6 @@ def assert_parser_outcome_invariants(outcome: ParserOutcome) -> None:
     Raises ``AssertionError`` if any invariant is violated. Test-only —
     do not call from production code.
     """
-    if outcome.reason == "idempotency_skip":
-        return
-
     if outcome.status == "processed":
         assert outcome.rows_written >= 1, f"status='processed' requires rows_written >= 1, got {outcome.rows_written}"
     elif outcome.status == "processed_empty":

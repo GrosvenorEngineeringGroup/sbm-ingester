@@ -88,7 +88,7 @@ def test_parser_outcome_with_unmapped_identifiers_and_unsupported_suffixes() -> 
 def test_parser_reason_and_skip_reason_types_importable() -> None:
     """Ensure the closed enums are importable from `shared.parsers`."""
     # Use them to confirm they exist; Literal types accept string values.
-    reason: ParserReason = "idempotency_skip"
+    reason: ParserReason = "no_data_sentinel"
     skip: SkipReason = "unparseable_value"
-    assert reason == "idempotency_skip"
+    assert reason == "no_data_sentinel"
     assert skip == "unparseable_value"

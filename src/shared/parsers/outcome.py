@@ -23,7 +23,6 @@ ParserReason = Literal[
     "all_unknown_suffix",
     "all_skipped",
     "external_gegoptimareports",
-    "idempotency_skip",
 ]
 
 SkipReason = Literal[

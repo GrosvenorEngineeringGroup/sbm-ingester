@@ -289,8 +289,8 @@ Each gap cites file:line at HEAD and maps to a remediation task (existing or new
 | G15 (broad `except`) | MINOR | 17 | Plan covers (diagnostics only) |
 | G16 (~25 obsolete tests) | BLOCKER | 10 + 11 | Plan covers — line numbers enumerated |
 | G17 (Noosa STATUS_MAP) | OK | — | — |
-| **G18 (Hudi key naming)** | MAJOR | deferred | **Decision required** — accept current `random` collision risk or align to spec's deterministic index |
-| **G19 (idempotency_skip synthesis)** | BLOCKER | 12 (expand) | Add file_processor synthesis on DynamoDB hit |
+| **G18 (Hudi key naming)** | MAJOR | resolved | Spec aligned to code: writer_token (uuid4) + batch_random salt; collision risk documented as negligible. |
+| **G19 (idempotency_skip synthesis)** | BLOCKER | resolved | Removed from enum + spec; per-file dedup now explicitly listed as out-of-scope. Pipeline dedups at batch granularity via Powertools. |
 | **G20 (final-status calc absent)** | BLOCKER | 12 (expand) | Add the spec's calc ladder explicitly |
 | **G21 (`all_unknown_suffix` emission)** | MAJOR | 12 (expand) | Add reason synthesis + alarm in calc ladder |
 

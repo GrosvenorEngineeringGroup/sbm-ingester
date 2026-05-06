@@ -697,14 +697,6 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             local_file_path = str(file_path)
             outcome: ParserOutcome
 
-            # NOTE: spec ParserReason "idempotency_skip" exists for per-file
-            # idempotency synthesis. The current pipeline uses Powertools
-            # @idempotent_function at batch granularity (parse_and_write_data),
-            # which short-circuits the entire batch on duplicate, so no per-file
-            # synthesis path exists today. When/if per-file idempotency is wired
-            # in (e.g., a sub-function decorated independently), reintroduce the
-            # synthesis here.
-
             # Try streaming parser first (memory efficient for large files).
             # Use peek pattern: get first item to validate, then chain with rest.
             # The catch is narrowed to exceptions that genuinely mean "not a NEM12

@@ -1,7 +1,7 @@
 """Tests for the assert_parser_outcome_invariants helper.
 
-Covers each cross-field invariant branch (passing + failing case) and
-the idempotency_skip exception. Real-parser sanity checks are kept in
+Covers each cross-field invariant branch (passing + failing case).
+Real-parser sanity checks are kept in
 ``optima/test_outcome_invariants_optima.py`` because they depend on
 optima-only fixtures.
 """
@@ -134,18 +134,3 @@ class TestSkipReasonsInvariant:
         )
         with pytest.raises(AssertionError, match="rows_skipped"):
             assert_parser_outcome_invariants(outcome)
-
-
-class TestIdempotencySkipException:
-    def test_idempotency_skip_bypasses_invariants(self) -> None:
-        # An outcome that would otherwise fail every status invariant —
-        # idempotency_skip reason MUST allow it through.
-        outcome = ParserOutcome(
-            status="processed",  # would normally require rows_written >= 1
-            reason="idempotency_skip",
-            rows_written=0,
-            unmapped_count=99,
-            rows_skipped=99,
-            skip_reasons=Counter({"unparseable_value": 1}),
-        )
-        assert_parser_outcome_invariants(outcome)

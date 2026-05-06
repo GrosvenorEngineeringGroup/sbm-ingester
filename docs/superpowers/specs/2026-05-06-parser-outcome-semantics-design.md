@@ -76,7 +76,6 @@ Business-level validation (negative consumption, future timestamps, sensor sanit
 | `all_unknown_suffix` | DataFrame returned only suffix columns the file processor does not recognize | `processed_empty` |
 | `all_skipped` | Mixed skip reasons (malformed, blank, anchor failure) leave zero candidates | `processed_empty` |
 | `external_gegoptimareports` | RACV billing successful upload to `gegoptimareports` | `processed_external` |
-| `idempotency_skip` | DynamoDB idempotency layer detected a previously processed file (synthesized by file_processor, not a parser return) | `processed_empty` |
 
 ### Skip reason enum (closed)
 
@@ -189,12 +188,9 @@ The matrix is the authoritative source for "which outcome does scenario X produc
 | External-sink upload (RACV billing) succeeds | `processed_external(reason="external_gegoptimareports")` | `newP/` |
 | External-sink upload fails | `ProcessingError` | `newParseErr/` |
 
-### Idempotency (D10)
+### Idempotency
 
-| Scenario | Outcome | Disposition |
-|---|---|---|
-| DynamoDB idempotency layer indicates already processed | `processed_empty(reason="idempotency_skip")` synthesized by file_processor; parsers not invoked | `newP/` |
-| First time seen | normal processing | depends |
+The pipeline deduplicates at **batch granularity** via Powertools `@idempotent_function` keyed on the file list. A duplicate batch short-circuits the entire `parse_and_write_data` call and returns the cached result; per-file `ParserOutcome` is not synthesized in this case. Per-file deduplication is out of scope (see "Out of Scope Validations").
 
 ## Row-Level Filtering Boundary
 
@@ -333,7 +329,6 @@ ParserReason = Literal[
     "all_unknown_suffix",
     "all_skipped",
     "external_gegoptimareports",
-    "idempotency_skip",
 ]
 
 SkipReason = Literal[
@@ -518,12 +513,19 @@ Rules:
 
 ## Hudi Staging/Final Key Naming
 
-Each `DirectCSVWriter` instance is bound to one source file and owns a unique writer token. Staging and final keys both include the writer token to prevent cross-file collision in concurrent processing.
+Each `DirectCSVWriter` instance is bound to one source file and owns a unique writer token (uuid4). Staging and final keys both include the writer token to prevent cross-file collision in concurrent processing.
 
 ```
-staging key: sensorDataFiles/.staging/<writer_token>/<batch_index>.csv
-final key:   sensorDataFiles/<batch_timestamp>-<writer_token>-<batch_index>.csv
+staging key: sensorDataFilesStaging/<writer_token>/<batch_index>.csv
+final key:   sensorDataFiles/batch_<batch_timestamp>_<writer_token>_<batch_random>.csv
+
+writer_token = uuid4()                # writer-level isolation; never collides across writers
+batch_index  = monotonic counter      # within-writer ordering inside the staging dir
+batch_random = randint(1, 1_000_000)  # per-flush salt; same-timestamp flushes within one writer
+                                      # (rare; capped by per-writer flush count) get distinct final keys
 ```
+
+Cross-writer uniqueness is guaranteed by `writer_token` (uuid4). Within a single writer, `batch_random` salt prevents same-timestamp flushes from colliding; the carry probability of 1/1,000,000 per flush pair is negligible given the bounded per-writer flush count.
 
 Boundary rules:
 
@@ -669,7 +671,8 @@ The pipeline accepts any well-formed numeric value and any parseable timestamp. 
 | Pre-site-start timestamps | Site metadata may be incomplete. |
 | Duplicate `(NMI, channel, timestamp)` within one file | Hudi upsert deduplicates downstream. |
 | Direct `p:` Neptune ID existence in Neptune | Parser is trusted to produce valid IDs. Orphans are downstream cleanup. |
-| Cross-file deduplication | DynamoDB idempotency catches exact-file duplicates. Content-level dedup is downstream. |
+| Cross-file deduplication | DynamoDB idempotency catches exact-batch duplicates at the `parse_and_write_data` granularity. Per-file deduplication and content-level dedup are downstream. |
+| Per-file idempotency | Pipeline dedups at batch granularity only. If a file appears in two distinct batches, both are processed. |
 | Quality code semantic validation | Quality column accepts any string; downstream interprets `A`/`E`/`S14`/etc. |
 | R1746/R1748 format support | No known parser; not in scope of this work. |
 
@@ -725,7 +728,6 @@ Each follow-up task is independently deployable and additive: it improves observ
 
 - Historical files already moved to `newIrrevFiles/` are out of scope. Manual remediation script if needed.
 - `processed_external` currently covers RACV billing only. Removal/replacement is a separate concern.
-- Whether to record `idempotency_skip` files with a separate metric is deferred.
 - The cap of `unmapped_identifiers` at 100 entries is preliminary; revisit once dashboards exist.
 - Whether to investigate R1746/R1748 ingestion path is deferred to a separate ticket.
 - The list of `blank_value` markers (currently `""`, whitespace, `"N/A"`, `"NULL"`, `"-"`) may need extension as new vendors arrive. Adding a marker is a config change, not a contract change.
