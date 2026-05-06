@@ -11,7 +11,7 @@ import pytest
 from moto import mock_aws
 
 import shared.parsers.optima.bunnings_billing as bp_mod
-from shared.parsers import NotRelevantParser, ParserError
+from shared.parsers import NotRelevantParser
 from shared.parsers import _mappings as mappings_mod
 from shared.parsers.optima.bunnings_billing import (
     CSV_FIELD_MAPPING,
@@ -40,13 +40,15 @@ def test_utf16_decoding_and_row_parsing(tmp_path) -> None:
     captured = bp_mod._parse_billing_rows(str(dst))
 
     # 3 data rows in fixture (VCCCLG0019 Mar, VCCCLG0019 Feb, VAAA000266 Mar)
-    assert len(captured) == 3
-    assert captured[0]["Identifier"] == "VCCCLG0019"
-    assert captured[0]["Date"] == "Mar 2026"
-    assert captured[0]["Retailer"] == "ZenEnergy"
-    assert captured[0]["Peak"] == "31105.09"
-    assert captured[2]["Identifier"] == "VAAA000266"
-    assert captured[2]["Estimated Peak"] == "5000.00"
+    assert len(captured.rows) == 3
+    assert captured.rows_skipped == 0
+    assert not captured.skip_reasons
+    assert captured.rows[0]["Identifier"] == "VCCCLG0019"
+    assert captured.rows[0]["Date"] == "Mar 2026"
+    assert captured.rows[0]["Retailer"] == "ZenEnergy"
+    assert captured.rows[0]["Peak"] == "31105.09"
+    assert captured.rows[2]["Identifier"] == "VAAA000266"
+    assert captured.rows[2]["Estimated Peak"] == "5000.00"
 
 
 def test_date_conversion_valid() -> None:
@@ -421,7 +423,9 @@ def test_all_valid_billing_candidates_unmapped_returns_unmapped(_reset_mappings_
     assert result.unmapped_count == result.candidate_row_count
 
 
-def test_truncated_billing_row_raises_parser_error_without_upload(_reset_mappings_cache, tmp_path, monkeypatch) -> None:
+def test_truncated_billing_row_is_skipped_without_upload(_reset_mappings_cache, tmp_path, monkeypatch) -> None:
+    # Truncated row (missing trailing required cells) is skipped, not raised.
+    # With no other valid rows the parser returns processed_empty(all_skipped).
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
     text = src.read_bytes().decode("utf-16-le").lstrip("\ufeff")
     lines = text.rstrip("\n").split("\n")
@@ -437,9 +441,15 @@ def test_truncated_billing_row_raises_parser_error_without_upload(_reset_mapping
     )
 
     with patch("shared.parsers.optima.bunnings_billing.boto3.client") as mock_client:
-        with pytest.raises(ParserError, match="Malformed Bunnings billing row"):
-            bp_mod.bunnings_billing_parser(str(src), "dummy")
+        result = bp_mod.bunnings_billing_parser(str(src), "dummy")
 
+    assert result.status == "processed_empty"
+    assert result.reason == "all_skipped"
+    assert result.rows_written == 0
+    assert result.rows_skipped == 1
+    # Missing trailing required value columns counts as row_shape_mismatch
+    # (Identifier is still present, so it's not row_anchor_failure).
+    assert result.skip_reasons["row_shape_mismatch"] == 1
     mock_client.return_value.put_object.assert_not_called()
 
 
@@ -482,19 +492,28 @@ def test_blank_billing_values_return_processed_empty(_reset_mappings_cache, tmp_
 
 
 @mock_aws
-def test_invalid_date_skipped(_reset_mappings_cache, tmp_path) -> None:
-    """Bogus Date string skips the row entirely (no partial writes)."""
+def test_invalid_date_returns_processed_empty_all_skipped(_reset_mappings_cache, tmp_path) -> None:
+    """Bogus Date string skips the row; with no other rows the file maps to
+    processed_empty(all_skipped) instead of raising. No Hudi CSV is written."""
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "not-a-month", {"Peak": "100.00"})
-    with pytest.raises(ParserError, match="No valid Bunnings billing candidates"):
-        bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed_empty"
+    assert result.reason == "all_skipped"
+    assert result.rows_written == 0
+    assert result.rows_skipped == 1
+    assert result.skip_reasons["unparseable_timestamp"] == 1
+
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
     assert listed.get("KeyCount", 0) == 0
 
 
 @mock_aws
-def test_mixed_mapped_row_and_invalid_billing_value_raises_without_upload(_reset_mappings_cache, tmp_path) -> None:
+def test_mixed_mapped_row_and_invalid_billing_value_writes_good_row(_reset_mappings_cache, tmp_path) -> None:
+    """One well-formed row + one row with a non-numeric Peak: parser writes
+    the good row to Hudi and reports the bad row via skip_reasons."""
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
@@ -506,11 +525,15 @@ def test_mixed_mapped_row_and_invalid_billing_value_raises_without_upload(_reset
     lines.append(",".join(invalid_row))
     src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
 
-    with pytest.raises(ParserError, match="No valid Bunnings billing candidates"):
-        bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed"
+    assert result.rows_written == 1
+    assert result.rows_skipped == 1
+    assert result.skip_reasons["unparseable_value"] == 1
 
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
-    assert listed.get("KeyCount", 0) == 0
+    assert listed.get("KeyCount", 0) == 1
 
 
 @mock_aws
@@ -589,6 +612,86 @@ def test_s3_write_target_is_hudibucketsrc(_reset_mappings_cache, tmp_path) -> No
     # Length check: microsecond timestamp has 20 chars between the prefix and '.csv'
     prefix = "sensorDataFiles/billing_export_"
     assert len(keys[0]) == len(prefix) + 20 + len(".csv")
+
+
+@mock_aws
+def test_partial_failure_one_bad_date_writes_other_rows(_reset_mappings_cache, tmp_path) -> None:
+    """Two source rows: one with valid Date, one with bogus Date.
+    The valid row writes; the bad row is reported via rows_skipped."""
+    mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+    text = src.read_bytes().decode("utf-16-le").lstrip("﻿")
+    lines = text.rstrip("\n").split("\n")
+    header = lines[7].split(",")
+    bad_row = lines[8].split(",")
+    bad_row[header.index("Date")] = "not-a-month"
+    lines.append(",".join(bad_row))
+    src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
+
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed"
+    assert result.source_row_count == 2
+    assert result.rows_written == 1
+    assert result.rows_skipped == 1
+    assert result.skip_reasons["unparseable_timestamp"] == 1
+
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 1
+
+
+@mock_aws
+def test_partial_failure_one_unparseable_value_other_value_writes(_reset_mappings_cache, tmp_path) -> None:
+    """A single row with one bad value column and one good value column
+    still writes the good column to Hudi; the bad cell is reported in
+    skip_reasons but the row is not counted as fully skipped."""
+    mappings = {
+        "VCCCLG0019-billing-peak-usage": "p:bunnings:peak",
+        "VCCCLG0019-billing-total-spend": "p:bunnings:spend",
+    }
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(
+        tmp_path,
+        "VCCCLG0019",
+        "Mar 2026",
+        {"Peak": "not-a-number", "Total Spend": "1234.56"},
+    )
+
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed"
+    assert result.rows_written == 1
+    assert result.rows_skipped == 0
+    assert result.skip_reasons["unparseable_value"] == 1
+
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 1
+
+
+@mock_aws
+def test_partial_failure_extra_trailing_cells_row_skipped(_reset_mappings_cache, tmp_path) -> None:
+    """A row with extra trailing comma cells is skipped as row_shape_mismatch.
+    A second well-formed row still writes to Hudi."""
+    mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
+    s3 = _setup_s3_with_mappings(mappings)
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
+    text = src.read_bytes().decode("utf-16-le").lstrip("﻿")
+    lines = text.rstrip("\n").split("\n")
+    # Append a row with extra trailing cells
+    extra_row = lines[8] + ",extra,extra,extra"
+    lines.append(extra_row)
+    src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
+
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed"
+    assert result.rows_written == 1
+    assert result.rows_skipped == 1
+    assert result.skip_reasons["row_shape_mismatch"] == 1
+
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 1
 
 
 @mock_aws

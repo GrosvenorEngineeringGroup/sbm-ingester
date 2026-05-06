@@ -121,9 +121,10 @@ class TestHeaderValidation:
 
 
 class TestRowShapeValidation:
-    def test_truncated_row_raises_parser_error_without_upload(
-        self, write_demand_csv, monkeypatch, _reset_mappings_cache
-    ):
+    def test_truncated_row_is_skipped_without_upload(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # The malformed row should be skipped and counted; with no other valid
+        # rows in this file the parser returns processed_empty(all_skipped)
+        # rather than raising.
         fake_mappings = {
             "Optima_4001260599-demand-kw": "p:bunnings:kw",
         }
@@ -145,10 +146,50 @@ class TestRowShapeValidation:
         path = write_demand_csv(body_override=body)
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
-            with pytest.raises(ParserError, match="Malformed demand row"):
-                demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path), "/tmp/err.log")
 
+        assert result.status == "processed_empty"
+        assert result.reason == "all_skipped"
+        assert result.rows_written == 0
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["row_shape_mismatch"] == 1
         mock_client.return_value.put_object.assert_not_called()
+
+    def test_truncated_row_skipped_and_other_rows_written(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # File with one well-formed row followed by a truncated row.
+        # The good row writes; the bad row is skipped.
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+        body = "\n".join(
+            [
+                'Commodities:,"Electricity"',
+                'Sites (NMIs):,"4001260599"',
+                'Status:,"Active"',
+                "Country:, Australia",
+                "Start:,01-Feb-2026",
+                "End:,30-Apr-2026",
+                "",
+                "",
+                "Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVa,Power Factor,Site Name",
+                "Bunnings Australia,4001260599,NMI,01-Feb-2026 00:00:00,5.2400,10.4800,10.4800,1.0000,BUN AUS Forbes",
+                "Bunnings Australia,4001260599,NMI,01-Feb-2026 00:30:00,5.2400,10.4800",
+            ]
+        )
+        path = write_demand_csv(body_override=body)
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.rows_written == 3  # 1 good row x 3 channels
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["row_shape_mismatch"] == 1
+        mock_client.return_value.put_object.assert_called_once()
 
 
 @pytest.fixture
@@ -327,11 +368,13 @@ class TestMappingLookupAndHudiWrite:
         assert result.unmapped_count == 9
         mock_client.return_value.put_object.assert_not_called()
 
-    def test_mixed_bad_timestamp_and_unmapped_candidates_raise_parser_error(
+    def test_mixed_bad_timestamp_and_unmapped_candidates_returns_unmapped(
         self, write_demand_csv, monkeypatch, _reset_mappings_cache
     ):
-        from shared.parsers import ParserError
-
+        # One good row → 3 unmapped candidates; one bad-date row → skipped.
+        # No mappings, so the file as a whole reports unmapped (the typical
+        # disposition signal) while still surfacing the skipped row in
+        # rows_skipped/skip_reasons.
         monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
         rows = [
             ("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000"),
@@ -340,15 +383,21 @@ class TestMappingLookupAndHudiWrite:
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             path = write_demand_csv(rows=rows)
+            result = demand_parser(str(path), "/tmp/err.log")
 
-            with pytest.raises(ParserError, match="No valid demand candidates"):
-                demand_parser(str(path), "/tmp/err.log")
-
+        assert result.status == "unmapped"
+        assert result.candidate_row_count == 3
+        assert result.unmapped_count == 3
+        assert result.rows_written == 0
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
         mock_client.return_value.put_object.assert_not_called()
 
-    def test_mixed_mapped_row_and_bad_timestamp_raise_parser_error_without_upload(
+    def test_mixed_mapped_row_and_bad_timestamp_writes_good_row(
         self, write_demand_csv, monkeypatch, _reset_mappings_cache
     ):
+        # The well-formed row maps to 3 sensors; the bad-date row is skipped.
+        # File goes to processed; the bad row is reported via rows_skipped.
         fake_mappings = {
             "Optima_4001260599-demand-kw": "p:bunnings:kw",
             "Optima_4001260599-demand-kva": "p:bunnings:kva",
@@ -361,32 +410,53 @@ class TestMappingLookupAndHudiWrite:
         ]
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv(rows=rows)
+            result = demand_parser(str(path), "/tmp/err.log")
 
-            with pytest.raises(ParserError, match="No valid demand candidates"):
-                demand_parser(str(path), "/tmp/err.log")
+        assert result.status == "processed"
+        assert result.rows_written == 3
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
+        mock_client.return_value.put_object.assert_called_once()
 
-        mock_client.return_value.put_object.assert_not_called()
-
-    def test_all_bad_timestamps_raise_parser_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
-        from shared.parsers import ParserError
-
+    def test_all_bad_timestamps_returns_processed_empty_all_skipped(
+        self, write_demand_csv, monkeypatch, _reset_mappings_cache
+    ):
         monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
         rows = [("4001260599", "bad-date", "5.2400", "10.4800", "10.4800", "1.0000")]
         path = write_demand_csv(rows=rows)
 
-        with pytest.raises(ParserError, match="No valid demand candidates"):
-            demand_parser(str(path), "/tmp/err.log")
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            result = demand_parser(str(path), "/tmp/err.log")
 
-    def test_all_non_numeric_values_raise_parser_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
-        from shared.parsers import ParserError
+        assert result.status == "processed_empty"
+        assert result.reason == "all_skipped"
+        assert result.rows_written == 0
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
+        mock_client.return_value.put_object.assert_not_called()
 
+    def test_all_non_numeric_values_returns_processed_empty_all_skipped(
+        self, write_demand_csv, monkeypatch, _reset_mappings_cache
+    ):
+        # Every value column is non-numeric, so no candidate is built and no
+        # Hudi row is written. Each unparseable cell counts in skip_reasons,
+        # and the row itself is reported as one rows_skipped entry.
         monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
         rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "bad-kw", "bad-kva", "bad-pf")]
         path = write_demand_csv(rows=rows)
 
-        with pytest.raises(ParserError, match="No valid demand candidates"):
-            demand_parser(str(path), "/tmp/err.log")
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed_empty"
+        assert result.reason == "all_skipped"
+        assert result.rows_written == 0
+        assert result.rows_skipped == 1
+        # 3 unparseable value cells (kW, kVa, Power Factor) on the same row
+        assert result.skip_reasons["unparseable_value"] == 3
+        mock_client.return_value.put_object.assert_not_called()
 
     def test_put_object_failure_raises_processing_error(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
         from shared.parsers import ProcessingError
@@ -404,6 +474,65 @@ class TestMappingLookupAndHudiWrite:
 
             with pytest.raises(ProcessingError, match="Failed to write demand Hudi CSV"):
                 demand_parser(str(path), "/tmp/err.log")
+
+
+class TestPartialRowFailures:
+    """Cover the post-Task-11 skip-and-count semantics for row-level errors."""
+
+    def test_one_bad_date_among_five_rows_writes_others(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # 5 input rows, 1 with an unparseable Date and 4 valid.
+        # Each valid row x 3 channels (kw/kva/pf) = 12 Hudi rows.
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+        rows = [
+            ("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+            ("4001260599", "01-Feb-2026 00:30:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+            ("4001260599", "bad-date", "5.2400", "10.4800", "10.4800", "1.0000"),
+            ("4001260599", "01-Feb-2026 01:00:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+            ("4001260599", "01-Feb-2026 01:30:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+        ]
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
+            path = write_demand_csv(rows=rows)
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.source_row_count == 5
+        assert result.candidate_row_count == 12
+        assert result.rows_written == 12
+        assert result.rows_skipped == 1
+        assert result.skip_reasons["unparseable_timestamp"] == 1
+
+    def test_one_unparseable_kw_value_writes_other_rows(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
+        # Row 1 has unparseable kW (kva and pf still valid → 2 Hudi rows).
+        # Row 2 is fully valid (3 Hudi rows). Row 1 is NOT counted as
+        # rows_skipped because it produced output rows; only the failed
+        # cell is reflected in skip_reasons.
+        fake_mappings = {
+            "Optima_4001260599-demand-kw": "p:bunnings:kw",
+            "Optima_4001260599-demand-kva": "p:bunnings:kva",
+            "Optima_4001260599-demand-pf": "p:bunnings:pf",
+        }
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: fake_mappings)
+        rows = [
+            ("4001260599", "01-Feb-2026 00:00:00", "5.2400", "bad-kw", "10.4800", "1.0000"),
+            ("4001260599", "01-Feb-2026 00:30:00", "5.2400", "10.4800", "10.4800", "1.0000"),
+        ]
+
+        with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
+            mock_client.return_value.put_object.return_value = {"ETag": "fake"}
+            path = write_demand_csv(rows=rows)
+            result = demand_parser(str(path), "/tmp/err.log")
+
+        assert result.status == "processed"
+        assert result.rows_written == 5  # row1: 2, row2: 3
+        assert result.rows_skipped == 0
+        assert result.skip_reasons["unparseable_value"] == 1
 
 
 class TestDispatcherIntegration:

@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from shared.parsers import (
     ParserError,
     ParserOutcome,
     ProcessingError,
+    SkipReason,
 )
 from shared.parsers import _mappings as _mappings_mod
 
@@ -55,6 +57,8 @@ REQUIRED_DEMAND_COLUMNS: tuple[str, ...] = (
 class DemandParseResult:
     rows: list[dict[str, str]]
     no_data_sentinel: bool
+    rows_skipped: int = 0
+    skip_reasons: Counter[SkipReason] = field(default_factory=Counter)
 
 
 @dataclass(frozen=True)
@@ -64,7 +68,8 @@ class DemandBuildResult:
     candidate_row_count: int
     rows_written: int
     unmapped_count: int
-    invalid_count: int
+    rows_skipped: int
+    skip_reasons: Counter[SkipReason] = field(default_factory=Counter)
 
 
 def _validate_required_headers(fieldnames: list[str] | None) -> None:
@@ -85,13 +90,29 @@ def _row_has_content(row: dict[str | None, Any]) -> bool:
     return False
 
 
-def _validate_row_shape(row: dict[str | None, Any], fieldnames: list[str] | None, row_number: int) -> None:
-    if None in row:
-        raise ParserError(f"Malformed demand row {row_number}: unexpected extra cells")
+def _classify_row_shape(row: dict[str | None, Any], fieldnames: list[str] | None) -> SkipReason | None:
+    """Inspect row shape, returning a SkipReason if the row should be skipped.
 
-    missing_cells = [fieldname for fieldname in fieldnames or [] if row.get(fieldname) is None]
-    if missing_cells:
-        raise ParserError(f"Malformed demand row {row_number}: missing cells for {', '.join(missing_cells)}")
+    Skip-and-count semantics (replaces previous raise-on-mismatch behaviour):
+      - Extra trailing cells (None key in row dict) → ``row_shape_mismatch``.
+      - Missing required cells (Identifier / ReadingDateTime / value columns)
+        → ``row_anchor_failure`` if the identifier is missing, otherwise
+        ``row_shape_mismatch``.
+      - Missing optional cells (e.g. Site Name) → row proceeds (returns None).
+    """
+    if None in row:
+        return "row_shape_mismatch"
+
+    missing_required = [
+        fieldname
+        for fieldname in REQUIRED_DEMAND_COLUMNS
+        if fieldname in (fieldnames or []) and row.get(fieldname) is None
+    ]
+    if not missing_required:
+        return None
+    if "Identifier" in missing_required:
+        return "row_anchor_failure"
+    return "row_shape_mismatch"
 
 
 def _parse_demand_rows(file_path: str) -> DemandParseResult:
@@ -113,15 +134,35 @@ def _parse_demand_rows(file_path: str) -> DemandParseResult:
     reader = csv.DictReader(io.StringIO(data_section))
     _validate_required_headers(reader.fieldnames)
     rows: list[dict[str, str]] = []
+    rows_skipped = 0
+    skip_reasons: Counter[SkipReason] = Counter()
     for row_number, row in enumerate(reader, start=10):
         if not _row_has_content(row):
             continue
-        _validate_row_shape(row, reader.fieldnames, row_number)
+        shape_skip = _classify_row_shape(row, reader.fieldnames)
+        if shape_skip is not None:
+            rows_skipped += 1
+            skip_reasons[shape_skip] += 1
+            logger.warning(
+                "demand_row_shape_skip",
+                extra={"row": row_number, "reason": shape_skip},
+            )
+            continue
         rows.append(row)
-    return DemandParseResult(rows=rows, no_data_sentinel=False)
+    return DemandParseResult(
+        rows=rows,
+        no_data_sentinel=False,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
+    )
 
 
-def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> DemandBuildResult:
+def _build_hudi_csv(
+    rows: list[dict[str, str]],
+    mappings: dict[str, str],
+    rows_skipped: int = 0,
+    skip_reasons: Counter[SkipReason] | None = None,
+) -> DemandBuildResult:
     """Build the Hudi CSV body and collect candidate disposition statistics.
 
     locale note: %b (abbreviated month name) is locale-dependent. AWS Lambda
@@ -129,32 +170,45 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> Dem
     "Mar", etc. Local dev environments using non-English locales would fail
     parsing — if this becomes a problem, switch to an explicit dict mapping.
     """
+    skip_reasons = Counter(skip_reasons or {})
     buf = io.StringIO()
     buf.write("sensorId,ts,val,unit,its,quality\n")
-    source_row_count = len(rows)
+    # source_row_count counts every non-blank source row, including those
+    # already skipped at the shape-validation stage. This mirrors the
+    # envizi DataFrame-parser convention where rows_skipped is reported
+    # alongside the original total.
+    source_row_count = len(rows) + rows_skipped
     candidate_row_count = 0
     rows_written = 0
     unmapped_count = 0
-    invalid_count = 0
 
     for row in rows:
         nmi = (row.get("Identifier") or "").strip()
         raw_ts = (row.get("ReadingDateTime") or "").strip()
-        if not nmi or not raw_ts:
-            invalid_count += 1
+        if not nmi:
+            rows_skipped += 1
+            skip_reasons["row_anchor_failure"] += 1
+            continue
+        if not raw_ts:
+            rows_skipped += 1
+            skip_reasons["unparseable_timestamp"] += 1
             continue
         try:
             ts = datetime.strptime(raw_ts, "%d-%b-%Y %H:%M:%S")
         except ValueError:
-            invalid_count += 1
+            rows_skipped += 1
+            skip_reasons["unparseable_timestamp"] += 1
             logger.warning("demand_bad_timestamp", extra={"nmi": nmi, "raw_ts": raw_ts})
             continue
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
 
+        row_had_any_value = False
+        row_produced_rows_or_unmapped = False
         for csv_col, suffix, unit in CSV_FIELD_MAPPING:
             raw_val = (row.get(csv_col) or "").strip()
             if not raw_val:
                 continue
+            row_had_any_value = True
             # Validate as numeric but persist the raw string — preserves
             # source precision (e.g. "0.8800" stays "0.8800" instead of
             # collapsing to "0.88"). Matches bunnings_billing_parser's
@@ -162,9 +216,10 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> Dem
             try:
                 float(raw_val)
             except ValueError:
-                invalid_count += 1
+                skip_reasons["unparseable_value"] += 1
                 continue
 
+            row_produced_rows_or_unmapped = True
             candidate_row_count += 1
             sensor_id = mappings.get(f"Optima_{nmi}-demand-{suffix}")
             if not sensor_id:
@@ -176,6 +231,12 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> Dem
             # (kw/kva/"") so no comma-injection sanitisation needed.
             buf.write(f"{sensor_id},{ts_str},{raw_val},{unit},{ts_str},\n")
             rows_written += 1
+        # Only count the source row as "skipped" if every populated value
+        # cell failed to parse (so the row contributed nothing to the
+        # output). Rows where one value column was bad but another was
+        # valid still produce Hudi rows and are not considered skipped.
+        if row_had_any_value and not row_produced_rows_or_unmapped:
+            rows_skipped += 1
 
     return DemandBuildResult(
         body=buf.getvalue(),
@@ -183,7 +244,8 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> Dem
         candidate_row_count=candidate_row_count,
         rows_written=rows_written,
         unmapped_count=unmapped_count,
-        invalid_count=invalid_count,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
     )
 
 
@@ -205,6 +267,15 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         return ParserOutcome(status="processed_empty", reason="no_data_sentinel")
     if not parsed.rows:
         logger.info("demand_no_rows_to_process", extra={"file": file_name})
+        if parsed.rows_skipped > 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=parsed.rows_skipped,
+                rows_written=0,
+                rows_skipped=parsed.rows_skipped,
+                skip_reasons=parsed.skip_reasons,
+                reason="all_skipped",
+            )
         return ParserOutcome(
             status="processed_empty",
             source_row_count=0,
@@ -214,37 +285,26 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
 
     # 4. Build Hudi CSV using cached nem12 mappings
     mappings = _mappings_mod.get_nem12_mappings()
-    build = _build_hudi_csv(parsed.rows, mappings)
-
-    if build.invalid_count > 0:
-        logger.info(
-            "demand_invalid_rows",
-            extra={
-                "file": file_name,
-                "source_rows": build.source_row_count,
-                "candidates": build.candidate_row_count,
-                "rows_written": build.rows_written,
-                "invalid": build.invalid_count,
-                "unmapped": build.unmapped_count,
-            },
-        )
-        raise ParserError(f"No valid demand candidates in {file_name}")
+    build = _build_hudi_csv(
+        parsed.rows,
+        mappings,
+        rows_skipped=parsed.rows_skipped,
+        skip_reasons=parsed.skip_reasons,
+    )
 
     if build.rows_written == 0:
-        if (
-            build.invalid_count == 0
-            and build.candidate_row_count > 0
-            and build.unmapped_count == build.candidate_row_count
-        ):
+        if build.candidate_row_count > 0 and build.unmapped_count == build.candidate_row_count:
             return ParserOutcome(
                 status="unmapped",
                 source_row_count=build.source_row_count,
                 candidate_row_count=build.candidate_row_count,
                 rows_written=0,
                 unmapped_count=build.unmapped_count,
+                rows_skipped=build.rows_skipped,
+                skip_reasons=build.skip_reasons,
                 reason="all_candidates_unmapped",
             )
-        if build.candidate_row_count == 0 and build.invalid_count == 0:
+        if build.candidate_row_count == 0 and build.rows_skipped == 0:
             return ParserOutcome(
                 status="processed_empty",
                 source_row_count=build.source_row_count,
@@ -255,11 +315,20 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
             extra={
                 "file": file_name,
                 "candidates": build.candidate_row_count,
-                "invalid": build.invalid_count,
+                "skipped": build.rows_skipped,
                 "unmapped": build.unmapped_count,
             },
         )
-        raise ParserError(f"No valid demand candidates in {file_name}")
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=build.source_row_count,
+            candidate_row_count=build.candidate_row_count,
+            rows_written=0,
+            unmapped_count=build.unmapped_count,
+            rows_skipped=build.rows_skipped,
+            skip_reasons=build.skip_reasons,
+            reason="all_skipped",
+        )
 
     # 5. Upload Hudi CSV directly to S3 (bypasses file_processor channel gate)
     ts_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
@@ -274,7 +343,12 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         raise ProcessingError(f"Failed to write demand Hudi CSV: {e}") from e
     logger.info(
         "demand_written",
-        extra={"key": key, "rows": build.rows_written, "unmapped": build.unmapped_count},
+        extra={
+            "key": key,
+            "rows": build.rows_written,
+            "unmapped": build.unmapped_count,
+            "skipped": build.rows_skipped,
+        },
     )
     return ParserOutcome(
         status="processed",
@@ -282,4 +356,6 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
         candidate_row_count=build.candidate_row_count,
         rows_written=build.rows_written,
         unmapped_count=build.unmapped_count,
+        rows_skipped=build.rows_skipped,
+        skip_reasons=build.skip_reasons,
     )

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,13 @@ from typing import Any
 import boto3
 from aws_lambda_powertools import Logger
 
-from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ProcessingError
+from shared.parsers import (
+    NotRelevantParser,
+    ParserError,
+    ParserOutcome,
+    ProcessingError,
+    SkipReason,
+)
 from shared.parsers._mappings import get_nem12_mappings
 
 logger = Logger(service="bunnings-billing-parser", child=True)
@@ -64,13 +71,21 @@ REQUIRED_BILLING_COLUMNS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class BillingParseResult:
+    rows: list[dict[str, str]]
+    rows_skipped: int = 0
+    skip_reasons: Counter[SkipReason] = field(default_factory=Counter)
+
+
+@dataclass(frozen=True)
 class BillingBuildResult:
     body: str
     source_row_count: int
     candidate_row_count: int
     rows_written: int
     unmapped_count: int
-    invalid_count: int
+    rows_skipped: int
+    skip_reasons: Counter[SkipReason] = field(default_factory=Counter)
 
 
 def _billing_date_to_ts(date_str: str) -> str | None:
@@ -106,7 +121,7 @@ def _decode_utf16_csv(file_path: str) -> list[str]:
     """
     raw = Path(file_path).read_bytes()
     text = raw.decode("utf-16-le")
-    if text.startswith("\ufeff"):
+    if text.startswith("﻿"):
         text = text[1:]
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text.split("\n")
@@ -130,16 +145,32 @@ def _row_has_content(row: dict[str | None, Any]) -> bool:
     return False
 
 
-def _validate_row_shape(row: dict[str | None, Any], fieldnames: list[str] | None, row_number: int) -> None:
+def _classify_row_shape(row: dict[str | None, Any], fieldnames: list[str] | None) -> SkipReason | None:
+    """Inspect row shape, returning a SkipReason if the row should be skipped.
+
+    Skip-and-count semantics (replaces previous raise-on-mismatch behaviour):
+      - Extra trailing cells (None key in row dict) → ``row_shape_mismatch``.
+      - Missing required cells (Identifier / Date / value columns) →
+        ``row_anchor_failure`` if the identifier is missing, otherwise
+        ``row_shape_mismatch``.
+      - Missing optional cells (e.g. Site Name) → row proceeds (returns None).
+    """
     if None in row:
-        raise ParserError(f"Malformed Bunnings billing row {row_number}: unexpected extra cells")
+        return "row_shape_mismatch"
 
-    missing_cells = [fieldname for fieldname in fieldnames or [] if row.get(fieldname) is None]
-    if missing_cells:
-        raise ParserError(f"Malformed Bunnings billing row {row_number}: missing cells for {', '.join(missing_cells)}")
+    missing_required = [
+        fieldname
+        for fieldname in REQUIRED_BILLING_COLUMNS
+        if fieldname in (fieldnames or []) and row.get(fieldname) is None
+    ]
+    if not missing_required:
+        return None
+    if "Identifier" in missing_required:
+        return "row_anchor_failure"
+    return "row_shape_mismatch"
 
 
-def _parse_billing_rows(file_path: str) -> list[dict[str, str]]:
+def _parse_billing_rows(file_path: str) -> BillingParseResult:
     """Skip 7 metadata rows and return data rows as DictReader dicts."""
     lines = _decode_utf16_csv(file_path)
     # Row 1-5: metadata key:value; Row 6-7: blank; Row 8: header; Row 9+: data
@@ -148,49 +179,80 @@ def _parse_billing_rows(file_path: str) -> list[dict[str, str]]:
     reader = csv.DictReader(io.StringIO(data_section))
     _validate_required_headers(reader.fieldnames)
     rows: list[dict[str, str]] = []
+    rows_skipped = 0
+    skip_reasons: Counter[SkipReason] = Counter()
     for row_number, row in enumerate(reader, start=9):
         if not _row_has_content(row):
             continue
-        _validate_row_shape(row, reader.fieldnames, row_number)
+        shape_skip = _classify_row_shape(row, reader.fieldnames)
+        if shape_skip is not None:
+            rows_skipped += 1
+            skip_reasons[shape_skip] += 1
+            logger.warning(
+                "bunnings_billing_row_shape_skip",
+                extra={"row": row_number, "reason": shape_skip},
+            )
+            continue
         rows.append(row)
-    return rows
+    return BillingParseResult(
+        rows=rows,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
+    )
 
 
-def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> BillingBuildResult:
+def _build_hudi_csv(
+    rows: list[dict[str, str]],
+    mappings: dict[str, str],
+    rows_skipped: int = 0,
+    skip_reasons: Counter[SkipReason] | None = None,
+) -> BillingBuildResult:
     """Expand billing rows into Hudi sensor rows and collect outcome stats."""
+    skip_reasons = Counter(skip_reasons or {})
     buf = io.StringIO()
     buf.write("sensorId,ts,val,unit,its,quality\n")
-    source_row_count = len(rows)
+    # source_row_count counts every non-blank source row, including those
+    # already skipped at the shape-validation stage (rows_skipped).
+    source_row_count = len(rows) + rows_skipped
     candidate_row_count = 0
     rows_written = 0
     unmapped_count = 0
-    invalid_count = 0
 
     for row in rows:
         nmi = (row.get("Identifier") or "").strip()
-        ts = _billing_date_to_ts(row.get("Date") or "")
-        if not nmi or ts is None:
-            invalid_count += 1
-            if not ts and row.get("Date"):
+        raw_date = row.get("Date") or ""
+        ts = _billing_date_to_ts(raw_date)
+        if not nmi:
+            rows_skipped += 1
+            skip_reasons["row_anchor_failure"] += 1
+            continue
+        if ts is None:
+            rows_skipped += 1
+            skip_reasons["unparseable_timestamp"] += 1
+            if raw_date.strip():
                 logger.warning(
                     "bunnings_billing_skip_bad_date",
-                    extra={"nmi": nmi, "date": row.get("Date")},
+                    extra={"nmi": nmi, "date": raw_date},
                 )
             continue
 
         usage_unit = (row.get("Usage Measurement Unit") or "").strip() or "kWh"
         spend_currency = (row.get("Spend Currency") or "").strip() or "AUD"
 
+        row_had_any_value = False
+        row_produced_rows_or_unmapped = False
         for csv_col, billing_suffix, _unit_source in CSV_FIELD_MAPPING:
             raw_val = (row.get(csv_col) or "").strip()
             if not raw_val:
                 continue
+            row_had_any_value = True
             try:
                 float(raw_val)
             except ValueError:
-                invalid_count += 1
+                skip_reasons["unparseable_value"] += 1
                 continue
 
+            row_produced_rows_or_unmapped = True
             candidate_row_count += 1
             sensor_id = mappings.get(f"{nmi}-{billing_suffix}")
             if not sensor_id:
@@ -199,6 +261,10 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> Bil
             unit = _pick_unit(billing_suffix, usage_unit, spend_currency)
             buf.write(f"{sensor_id},{ts},{raw_val},{unit},{ts},\n")
             rows_written += 1
+        # Only count the source row as "skipped" if every populated value
+        # cell failed to parse (the row produced no Hudi rows at all).
+        if row_had_any_value and not row_produced_rows_or_unmapped:
+            rows_skipped += 1
 
     return BillingBuildResult(
         body=buf.getvalue(),
@@ -206,7 +272,8 @@ def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> Bil
         candidate_row_count=candidate_row_count,
         rows_written=rows_written,
         unmapped_count=unmapped_count,
-        invalid_count=invalid_count,
+        rows_skipped=rows_skipped,
+        skip_reasons=skip_reasons,
     )
 
 
@@ -231,9 +298,18 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
     if "Bunnings-Usage and Spend Report" not in file_name:
         raise NotRelevantParser("Not Bunnings Usage and Spend File")
 
-    rows = _parse_billing_rows(file_name)
-    if not rows:
+    parsed = _parse_billing_rows(file_name)
+    if not parsed.rows:
         logger.info("bunnings_billing_no_rows_to_process", extra={"file": file_name})
+        if parsed.rows_skipped > 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=parsed.rows_skipped,
+                rows_written=0,
+                rows_skipped=parsed.rows_skipped,
+                skip_reasons=parsed.skip_reasons,
+                reason="all_skipped",
+            )
         return ParserOutcome(
             status="processed_empty",
             source_row_count=0,
@@ -242,41 +318,30 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
         )
 
     mappings = get_nem12_mappings()
-    build = _build_hudi_csv(rows, mappings)
-
-    if build.invalid_count > 0:
-        logger.info(
-            "bunnings_billing_invalid_rows",
-            extra={
-                "file": file_name,
-                "source_rows": build.source_row_count,
-                "candidates": build.candidate_row_count,
-                "rows_written": build.rows_written,
-                "invalid": build.invalid_count,
-                "unmapped": build.unmapped_count,
-            },
-        )
-        raise ParserError(f"No valid Bunnings billing candidates in {file_name}")
+    build = _build_hudi_csv(
+        parsed.rows,
+        mappings,
+        rows_skipped=parsed.rows_skipped,
+        skip_reasons=parsed.skip_reasons,
+    )
 
     if build.rows_written == 0:
-        if build.candidate_row_count == 0 and build.invalid_count == 0:
+        if build.candidate_row_count == 0 and build.rows_skipped == 0:
             return ParserOutcome(
                 status="processed_empty",
                 source_row_count=build.source_row_count,
                 rows_written=0,
                 reason="blank_values",
             )
-        if (
-            build.invalid_count == 0
-            and build.candidate_row_count > 0
-            and build.unmapped_count == build.candidate_row_count
-        ):
+        if build.candidate_row_count > 0 and build.unmapped_count == build.candidate_row_count:
             return ParserOutcome(
                 status="unmapped",
                 source_row_count=build.source_row_count,
                 candidate_row_count=build.candidate_row_count,
                 rows_written=0,
                 unmapped_count=build.unmapped_count,
+                rows_skipped=build.rows_skipped,
+                skip_reasons=build.skip_reasons,
                 reason="all_candidates_unmapped",
             )
         logger.info(
@@ -285,11 +350,20 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
                 "file": file_name,
                 "source_rows": build.source_row_count,
                 "candidates": build.candidate_row_count,
-                "invalid": build.invalid_count,
+                "skipped": build.rows_skipped,
                 "unmapped": build.unmapped_count,
             },
         )
-        raise ParserError(f"No valid Bunnings billing candidates in {file_name}")
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=build.source_row_count,
+            candidate_row_count=build.candidate_row_count,
+            rows_written=0,
+            unmapped_count=build.unmapped_count,
+            rows_skipped=build.rows_skipped,
+            skip_reasons=build.skip_reasons,
+            reason="all_skipped",
+        )
 
     ts_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
     key = f"{HUDI_PREFIX}/billing_export_{ts_key}.csv"
@@ -303,7 +377,12 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
         raise ProcessingError(f"Failed to write Bunnings billing Hudi CSV: {e}") from e
     logger.info(
         "bunnings_billing_written",
-        extra={"key": key, "rows_written": build.rows_written, "unmapped_count": build.unmapped_count},
+        extra={
+            "key": key,
+            "rows_written": build.rows_written,
+            "unmapped_count": build.unmapped_count,
+            "skipped": build.rows_skipped,
+        },
     )
     return ParserOutcome(
         status="processed",
@@ -311,4 +390,6 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
         candidate_row_count=build.candidate_row_count,
         rows_written=build.rows_written,
         unmapped_count=build.unmapped_count,
+        rows_skipped=build.rows_skipped,
+        skip_reasons=build.skip_reasons,
     )
