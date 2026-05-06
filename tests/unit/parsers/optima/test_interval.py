@@ -141,7 +141,7 @@ class TestIntervalParser:
 
 
 class TestIntervalParserOnRealFixtures:
-    """Regression tests using verbatim BidEnergy responses (committed at 86ab1bf).
+    """Regression tests using verbatim BidEnergy responses from committed fixtures.
 
     These fixtures lock in real-world quirks that synthetic data would miss:
     CRLF line endings, double-quoted columns, NZ alphanumeric ICP identifiers,
@@ -182,6 +182,7 @@ class TestIntervalParserOnRealFixtures:
         path = str(self.FIXTURE_DIR / "interval_au_4month.csv")
         result = interval_parser(path, "error_log")
 
+        assert len(result) == 1
         sensor_id, df = result[0]
         assert sensor_id == "Optima_2002105104"
         assert len(df) > 5000
