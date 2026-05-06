@@ -415,3 +415,41 @@ class TestIntervalParserOnRealFixtures:
         assert result.status == "processed_empty"
         assert result.reason == "no_data_sentinel"
         assert result.dfs == []
+
+
+class TestIntervalParserCheapGate:
+    """Cheap relevance gate must run before any pd.read_csv full parse."""
+
+    def test_bom_prefixed_header_passes_gate(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        # UTF-8 BOM (\xef\xbb\xbf) prefixed file with a single valid row.
+        filepath = tmp_path / "bom_interval.csv"
+        filepath.write_bytes(b"\xef\xbb\xbfDate,Start Time,Identifier,Usage\n2026-05-01,00:00,METER001,1.0\n")
+
+        result = interval_parser(str(filepath), "error_log")
+        assert result.status == "processed"
+        assert result.candidate_row_count == 1
+
+    def test_cheap_gate_does_not_invoke_pd_read_csv(self, tmp_path) -> None:
+        from shared.parsers import NotRelevantParser
+        from shared.parsers.optima import interval as interval_mod
+
+        # First-line content that does NOT look like an interval CSV.
+        filepath = tmp_path / "wrong.csv"
+        filepath.write_text("foo,bar,baz\n1,2,3\n")
+
+        with patch.object(interval_mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
+            with pytest.raises(NotRelevantParser):
+                interval_mod.interval_parser(str(filepath), "error_log")
+
+    def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        # First line matches the gate, but body is corrupt: mismatched
+        # column counts will raise pandas.errors.ParserError on full parse.
+        filepath = tmp_path / "corrupt.csv"
+        filepath.write_bytes(b'Date,Start Time,Identifier,Usage\n2026-05-01,00:00,"unterminated,1.0\n')
+
+        with pytest.raises(ParserError, match="Failed to read Optima interval CSV"):
+            interval_parser(str(filepath), "error_log")

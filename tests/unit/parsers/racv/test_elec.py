@@ -228,3 +228,47 @@ Date,Start Time,ZeroMeter kWh,NonZeroMeter kWh
             assert len(result_dfs) == 1
             nmi, _ = result_dfs[0]
             assert "NonZeroMeter" in nmi
+
+
+class TestRacvElecParserCheapGate:
+    """Cheap relevance gate must run before any pd.read_csv full parse."""
+
+    def test_bom_prefixed_header_passes_gate(self, tmp_path) -> None:
+        from shared.parsers.racv.elec import racv_elec_parser
+
+        # UTF-8 BOM (\xef\xbb\xbf) prefixed file.
+        path = tmp_path / "bom_racv_elec.csv"
+        path.write_bytes(
+            b"\xef\xbb\xbfHeader Row 1\n"
+            b"Header Row 2\n"
+            b"Date,Start Time,Meter1 kWh\n"
+            b"2024-01-01,00:00,5.0\n"
+            b"2024-01-01,00:30,6.0\n"
+        )
+
+        result = racv_elec_parser(str(path), "error_log")
+        assert result.status == "processed"
+
+    def test_cheap_gate_does_not_invoke_pd_read_csv(self, tmp_path) -> None:
+        from shared.parsers import NotRelevantParser
+        from shared.parsers.racv import elec as elec_mod
+
+        # Wrong format: header line 3 has no kWh column.
+        path = tmp_path / "wrong.csv"
+        path.write_text("Header Row 1\nHeader Row 2\nDate,Start Time,Foo,Bar\n1,2,3,4\n")
+
+        with patch.object(elec_mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
+            with pytest.raises(NotRelevantParser):
+                elec_mod.racv_elec_parser(str(path), "error_log")
+
+    def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
+        from shared.parsers import ParserError
+        from shared.parsers.racv.elec import racv_elec_parser
+
+        # First three lines pass the gate; data body has malformed quoting
+        # that makes pandas raise on the full parse.
+        path = tmp_path / "corrupt.csv"
+        path.write_bytes(b'Header Row 1\nHeader Row 2\nDate,Start Time,Meter1 kWh\n2024-01-01,00:00,"unterminated\n')
+
+        with pytest.raises(ParserError, match="Failed to read RACV electricity CSV"):
+            racv_elec_parser(str(path), "error_log")

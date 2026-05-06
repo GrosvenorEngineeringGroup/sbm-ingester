@@ -9,6 +9,7 @@ persisted as separate channels (E1_kWh and B1_kWh respectively) keyed by NMI.
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
@@ -57,14 +58,24 @@ def _coerce_numeric_column(raw_df: pd.DataFrame, column: str) -> tuple[int, int]
 
 
 def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    # Cheap relevance gate: read first line only. ``utf-8-sig`` strips a BOM
+    # transparently so BOM-prefixed files (R1746-style exports) still match.
     try:
-        raw_df = pd.read_csv(file_name)
-    except Exception as e:
+        with Path(file_name).open(encoding="utf-8-sig") as f:
+            first_line = f.readline()
+    except (OSError, UnicodeDecodeError) as e:
         raise NotRelevantParser(f"Not readable as an Optima interval CSV: {e}") from e
 
-    required_columns = {"Date", "Start Time", "Identifier"}
-    if not required_columns.issubset(raw_df.columns):
+    # All three column markers must appear in the header row.
+    if not all(token in first_line for token in ("Date", "Start Time", "Identifier")):
         raise NotRelevantParser("Not an Optima interval CSV")
+
+    # Gate passed — full parse. Failures here indicate a corrupt body of a
+    # file that already self-identified as ours, so they are ParserError.
+    try:
+        raw_df = pd.read_csv(file_name, encoding="utf-8-sig")
+    except Exception as e:
+        raise ParserError(f"Failed to read Optima interval CSV: {e}") from e
 
     # BidEnergy returns a 148-byte sentinel CSV when a site has no data for the
     # requested range. Match the marker row explicitly so malformed interval

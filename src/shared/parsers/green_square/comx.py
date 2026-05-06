@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
@@ -18,18 +19,31 @@ logger = Logger(service="green-square-comx-parser", child=True)
 
 
 def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    # Cheap relevance gate: read at most the first 2 lines. The ComX header
+    # is on line 2; column 0 is the marker ``ComX510_Green_Square`` and
+    # column 4 is the site name. ``utf-8-sig`` strips a BOM transparently.
     try:
-        first_rows = pd.read_csv(file_name, header=None, nrows=2)
-    except Exception as e:
+        with Path(file_name).open(encoding="utf-8-sig", newline="") as f:
+            first_two = [f.readline() for _ in range(2)]
+    except (OSError, UnicodeDecodeError) as e:
         raise NotRelevantParser(f"Not readable as a Green Square ComX CSV: {e}") from e
 
-    try:
-        header_marker = first_rows.iloc[1, 0]
-    except IndexError as e:
-        raise NotRelevantParser("Not Relevant Parser For File") from e
-
-    if header_marker != "ComX510_Green_Square":
+    if len(first_two) < 2 or not first_two[1].strip():
         raise NotRelevantParser("Not Relevant Parser For File")
+
+    # Marker is the first comma-separated field on line 2; substring match
+    # would falsely accept e.g. ``NotComX510_Green_Square,...``.
+    second_line_first_field = first_two[1].split(",", 1)[0].strip().strip('"')
+    if second_line_first_field != "ComX510_Green_Square":
+        raise NotRelevantParser("Not Relevant Parser For File")
+
+    # Gate passed — re-parse the first two lines into a DataFrame to
+    # extract the site name (column 4 of row 2). Body parse failures from
+    # here on are ParserError.
+    try:
+        first_rows = pd.read_csv(file_name, header=None, nrows=2, encoding="utf-8-sig")
+    except Exception as e:
+        raise ParserError(f"Failed to read Green Square ComX header: {e}") from e
 
     try:
         raw_site_name = first_rows.iloc[1, 4]
@@ -40,7 +54,7 @@ def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_p
     site_name = raw_site_name.replace(" ", "")
 
     try:
-        raw_df = pd.read_csv(file_name, header=6, skip_blank_lines=False)
+        raw_df = pd.read_csv(file_name, header=6, skip_blank_lines=False, encoding="utf-8-sig")
     except Exception as e:
         raise ParserError(f"Failed to read Green Square ComX data rows: {e}") from e
 

@@ -10,6 +10,7 @@ from aws_lambda_powertools import Logger
 
 from shared.parsers import (
     NotRelevantParser,
+    ParserError,
     ParserOutcome,
     ParserResult,
     SkipReason,
@@ -37,16 +38,27 @@ def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> 
     if "OptimaGenerationData" in file_name:
         raise NotRelevantParser("Not Relevant Parser For File")
 
+    # Cheap relevance gate: skip files with embedded null bytes (likely binary
+    # or wrong-encoding) and require all expected column markers in the
+    # first header line. ``utf-8-sig`` strips a BOM transparently.
     try:
         with Path(file_name).open("rb") as file:
             if b"\x00" in file.read(4096):
                 raise ValueError("embedded null byte")
-        raw_df = pd.read_csv(file_name)
-    except Exception as e:
+        with Path(file_name).open(encoding="utf-8-sig") as f:
+            first_line = f.readline()
+    except (OSError, UnicodeDecodeError, ValueError) as e:
         raise NotRelevantParser(f"Not readable as an Envizi CSV: {e}") from e
 
-    if not ENVIZI_ELECTRICITY_REQUIRED.issubset(raw_df.columns):
+    if not all(token in first_line for token in ENVIZI_ELECTRICITY_REQUIRED):
         raise NotRelevantParser("Not an Envizi electricity CSV")
+
+    # Gate passed — full parse. Failures here indicate a corrupt body of a
+    # file that already self-identified as ours, so they are ParserError.
+    try:
+        raw_df = pd.read_csv(file_name, encoding="utf-8-sig")
+    except Exception as e:
+        raise ParserError(f"Failed to read Envizi electricity CSV: {e}") from e
 
     source_row_count = len(raw_df)
     skip_reasons: Counter[SkipReason] = Counter()

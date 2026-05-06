@@ -10,12 +10,14 @@ across all intervals are filtered out as invalid.
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
 
 from shared.parsers import (
     NotRelevantParser,
+    ParserError,
     ParserOutcome,
     ParserResult,
     SkipReason,
@@ -41,19 +43,30 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     if "OptimaGenerationData" in file_name:
         raise NotRelevantParser("Not Relevant Parser For File")
 
+    # Cheap relevance gate: skiprows=[0,1] means the column header sits on
+    # line 3. Read up to the first 3 lines and require the header line to
+    # contain Date, Start Time, and a kWh marker. ``utf-8-sig`` strips a
+    # BOM transparently.
     try:
-        raw_df = pd.read_csv(file_name, skiprows=[0, 1])
-    except Exception as e:
+        with Path(file_name).open(encoding="utf-8-sig") as f:
+            header_lines = [f.readline() for _ in range(3)]
+    except (OSError, UnicodeDecodeError) as e:
         raise NotRelevantParser(f"Not readable as a RACV electricity CSV: {e}") from e
 
-    required_columns = {"Date", "Start Time"}
-    if not required_columns.issubset(raw_df.columns):
+    header_line = header_lines[2] if len(header_lines) >= 3 else ""
+    if not all(token in header_line for token in ("Date", "Start Time")) or "kWh" not in header_line:
         raise NotRelevantParser("Not a RACV electricity CSV")
+
+    # Gate passed — full parse. Failures here are ParserError.
+    try:
+        raw_df = pd.read_csv(file_name, skiprows=[0, 1], encoding="utf-8-sig")
+    except Exception as e:
+        raise ParserError(f"Failed to read RACV electricity CSV: {e}") from e
 
     cols = [x for x in raw_df.columns if "kWh" in x or x in ["Date", "Start Time"]]
     meter_cols = [x for x in cols if "kWh" in x]
     if not meter_cols:
-        raise NotRelevantParser("Not a RACV electricity CSV")
+        raise ParserError("Missing kWh meter columns in RACV electricity CSV")
 
     source_row_count = len(raw_df)
     skip_reasons: Counter[SkipReason] = Counter()

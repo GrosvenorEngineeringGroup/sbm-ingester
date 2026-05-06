@@ -39,6 +39,30 @@ class TestContentGate:
         with pytest.raises(NotRelevantParser, match="missing metadata header"):
             demand_parser(str(path), "/tmp/err.log")
 
+    def test_bom_prefixed_metadata_header_passes_gate(self, tmp_path, monkeypatch, _reset_mappings_cache):
+        # UTF-8 BOM (\xef\xbb\xbf) before "Commodities:" must still match the
+        # content sniff. ``utf-8-sig`` strips the BOM transparently.
+        monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
+
+        path = tmp_path / "Bunnings_Demand_Profile.csv"
+        body = (
+            'Commodities:,"Electricity"\n'
+            'Sites (NMIs):,"4001260599"\n'
+            'Status:,"Active"\n'
+            "Country:, Australia\n"
+            "Start:,01-Feb-2026\n"
+            "End:,30-Apr-2026\n"
+            "\n"
+            "\n"
+            "Business Unit,Identifier,Identifier Type,ReadingDateTime,E,kW,kVa,Power Factor,Site Name\n"
+            "Bunnings Australia,4001260599,NMI,01-Feb-2026 00:00:00,5.24,10.48,10.48,1.0000,BUN AUS Forbes\n"
+        )
+        path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+
+        # Gate must accept (mappings empty → unmapped, but no NotRelevantParser raise).
+        result = demand_parser(str(path), "/tmp/err.log")
+        assert result.status == "unmapped"
+
 
 class TestNoDataFoundSentinel:
     def test_no_data_found_returns_processed_empty(self, write_demand_csv):

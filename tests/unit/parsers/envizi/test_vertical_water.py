@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from conftest import create_envizi_water_csv
 
-from shared.parsers import NotRelevantParser, ParserOutcome
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 
 
@@ -148,3 +148,38 @@ class TestEnviziVerticalParserWater:
         assert result.source_row_count == 2
         assert result.reason == "blank_values"
         assert result.dfs == []
+
+
+class TestEnviziVerticalParserWaterCheapGate:
+    """Cheap relevance gate must run before any pd.read_csv full parse."""
+
+    def test_bom_prefixed_header_passes_gate(self, tmp_path) -> None:
+        path = tmp_path / "bom_water.csv"
+        path.write_bytes(
+            b"\xef\xbb\xbfSerial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
+            b"W001,2026-05-01T00:00:00,2026-05-01T00:30:00,1.0,kL\n"
+        )
+
+        result = envizi_vertical_parser_water(str(path), "error_log")
+        assert result.status == "processed"
+        assert result.candidate_row_count == 1
+
+    def test_cheap_gate_does_not_invoke_pd_read_csv(self, tmp_path) -> None:
+        from shared.parsers.envizi import vertical_water as mod
+
+        path = tmp_path / "wrong.csv"
+        path.write_text("foo,bar,baz\n1,2,3\n")
+
+        with patch.object(mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
+            with pytest.raises(NotRelevantParser):
+                mod.envizi_vertical_parser_water(str(path), "error_log")
+
+    def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
+        path = tmp_path / "corrupt.csv"
+        path.write_bytes(
+            b"Serial_No,Interval_Start,Interval_End,Consumption,Consumption Unit\n"
+            b'W001,"unterminated,2026-05-01,1.0,kL\n'
+        )
+
+        with pytest.raises(ParserError, match="Failed to read Envizi water CSV"):
+            envizi_vertical_parser_water(str(path), "error_log")

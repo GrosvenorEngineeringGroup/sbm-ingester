@@ -124,7 +124,7 @@ def _parse_demand_rows(file_path: str) -> DemandParseResult:
       Row 9: column header
       Row 10+: data    OR a single "No data found" sentinel line
     """
-    with Path(file_path).open(encoding="utf-8") as f:
+    with Path(file_path).open(encoding="utf-8-sig") as f:
         lines = f.read().splitlines()
 
     if any("No data found" in line for line in lines):
@@ -254,8 +254,9 @@ def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     if "demand profile" not in Path(file_name).name.lower().replace("_", " "):
         raise NotRelevantParser("Not a Demand Profile file (filename mismatch)")
 
-    # 2. Content sniff (read first line only)
-    with Path(file_name).open(encoding="utf-8") as f:
+    # 2. Content sniff (read first line only). ``utf-8-sig`` strips a BOM
+    # transparently so BOM-prefixed exports still match.
+    with Path(file_name).open(encoding="utf-8-sig") as f:
         first_line = f.readline()
     if not first_line.startswith("Commodities:"):
         raise NotRelevantParser("Not a Demand Profile file (missing metadata header)")

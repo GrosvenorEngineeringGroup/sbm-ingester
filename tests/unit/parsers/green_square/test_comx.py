@@ -302,3 +302,30 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
             _, result_df = result_dfs[0]
             assert result_df.index.name == "t_start"
+
+
+class TestGreenSquareComXCheapGate:
+    """Cheap relevance gate must use BOM-aware encoding."""
+
+    def test_bom_prefixed_marker_passes_gate(self, tmp_path) -> None:
+        from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
+
+        # UTF-8 BOM (\xef\xbb\xbf) prefix on first line. Without utf-8-sig
+        # the cheap-sniff would compare a BOM-prefixed first column on the
+        # site row and miss; with utf-8-sig the BOM is stripped from the
+        # first line only, but our marker is on line 2 anyway.
+        path = tmp_path / "bom_comx.csv"
+        body = (
+            "Row1,col2,col3,col4,TestSite\n"
+            "ComX510_Green_Square,data,data,data,TestSite\n"
+            "Row3,col2,col3,col4,col5\n"
+            "Row4,col2,col3,col4,col5\n"
+            "Row5,col2,col3,col4,col5\n"
+            "Row6,col2,col3,col4,col5\n"
+            "Local Time Stamp,Active energy (kWh),Other,col4,col5\n"
+            "01/01/2024 00:00,1.0,data,col4,col5\n"
+        )
+        path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+
+        result = green_square_private_wire_schneider_comx_parser(str(path), "error_log")
+        assert result.status == "processed"
