@@ -243,12 +243,18 @@ Add focused unit tests around disposition, not just parser output shape:
    - `unmapped` moves to `newIrrevFiles/`
    - `ParserError` / `ProcessingError` move to `newParseErr/`
    - partial mapping remains `processed`
+   - DataFrame outputs with only unsupported suffixes move to `newP/` as `processed_empty`, without writing header-only Hudi files
+   - DataFrame outputs with only null values move to `newP/` as `processed_empty`, without writing header-only Hudi files
+   - direct `p:` point IDs bypass Neptune mapping and still write Hudi rows
+   - `quality_<suffix>` columns continue to populate the Hudi `quality` column
+   - side-effect parser outcomes with `rows_written > 0` move the source file to `newP/`
 6. Dispatcher
    - `NotRelevantParser` continues
    - `ParserError` stops and propagates
    - `ProcessingError` stops and propagates
    - unexpected exception after a relevance gate is treated as `ParserError`
    - all parsers returning `NotRelevantParser` produces a no-valid-parser parse error
+   - real Optima interval, demand, and Bunnings billing files route through earlier broad parsers to the intended parser
 
 ## Migration Strategy
 
