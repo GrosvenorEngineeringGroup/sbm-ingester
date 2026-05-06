@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
 import pytest
 from conftest import create_optima_csv
 
@@ -137,3 +138,59 @@ class TestIntervalParser:
             assert "B1_kWh" in df.columns
             assert df["E1_kWh"].sum() == pytest.approx(3.2)  # 1.5 + 1.7
             assert df["B1_kWh"].sum() == pytest.approx(1.7)  # 0.8 + 0.9 — Generation persists
+
+
+class TestIntervalParserOnRealFixtures:
+    """Regression tests using verbatim BidEnergy responses (committed at 86ab1bf).
+
+    These fixtures lock in real-world quirks that synthetic data would miss:
+    CRLF line endings, double-quoted columns, NZ alphanumeric ICP identifiers,
+    and the empty-data sentinel CSV.
+    """
+
+    FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures" / "optima_interval"
+
+    def test_au_single_day_parses_to_48_intervals(self) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        path = str(self.FIXTURE_DIR / "interval_au_single_day.csv")
+        result = interval_parser(path, "error_log")
+
+        assert len(result) == 1
+        sensor_id, df = result[0]
+        assert sensor_id == "Optima_2002105104"
+        assert list(df.columns) == ["E1_kWh", "B1_kWh"]
+        assert len(df) == 48  # 30-min intervals x 24 h
+        assert df.index.min() == pd.Timestamp("2025-05-01 00:00:00")
+
+    def test_nz_icp_alphanumeric_identifier(self) -> None:
+        """NZ uses alphanumeric ICP; parser must not assume numeric NMI."""
+        from shared.parsers.optima.interval import interval_parser
+
+        path = str(self.FIXTURE_DIR / "interval_nz_single_day.csv")
+        result = interval_parser(path, "error_log")
+
+        assert len(result) == 1
+        sensor_id, df = result[0]
+        assert sensor_id == "Optima_0000010008MQCB6"
+        assert len(df) == 48
+
+    def test_au_four_months_spans_distinct_months(self) -> None:
+        """5856 rows spanning Apr to Jul. Catches any future date-format regression."""
+        from shared.parsers.optima.interval import interval_parser
+
+        path = str(self.FIXTURE_DIR / "interval_au_4month.csv")
+        result = interval_parser(path, "error_log")
+
+        sensor_id, df = result[0]
+        assert sensor_id == "Optima_2002105104"
+        assert len(df) > 5000
+        assert sorted(df.index.month.unique().tolist()) == [4, 5, 6, 7]
+
+    def test_empty_data_fixture_returns_empty_list(self) -> None:
+        from shared.parsers.optima.interval import interval_parser
+
+        path = str(self.FIXTURE_DIR / "interval_empty.csv")
+        result = interval_parser(path, "error_log")
+
+        assert result == []
