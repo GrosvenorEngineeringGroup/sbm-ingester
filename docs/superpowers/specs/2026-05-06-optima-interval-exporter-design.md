@@ -413,7 +413,7 @@ After this change, **the parsing/Hudi-write path for interval data is byte-ident
 | file_processor channel mapping | `<col>.split("_")[0]` → `<NMI>-<suffix>` | **same** |
 | Hudi sensor IDs | `Optima_<NMI>-E1`, `Optima_<NMI>-B1` (from mappings) | **same** |
 | Source-file destination after success (with data) | `newP/` | **same** |
-| Source-file destination after success (no data) | Historical legacy path was `newIrrevFiles/` when parser outcomes were inferred from `[]` | **`newP/` via `ParserOutcome(status="processed_empty", reason="no_data_sentinel")`** |
+| Source-file destination after success (no data) | `newP/` via `ParserOutcome(status="processed_empty", reason="no_data_sentinel")` | **same** |
 | Hudi unit | `kwh` | **same** |
 | Timestamp resolution | 30 min | **same** |
 | Hudi record key | `sensorId + ts` | **same** (upserts cleanly during cutover overlap) |
@@ -431,7 +431,7 @@ Athena queries, SkySpark mappings, and downstream dashboards require **no change
 | `start_date > end_date` (after resolution) | Return `{"statusCode": 400, ...}`. Defense-in-depth assertion. |
 | Per-site download HTTP 401/403/404/timeout/connection error | Per-site fail; counted; does not abort the run. |
 | **Per-site response is HTML (POST/Content-Type missed)** | Per-site fail; first 2 bytes ≠ `b"PK"` OR `Content-Type` contains `text/html` → reject; logged with response preview. |
-| **Per-site response is "No data is available" CSV** (148 B, ~25% of sites observed empirically) | **Treated as success.** `extract_first_csv` returns the bytes verbatim; processor uploads to S3. `result["success"] = True`, `result["empty_data"] = True`. Parser detects sentinel (`len==1` and `Date` is NaN). Under the parser-outcome semantics plan, this becomes `processed_empty` and routes the source file to `newP/`; before that semantics change, legacy `[]` handling routed it to `newIrrevFiles/`. |
+| **Per-site response is "No data is available" CSV** (148 B, ~25% of sites observed empirically) | **Treated as success.** `extract_first_csv` returns the bytes verbatim; processor uploads to S3. `result["success"] = True`, `result["empty_data"] = True`. Parser detects sentinel (`len==1` and `Date` is NaN), returns `ParserOutcome(status="processed_empty", reason="no_data_sentinel")`, and routes the source file to `newP/`. |
 | **ZIP parse failure** (corrupted, unexpected format — never observed in 8 samples) | Per-site fail; `result["error"] = "zip parse"`; logged. |
 | **CSV header mismatch downstream** (parser pandas raises) | file_processor moves source to `newParseErr/`; surfaced via existing CloudWatch parse-error log group. |
 | S3 PUT failure for individual site | Per-site fail; `result["error"] = "s3"`. Does not abort the run. |

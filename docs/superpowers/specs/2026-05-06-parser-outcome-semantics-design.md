@@ -6,20 +6,20 @@
 
 ## Problem
 
-The ingestion pipeline currently treats parser return values too narrowly. A parser returns `ParserResult = list[tuple[str, DataFrame]]`, and `file_processor` decides source-file movement by checking whether any Neptune IDs were resolved while iterating those DataFrames:
+Before the parser outcome implementation, the ingestion pipeline treated parser return values too narrowly. Dispatcher-facing parsers exposed only `ParserResult = list[tuple[str, DataFrame]]`, and `file_processor` decided source-file movement by checking whether any Neptune IDs were resolved while iterating those DataFrames:
 
 - at least one mapped point -> `newP/`
-- no mapped points -> `newIrrevFiles/`
+- no resolved mapped points -> `newIrrevFiles/`
 - parser/processing exception -> `newParseErr/`
 
-That works for standard interval-like parsers that return DataFrames to the main `file_processor` writer. It does not work for parsers that either:
+That legacy inference worked for standard interval-like parsers that returned DataFrames to the main `file_processor` writer. It did not work for parsers that either:
 
-- successfully process an empty/no-data file,
-- write Hudi rows as a side effect and return `[]`,
-- send the file to an external sink and return `[]`, or
-- can distinguish "no rows" from "rows exist but all are unmapped".
+- successfully processed an empty/no-data file,
+- wrote Hudi rows as a side effect without returning DataFrames,
+- sent the file to an external sink without returning DataFrames, or
+- could distinguish "no rows" from "rows exist but all are unmapped".
 
-This caused valid Optima demand files to be moved to `newIrrevFiles/` even when the parser had already written Hudi output, and caused valid no-data demand files to be grouped with genuinely unmapped files.
+The implemented behavior now uses explicit `ParserOutcome` statuses. Source-file movement is based on parser semantics: `processed`, `processed_empty`, and `processed_external` route to `newP/`; `unmapped` routes to `newIrrevFiles/`; parser or processing failures route to `newParseErr/`. This avoids grouping valid empty files or side-effect-only successes with genuinely unmapped files.
 
 ## Goal
 
@@ -192,10 +192,10 @@ Errors move to `PARSE_ERR_DIR`.
 | RACV electricity | Returns DataFrames; all-zero data raises. | `processed` if any mapped point; `processed_empty` for valid all-zero/no-usable-data only if the file is otherwise valid; malformed remains `ParserError`. |
 | RACV Noosa solar | Returns DataFrames with direct `p:` point IDs. | `processed` if any point data; `processed_empty` if valid file has no usable point rows. |
 | Green Square ComX | Returns DataFrames. | `processed` if mapped; `unmapped` only if valid candidate cells exist and none map. |
-| Optima interval | Returns DataFrames; no-data sentinel currently returns `[]`. | `processed` if mapped; `processed_empty` for `No data is available`; `unmapped` only if valid candidate interval cells exist and all miss mapping. |
-| Optima demand | Writes Hudi side-effect, returns `[]`. | `processed` if `rows_written > 0`; `processed_empty` for no-data/header-only; `unmapped` only if valid candidate demand cells exist and all miss mapping; malformed timestamps/values remain `ParserError`. |
-| Bunnings billing | Writes Hudi side-effect, returns `[]`. | `processed` if `rows_written > 0`; `unmapped` only if valid candidate billing cells exist and all miss mapping; `processed_empty` if valid report has no rows; malformed billing dates/values remain `ParserError`. |
-| RACV billing | Writes original report to `gegoptimareports`, returns `[]`. | `processed_external` after successful external write. |
+| Optima interval | Returns `ParserOutcome(status="processed_empty")` for the `No data is available` sentinel and `processed` with DataFrames when data is present. | `processed` if mapped; `processed_empty` for `No data is available`; `unmapped` only if valid candidate interval cells exist and all miss mapping. |
+| Optima demand | Returns `processed`, `processed_empty`, or `unmapped`; raises `ProcessingError` on write failure. | `processed` if `rows_written > 0`; `processed_empty` for no-data/header-only; `unmapped` only if valid candidate demand cells exist and all miss mapping; malformed timestamps/values remain `ParserError`; write failures remain `ProcessingError`. |
+| Bunnings billing | Returns `processed`, `processed_empty`, or `unmapped`; raises `ProcessingError` on write failure. | `processed` if `rows_written > 0`; `unmapped` only if valid candidate billing cells exist and all miss mapping; `processed_empty` if valid report has no rows; malformed billing dates/values remain `ParserError`; write failures remain `ProcessingError`. |
+| RACV billing | Writes original report to `gegoptimareports` and returns `processed_external` after successful external upload. | `processed_external` after successful external write. |
 
 ## Metrics and Logging
 
