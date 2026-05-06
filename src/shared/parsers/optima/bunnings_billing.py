@@ -3,24 +3,23 @@
 Reads UTF-16 LE encoded monthly billing CSVs, looks up Neptune point IDs from
 the shared nem12_mappings.json, and writes Hudi-format sensor rows directly
 to the Hudi source bucket. Designed to slot into the existing non_nem_parsers
-dispatch chain: matches by filename, side-effects the Hudi CSV, returns [].
+dispatch chain: matches by filename, side-effects the Hudi CSV, and returns an
+explicit parser outcome.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import boto3
 from aws_lambda_powertools import Logger
 
+from shared.parsers import NotRelevantParser, ParserError, ParserOutcome, ProcessingError
 from shared.parsers._mappings import get_nem12_mappings
-
-if TYPE_CHECKING:
-    from shared.parsers import ParserResult
 
 logger = Logger(service="bunnings-billing-parser", child=True)
 
@@ -55,6 +54,22 @@ CSV_FIELD_MAPPING: list[tuple[str, str, str]] = [
     ("Estimated Other Charge", "billing-estimated-other-charge", "spend"),
     ("Total Estimated Spend", "billing-total-estimated-spend", "spend"),
 ]
+
+REQUIRED_BILLING_COLUMNS: tuple[str, ...] = (
+    "Identifier",
+    "Date",
+    *(csv_col for csv_col, _suffix, _unit_source in CSV_FIELD_MAPPING),
+)
+
+
+@dataclass(frozen=True)
+class BillingBuildResult:
+    body: str
+    source_row_count: int
+    candidate_row_count: int
+    rows_written: int
+    unmapped_count: int
+    invalid_count: int
 
 
 def _billing_date_to_ts(date_str: str) -> str | None:
@@ -96,6 +111,13 @@ def _decode_utf16_csv(file_path: str) -> list[str]:
     return text.split("\n")
 
 
+def _validate_required_headers(fieldnames: list[str] | None) -> None:
+    present_headers = set(fieldnames or [])
+    missing_headers = [header for header in REQUIRED_BILLING_COLUMNS if header not in present_headers]
+    if missing_headers:
+        raise ParserError(f"Missing Bunnings billing columns: {', '.join(missing_headers)}")
+
+
 def _parse_billing_rows(file_path: str) -> list[dict[str, str]]:
     """Skip 7 metadata rows and return data rows as DictReader dicts."""
     lines = _decode_utf16_csv(file_path)
@@ -103,25 +125,25 @@ def _parse_billing_rows(file_path: str) -> list[dict[str, str]]:
     # Feed from row 8 onward (index 7) so DictReader treats row 8 as header.
     data_section = "\n".join(lines[7:])
     reader = csv.DictReader(io.StringIO(data_section))
-    return [row for row in reader if row.get("Identifier")]
+    _validate_required_headers(reader.fieldnames)
+    return [row for row in reader if any(str(value or "").strip() for value in row.values())]
 
 
-def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
-    """Expand billing rows into Hudi sensor rows and write to S3.
-
-    Returns the number of rows written (excluding header). If zero rows
-    would be written, skips the S3 PUT entirely — Glue should never see a
-    header-only file (avoids upsert edge cases on empty inputs).
-    """
+def _build_hudi_csv(rows: list[dict[str, str]], mappings: dict[str, str]) -> BillingBuildResult:
+    """Expand billing rows into Hudi sensor rows and collect outcome stats."""
     buf = io.StringIO()
     buf.write("sensorId,ts,val,unit,its,quality\n")
+    source_row_count = len(rows)
+    candidate_row_count = 0
     rows_written = 0
     unmapped_count = 0
+    invalid_count = 0
 
     for row in rows:
-        nmi = row.get("Identifier", "").strip()
-        ts = _billing_date_to_ts(row.get("Date", ""))
+        nmi = (row.get("Identifier") or "").strip()
+        ts = _billing_date_to_ts(row.get("Date") or "")
         if not nmi or ts is None:
+            invalid_count += 1
             if not ts and row.get("Date"):
                 logger.warning(
                     "bunnings_billing_skip_bad_date",
@@ -133,39 +155,35 @@ def _process_rows_and_write(rows: list[dict[str, str]], mappings: dict) -> int:
         spend_currency = (row.get("Spend Currency") or "").strip() or "AUD"
 
         for csv_col, billing_suffix, _unit_source in CSV_FIELD_MAPPING:
+            raw_val = (row.get(csv_col) or "").strip()
+            if not raw_val:
+                continue
+            try:
+                float(raw_val)
+            except ValueError:
+                invalid_count += 1
+                continue
+
+            candidate_row_count += 1
             sensor_id = mappings.get(f"{nmi}-{billing_suffix}")
             if not sensor_id:
                 unmapped_count += 1
-                continue
-            raw_val = (row.get(csv_col) or "").strip()
-            if not raw_val:
                 continue
             unit = _pick_unit(billing_suffix, usage_unit, spend_currency)
             buf.write(f"{sensor_id},{ts},{raw_val},{unit},{ts},\n")
             rows_written += 1
 
-    if rows_written == 0:
-        logger.warning(
-            "bunnings_billing_zero_mapped_rows",
-            extra={"source_rows": len(rows), "unmapped_count": unmapped_count},
-        )
-        return 0
-
-    ts_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
-    key = f"{HUDI_PREFIX}/billing_export_{ts_key}.csv"
-    boto3.client("s3").put_object(
-        Bucket=HUDI_BUCKET,
-        Key=key,
-        Body=buf.getvalue().encode(),
+    return BillingBuildResult(
+        body=buf.getvalue(),
+        source_row_count=source_row_count,
+        candidate_row_count=candidate_row_count,
+        rows_written=rows_written,
+        unmapped_count=unmapped_count,
+        invalid_count=invalid_count,
     )
-    logger.info(
-        "bunnings_billing_written",
-        extra={"key": key, "rows_written": rows_written, "unmapped_count": unmapped_count},
-    )
-    return rows_written
 
 
-def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserResult:
+def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     """Parse Bunnings billing CSV and write Hudi sensor rows to S3.
 
     Args:
@@ -174,23 +192,82 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserResul
             accepted for signature compatibility with other non_nem_parsers).
 
     Returns:
-        Always []. Tells file_processor there are no interval-data NMIs to
-        stream; the original CSV is then moved to newIrrevFiles/ by the
-        caller. The actual billing data is written as a side effect to
-        s3://hudibucketsrc/sensorDataFiles/.
+        ParserOutcome describing side-effect write status. The legacy
+        dispatcher unwraps the empty dfs list until file_processor migrates.
 
     Raises:
-        Exception: If file_name does not look like a Bunnings billing CSV.
-            Lets the dispatcher try the next parser in the chain.
+        NotRelevantParser: If file_name does not look like a Bunnings billing CSV.
+        ParserError: If a matching report cannot form valid billing candidates.
+        ProcessingError: If the Hudi CSV cannot be written.
     """
+    _ = error_file_path
     if "Bunnings-Usage and Spend Report" not in file_name:
-        raise Exception("Not Bunnings Usage and Spend File")
+        raise NotRelevantParser("Not Bunnings Usage and Spend File")
 
     rows = _parse_billing_rows(file_name)
+    if not rows:
+        logger.info("bunnings_billing_no_rows_to_process", extra={"file": file_name})
+        return ParserOutcome(
+            status="processed_empty",
+            source_row_count=0,
+            rows_written=0,
+            reason="blank_values",
+        )
+
     mappings = get_nem12_mappings()
-    rows_written = _process_rows_and_write(rows, mappings)
+    build = _build_hudi_csv(rows, mappings)
+
+    if build.rows_written == 0:
+        if build.candidate_row_count == 0 and build.invalid_count == 0:
+            return ParserOutcome(
+                status="processed_empty",
+                source_row_count=build.source_row_count,
+                rows_written=0,
+                reason="blank_values",
+            )
+        if (
+            build.invalid_count == 0
+            and build.candidate_row_count > 0
+            and build.unmapped_count == build.candidate_row_count
+        ):
+            return ParserOutcome(
+                status="unmapped",
+                source_row_count=build.source_row_count,
+                candidate_row_count=build.candidate_row_count,
+                rows_written=0,
+                unmapped_count=build.unmapped_count,
+                reason="all_candidates_unmapped",
+            )
+        logger.info(
+            "bunnings_billing_no_rows_written",
+            extra={
+                "file": file_name,
+                "source_rows": build.source_row_count,
+                "candidates": build.candidate_row_count,
+                "invalid": build.invalid_count,
+                "unmapped": build.unmapped_count,
+            },
+        )
+        raise ParserError(f"No valid Bunnings billing candidates in {file_name}")
+
+    ts_key = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    key = f"{HUDI_PREFIX}/billing_export_{ts_key}.csv"
+    try:
+        boto3.client("s3").put_object(
+            Bucket=HUDI_BUCKET,
+            Key=key,
+            Body=build.body.encode(),
+        )
+    except Exception as e:
+        raise ProcessingError(f"Failed to write Bunnings billing Hudi CSV: {e}") from e
     logger.info(
-        "bunnings_billing_parsed",
-        extra={"file": file_name, "source_rows": len(rows), "rows_written": rows_written},
+        "bunnings_billing_written",
+        extra={"key": key, "rows_written": build.rows_written, "unmapped_count": build.unmapped_count},
     )
-    return []
+    return ParserOutcome(
+        status="processed",
+        source_row_count=build.source_row_count,
+        candidate_row_count=build.candidate_row_count,
+        rows_written=build.rows_written,
+        unmapped_count=build.unmapped_count,
+    )

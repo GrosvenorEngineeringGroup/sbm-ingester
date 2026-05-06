@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import boto3
 import pytest
 from moto import mock_aws
 
 import shared.parsers.optima.bunnings_billing as bp_mod
+from shared.parsers import NotRelevantParser, ParserError
 from shared.parsers import _mappings as mappings_mod
 from shared.parsers.optima.bunnings_billing import (
     CSV_FIELD_MAPPING,
@@ -25,31 +27,18 @@ def test_filename_mismatch_raises(tmp_path) -> None:
     """Parser must reject files that are not Bunnings billing reports."""
     f = tmp_path / "20260414-RACV-Usage and Spend Report.csv"
     f.write_bytes(b"irrelevant content")
-    with pytest.raises(Exception, match="Not Bunnings Usage and Spend File"):
+    with pytest.raises(NotRelevantParser, match="Not Bunnings Usage and Spend File"):
         bunnings_billing_parser(str(f), "dummy-error-log")
 
 
-def test_utf16_decoding_and_row_parsing(tmp_path, monkeypatch) -> None:
+def test_utf16_decoding_and_row_parsing(tmp_path) -> None:
     """Parser decodes UTF-16 LE, skips 7 metadata rows, and parses data rows."""
-    import shared.parsers.optima.bunnings_billing as bp
-
-    # Copy fixture to tmp_path with the correct Bunnings filename
     src = FIXTURE_DIR / "bunnings_billing_sample.csv"
     dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
     dst.write_bytes(src.read_bytes())
 
-    # Intercept _parse_rows to inspect what the parser extracted
-    captured: list[dict] = []
+    captured = bp_mod._parse_billing_rows(str(dst))
 
-    def fake_process(rows, mappings):
-        captured.extend(rows)
-        return 0
-
-    monkeypatch.setattr(bp, "_process_rows_and_write", fake_process)
-    monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
-
-    result = bp.bunnings_billing_parser(str(dst), "dummy")
-    assert result == []
     # 3 data rows in fixture (VCCCLG0019 Mar, VCCCLG0019 Feb, VAAA000266 Mar)
     assert len(captured) == 3
     assert captured[0]["Identifier"] == "VCCCLG0019"
@@ -133,7 +122,11 @@ def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -
     dst.write_bytes(src.read_bytes())
 
     result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
-    assert result == []
+    assert result.status == "processed"
+    assert result.source_row_count == 3
+    assert result.candidate_row_count == 69
+    assert result.rows_written == 69
+    assert result.unmapped_count == 0
 
     # Find the exported Hudi CSV
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
@@ -272,7 +265,12 @@ def test_whitespace_only_unit_falls_back_to_default(_reset_mappings_cache, tmp_p
     dst = tmp_path / "20260414.000000-Bunnings-Usage and Spend Report.csv"
     dst.write_bytes(data)
 
-    bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    assert result.status == "processed"
+    assert result.source_row_count == 1
+    assert result.candidate_row_count == 2
+    assert result.rows_written == 2
+    assert result.unmapped_count == 0
 
     key = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")["Contents"][0]["Key"]
     body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
@@ -398,10 +396,29 @@ def test_missing_mapping_skipped(_reset_mappings_cache, tmp_path) -> None:
     s3 = _setup_s3_with_mappings({})  # empty mappings
     src = _make_fixture(tmp_path, "UNKNOWN_NMI", "Mar 2026", {"Peak": "100.00"})
     result = bp_mod.bunnings_billing_parser(str(src), "dummy")
-    assert result == []
+    assert result.status == "unmapped"
+    assert result.source_row_count == 1
+    assert result.candidate_row_count == 1
+    assert result.rows_written == 0
+    assert result.unmapped_count == 1
     # No Hudi CSV should be written when zero rows map
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
     assert listed.get("KeyCount", 0) == 0
+
+
+def test_all_valid_billing_candidates_unmapped_returns_unmapped(_reset_mappings_cache, tmp_path, monkeypatch) -> None:
+    src = FIXTURE_DIR / "bunnings_billing_sample.csv"
+    dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
+    dst.write_bytes(src.read_bytes())
+    monkeypatch.setattr(bp_mod, "get_nem12_mappings", lambda: {})
+
+    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+
+    assert result.status == "unmapped"
+    assert result.source_row_count == 3
+    assert result.candidate_row_count > 0
+    assert result.rows_written == 0
+    assert result.unmapped_count == result.candidate_row_count
 
 
 @mock_aws
@@ -413,7 +430,12 @@ def test_blank_value_skipped(_reset_mappings_cache, tmp_path) -> None:
     }
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00", "OffPeak": ""})
-    bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    assert result.status == "processed"
+    assert result.source_row_count == 1
+    assert result.candidate_row_count == 1
+    assert result.rows_written == 1
+    assert result.unmapped_count == 0
     key = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")["Contents"][0]["Key"]
     body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
     assert "p:bunnings:peak,2026-03-01 00:00:00,100.00,kwh" in body
@@ -422,12 +444,29 @@ def test_blank_value_skipped(_reset_mappings_cache, tmp_path) -> None:
 
 
 @mock_aws
+def test_blank_billing_values_return_processed_empty(_reset_mappings_cache, tmp_path) -> None:
+    """A valid source row with no billing values is processed but writes no Hudi CSV."""
+    s3 = _setup_s3_with_mappings({})
+    src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", cells={})
+
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+
+    assert result.status == "processed_empty"
+    assert result.reason == "blank_values"
+    assert result.source_row_count == 1
+    assert result.rows_written == 0
+    listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
+    assert listed.get("KeyCount", 0) == 0
+
+
+@mock_aws
 def test_invalid_date_skipped(_reset_mappings_cache, tmp_path) -> None:
     """Bogus Date string skips the row entirely (no partial writes)."""
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "not-a-month", {"Peak": "100.00"})
-    bp_mod.bunnings_billing_parser(str(src), "dummy")
+    with pytest.raises(ParserError, match="No valid Bunnings billing candidates"):
+        bp_mod.bunnings_billing_parser(str(src), "dummy")
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
     assert listed.get("KeyCount", 0) == 0
 
@@ -446,7 +485,12 @@ def test_unit_selection_in_output(_reset_mappings_cache, tmp_path) -> None:
         "Mar 2026",
         {"Peak": "100.00", "Total Spend": "1234.56"},
     )
-    bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    assert result.status == "processed"
+    assert result.source_row_count == 1
+    assert result.candidate_row_count == 2
+    assert result.rows_written == 2
+    assert result.unmapped_count == 0
     key = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")["Contents"][0]["Key"]
     body = s3.get_object(Bucket="hudibucketsrc", Key=key)["Body"].read().decode()
     assert "p:bunnings:peak,2026-03-01 00:00:00,100.00,kwh" in body
@@ -460,8 +504,31 @@ def test_zero_rows_skips_s3_put(_reset_mappings_cache, tmp_path) -> None:
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
     result = bp_mod.bunnings_billing_parser(str(src), "dummy")
-    assert result == []
+    assert result.status == "unmapped"
+    assert result.source_row_count == 1
+    assert result.candidate_row_count == 1
+    assert result.rows_written == 0
+    assert result.unmapped_count == 1
     assert s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/").get("KeyCount", 0) == 0
+
+
+def test_bunnings_hudi_write_failure_raises_processing_error(_reset_mappings_cache, tmp_path, monkeypatch) -> None:
+    from shared.parsers import ProcessingError
+
+    src = FIXTURE_DIR / "bunnings_billing_sample.csv"
+    dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
+    dst.write_bytes(src.read_bytes())
+    mappings = {}
+    for nmi in ("VCCCLG0019", "VAAA000266"):
+        for _, suffix, _unit_source in bp_mod.CSV_FIELD_MAPPING:
+            mappings[f"{nmi}-{suffix}"] = f"p:test:{nmi}:{suffix}"
+    monkeypatch.setattr(bp_mod, "get_nem12_mappings", lambda: mappings)
+
+    with patch("shared.parsers.optima.bunnings_billing.boto3.client") as mock_client:
+        mock_client.return_value.put_object.side_effect = RuntimeError("boom")
+
+        with pytest.raises(ProcessingError, match="Failed to write Bunnings billing Hudi CSV"):
+            bp_mod.bunnings_billing_parser(str(dst), "dummy")
 
 
 @mock_aws
@@ -470,7 +537,8 @@ def test_s3_write_target_is_hudibucketsrc(_reset_mappings_cache, tmp_path) -> No
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
-    bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    assert result.status == "processed"
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
     keys = [o["Key"] for o in listed.get("Contents", [])]
     assert len(keys) == 1
@@ -510,7 +578,7 @@ def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache,
     dst.write_bytes(b"dummy content")
 
     result = get_non_nem_df(str(dst), "dummy")
-    assert result == []  # RACV parser also returns []
+    assert result == []
 
     # RACV parser copies to gegoptimareports — verify we hit it, not ours
     obj = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")

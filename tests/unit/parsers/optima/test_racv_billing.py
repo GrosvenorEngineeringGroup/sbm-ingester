@@ -10,6 +10,9 @@ import pytest
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent / "src"))
 
+from shared.parsers import NotRelevantParser
+from shared.parsers.optima.racv_billing import racv_billing_parser
+
 
 class TestRacvBillingParser:
     """Tests for racv_billing_parser function."""
@@ -23,7 +26,7 @@ class TestRacvBillingParser:
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             Path(filepath).write_text("dummy content")
 
-            with pytest.raises(Exception, match="Not Relevant Parser"):
+            with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
                 racv_billing_parser(filepath, "error_log")
 
     def test_rejects_non_racv_usage_file(self, temp_directory: str) -> None:
@@ -35,7 +38,7 @@ class TestRacvBillingParser:
             filepath = str(Path(temp_directory) / "other_report.csv")
             Path(filepath).write_text("dummy content")
 
-            with pytest.raises(Exception, match="Not Valid Optima Usage And Spend File"):
+            with pytest.raises(NotRelevantParser, match="Not Valid Optima Usage And Spend File"):
                 racv_billing_parser(filepath, "error_log")
 
     @pytest.fixture
@@ -66,10 +69,35 @@ class TestRacvBillingParser:
 
                 result = racv_billing_parser(filepath, "error_log")
 
-                # Should return empty list
-                assert result == []
+                assert result.status == "processed_external"
+                assert result.reason == "gegoptimareports"
 
                 # Verify file was uploaded
                 response = s3.get_object(Bucket="gegoptimareports", Key="usageAndSpendReports/racvUsageAndSpend.csv")
                 body = response["Body"].read().decode("utf-8")
                 assert "date,usage,spend" in body
+
+
+def test_racv_billing_success_returns_processed_external(tmp_path) -> None:
+    path = tmp_path / "20260414-RACV-Usage and Spend Report.csv"
+    path.write_text("a,b\n1,2\n")
+
+    with patch("shared.parsers.optima.racv_billing.boto3.client") as mock_client:
+        mock_client.return_value.put_object.return_value = {"ETag": "etag"}
+        result = racv_billing_parser(str(path), "error_log")
+
+    assert result.status == "processed_external"
+    assert result.reason == "gegoptimareports"
+
+
+def test_racv_billing_upload_failure_raises_processing_error(tmp_path) -> None:
+    from shared.parsers import ProcessingError
+
+    path = tmp_path / "20260414-RACV-Usage and Spend Report.csv"
+    path.write_text("a,b\n1,2\n")
+
+    with patch("shared.parsers.optima.racv_billing.boto3.client") as mock_client:
+        mock_client.return_value.put_object.side_effect = RuntimeError("boom")
+
+        with pytest.raises(ProcessingError, match="Failed to upload RACV billing report"):
+            racv_billing_parser(str(path), "error_log")
