@@ -5,11 +5,32 @@ Returns: application/zip wrapping a single CSV (or the 148-byte
 "No data is available" sentinel CSV when a site has no data).
 """
 
+import io
+import zipfile
 from datetime import datetime
 
 from aws_lambda_powertools import Logger
 
 logger = Logger(service="optima-interval-exporter")
+
+
+def extract_first_csv(zip_bytes: bytes) -> bytes:
+    """Open the ZIP and return the bytes of the single inner CSV verbatim.
+
+    No synthesis, no special casing. The 148-byte "No data is available"
+    sentinel CSV is returned as-is for audit retention; the parser detects
+    and handles the sentinel downstream.
+
+    Raises:
+        zipfile.BadZipFile: input is not a valid ZIP.
+        ValueError: ZIP contains zero entries (defensive; never observed
+            in production samples).
+    """
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = zf.namelist()
+        if not names:
+            raise ValueError("ZIP contains no entries (empty archive)")
+        return zf.read(names[0])
 
 
 def format_date_for_url(date_str: str) -> str:
