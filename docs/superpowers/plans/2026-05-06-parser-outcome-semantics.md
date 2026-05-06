@@ -2123,6 +2123,15 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - [ ] Remove the wrapper that converts coerce failures into `ParserError`.
 - [ ] Add return path that records `rows_skipped` and `skip_reasons["unparseable_value"]` per coerced-to-NaN cell originally non-empty.
 - [ ] Update tests that asserted `ParserError` on bad cells to assert: file processes, the bad row is skipped, `skip_reasons["unparseable_value"]` reflects the count.
+
+  Specific test sites to flip (gap G16):
+  - `tests/unit/parsers/optima/test_interval.py` lines 53, 71, 115, 124, 150, 159
+  - `tests/unit/parsers/envizi/test_vertical_water.py` line 92
+  - `tests/unit/parsers/envizi/test_vertical_electricity.py` line 66
+  - `tests/unit/parsers/envizi/test_vertical_water_bulk.py` line 119
+  - `tests/unit/parsers/racv/test_noosa_solar.py` line 102
+  - `tests/unit/parsers/racv/test_elec.py` line 179
+  - `tests/unit/parsers/green_square/test_comx.py` line 193
 - [ ] Add tests confirming a file with 99 valid rows + 1 malformed cell yields 99 Hudi rows + `processed`.
 - [ ] Run `uv run pytest tests/unit/parsers -q`; expected pass.
 
@@ -2141,6 +2150,10 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - [ ] Refactor `_validate_row_shape` so it returns `None` (skip the row + count) for tolerable shape mismatches instead of raising. Reserve `ParserError` for required-field-missing.
 - [ ] Add a `skip_reasons: Counter[SkipReason]` aggregation to the side-effect builder.
 - [ ] Update tests: existing tests that asserted `ParserError` on a malformed row become "row skipped, others written, file → newP/".
+
+  Specific test sites to flip (gap G16):
+  - `tests/unit/parsers/optima/test_demand.py` lines 148, 344, 366, 378, 388
+  - `tests/unit/parsers/optima/test_bunnings_billing.py` lines 440, 490, 509
 - [ ] Add tests asserting that a file with one trailing-comma row writes the other rows.
 
 ### Task 12: Add `unmapped_identifiers`, `unsupported_suffixes`, `rows_skipped`, `skip_reasons` fields
@@ -2198,9 +2211,14 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 **Steps:**
 - [ ] Replace `open(file)` in relevance gates with `open(file, encoding="utf-8-sig")`.
 - [ ] For multi-section sniff (ComX), read up to 6 initial lines for header check rather than just one.
+- [ ] **Restructure gates that currently call `pd.read_csv` BEFORE relevance check** (gap G7 finding):
+  - `optima/interval.py:48` — full parse before line 53 relevance check; restructure to first sniff via `open(..., encoding="utf-8-sig").readline()`, then `pd.read_csv` only after gate succeeds.
+  - `envizi/vertical_*.py:36` (each) — same pattern; restructure.
+  - `racv/elec.py:36` — same pattern; restructure.
 - [ ] Add fixtures with UTF-8 BOM content for at least one parser test (Noosa already exercises this).
 - [ ] Test: a BOM-prefixed file matching the parser's signature still passes the relevance gate.
 - [ ] Test: a BOM-prefixed file with mismatched header content correctly raises `NotRelevantParser`.
+- [ ] Test (per restructured parser): patch `pd.read_csv` to raise; if the parser's relevance gate invokes it, the test fails.
 
 ### Task 15: Sidecar audit log + new metrics
 
@@ -2257,9 +2275,45 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 - [ ] Document R1746/R1748 as unhandled (current state) with reference to spec's Open Decisions.
 - [ ] No code change.
 
+### Task 20: Enforce quality column NULL policy
+
+**Goal (gap G11):** Hudi `quality` column must be NULL when vendor doesn't supply, never empty string `""`. The current pipeline writes `""` for missing vendor quality, violating the contract.
+
+**Files:**
+- Modify: `src/functions/file_processor/app.py` (around line 197 and `DirectCSVWriter.write_row` around line 453)
+- Modify: `src/shared/parsers/optima/demand.py` (around line 177; constructed Hudi rows)
+- Modify: `src/shared/parsers/optima/bunnings_billing.py` (around line 200; same)
+- Modify: `tests/unit/test_batch_s3_writes.py` and parser-specific tests that assert quality column content
+
+**Steps:**
+- [ ] In `_candidate_values`, change `quality = "" if pd.isna(quality_raw) else str(quality_raw)` to pass `None` (not `""`) for missing quality.
+- [ ] In `DirectCSVWriter.write_row`, distinguish None quality from empty string. Write CSV cell as empty (no value between commas) which Hudi/Athena interprets as NULL — confirm via existing Athena query examples.
+- [ ] In demand and bunnings_billing parser write paths, replace any hard-coded `""` quality with `None` and ensure the CSV writer emits a true empty cell (not a quoted empty string).
+- [ ] Add unit tests asserting that a row with no vendor quality produces `quality IS NULL` semantics in the resulting CSV (the cell is empty, not `""`).
+- [ ] Add unit tests asserting that a row with vendor quality (e.g., `A`, `E`, `S14`) writes the value verbatim.
+
+### Task 21: Cross-field invariant assertion in ParserOutcome
+
+**Goal (gap G14):** Make spec invariants impossible to violate. Add `__post_init__` validation to `ParserOutcome`. This catches mistakes early during development and makes review easier.
+
+**Files:**
+- Modify: `src/shared/parsers/outcome.py`
+- Modify: `tests/unit/parsers/test_outcome.py`
+
+**Steps:**
+- [ ] Add `__post_init__` to `ParserOutcome` that asserts:
+  - `status="processed"` → `rows_written >= 1`
+  - `status="processed_empty"` → `rows_written == 0` and `unmapped_count == 0`
+  - `status="unmapped"` → `rows_written == 0` and `candidate_row_count > 0` and `unmapped_count == candidate_row_count`
+  - `status="processed_external"` → `rows_written == 0` and `dfs == []`
+  - `sum(skip_reasons.values()) == rows_skipped` when `skip_reasons` is non-empty
+- [ ] Raise `ValueError` (not a domain exception — this is a developer error, not a runtime one) on invariant violation.
+- [ ] Add unit tests for each invariant: construct a violating outcome, expect `ValueError`.
+- [ ] Verify all existing parsers and file_processor calls produce outcomes that pass the invariants. If any fail, that's a real bug to fix.
+
 ### Task 19: Full verification under refined contract
 
-**Goal:** End-to-end verification after Tasks 10–18 land.
+**Goal:** End-to-end verification after Tasks 10–21 (renumbered: 10–18 + 20 + 21) land.
 
 **Files:**
 - No new source edits unless verification exposes a failure.
