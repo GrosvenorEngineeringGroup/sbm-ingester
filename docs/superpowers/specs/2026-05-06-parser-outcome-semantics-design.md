@@ -386,7 +386,7 @@ status="processed_empty"    → rows_written = 0, unmapped_count = 0
 status="unmapped"           → rows_written = 0, candidate_row_count > 0,
                               unmapped_count = candidate_row_count
 status="processed_external" → rows_written = 0, dfs = []
-sum(skip_reasons.values()) == rows_skipped  (when populated)
+rows_skipped <= sum(skip_reasons.values())  (cell-level skip counts can exceed row count when a row has multiple value columns)
 ```
 
 ## Dispatcher Design
