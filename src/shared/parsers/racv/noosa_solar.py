@@ -75,6 +75,13 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
 
         if numeric_count >= non_null_count * 0.5:
             # Numeric column (kWh energy readings)
+            malformed_values = series[series.notna() & numeric_series.isna()]
+            if not malformed_values.empty:
+                bad_value = malformed_values.iloc[0]
+                raise ParserError(
+                    f"Failed to parse Noosa Solar numeric values for {sensor_id} from column {raw_col}: {bad_value!r}"
+                )
+
             col_name = "E1_kWh"
             out_df = pd.DataFrame(
                 {

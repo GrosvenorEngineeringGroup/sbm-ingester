@@ -88,6 +88,20 @@ class TestParseNumericColumns:
         assert "E1_kWh" in df.columns
         assert list(df["E1_kWh"]) == [10.5, 20.0, 30.5]
 
+    def test_malformed_numeric_value_raises_parser_error(self, tmp_path: Path) -> None:
+        """Numeric-looking columns reject non-empty malformed values."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            columns={"p:racv:r:sensor1": ["1.0", "bad", "2.0"]},
+        )
+
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
+
+            with pytest.raises(ParserError, match="p:racv:r:sensor1"):
+                noosa_solar_parser(filepath, "error_log")
+
 
 class TestParseStatusColumns:
     """Tests for Fronius status string mapping."""
