@@ -220,3 +220,44 @@ class TestOutcomeDispatcher:
 
         with pytest.raises(ProcessingError, match="s3 write failed"):
             get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+
+    def test_unexpected_parser_exception_becomes_parser_error(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers import ParserError
+
+        def parser(file_name: str, error_file_path: str):
+            raise RuntimeError("unexpected")
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
+
+        with pytest.raises(ParserError, match="Unexpected parser failure"):
+            get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+
+    def test_envizi_schema_miss_does_not_block_later_parser(self, tmp_path, monkeypatch) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers import NotRelevantParser, ParserOutcome
+
+        def first_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+            raise NotRelevantParser("schema miss")
+
+        def second_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+            return ParserOutcome(status="processed_empty", reason="later_parser_matched")
+
+        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+
+        result = get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+
+        assert result.status == "processed_empty"
+        assert result.reason == "later_parser_matched"
+
+    def test_real_dispatcher_routes_optima_interval_after_early_schema_misses(self, tmp_path) -> None:
+        from shared.non_nem_parsers import get_non_nem_outcome
+
+        filepath = tmp_path / "OptimaIntervalData.csv"
+        create_optima_csv(str(filepath), identifiers=["4001260599"], rows_per_id=1)
+
+        result = get_non_nem_outcome(str(filepath), "error_log")
+
+        assert result.status == "processed"
+        assert len(result.dfs) == 1
+        assert result.dfs[0][0] == "Optima_4001260599"

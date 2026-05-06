@@ -54,10 +54,11 @@ def get_non_nem_outcome(file_name: str, error_file_path: str) -> ParserOutcome:
         except (ParserError, ProcessingError):
             raise
         except Exception as e:
-            logger.debug(
-                "Legacy parser failed",
+            logger.exception(
+                "Unexpected parser failure",
                 extra={"parser": parser.__name__, "file": file_name, "error": str(e)},
             )
+            raise ParserError(f"Unexpected parser failure in {parser.__name__}: {e}") from e
 
     logger.error("No valid parser found", extra={"file": file_name})
     raise ParserError(f"get_non_nem_outcome: {file_name}: No Valid Parser Found")
