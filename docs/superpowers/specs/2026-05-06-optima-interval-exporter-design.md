@@ -237,7 +237,8 @@ terraform/optima_exporter.tf
 |---|---|---|
 | HTTP method | GET | **POST** |
 | Body / params | URL query string | `application/x-www-form-urlencoded` body |
-| Required fields | isCsv, start, end, filter.SiteIdStr, filter.SiteStatus, filter.commodities, filter.countrystr | **siteId, start, end** (only 3) |
+| Required fields | isCsv, start, end, filter.SiteIdStr, filter.SiteStatus, filter.commodities, filter.countrystr | **siteId, start, end** (only 3 — no `country` parameter anywhere) |
+| `country` plumbing | Required (filter.countrystr in URL) | **Not used anywhere.** POST body has no country field; parser is country-agnostic (reads `Identifier` column directly, AU/NZ both work). Do NOT plumb `country` through `process_site` — it would be dead code. |
 | Response | Plain CSV | **ZIP wrapping single CSV** |
 | Body validation | Body sniff `b"Commodities:"` | First 2 bytes `b"PK"` (ZIP magic) |
 | Filename prefix | `optima_<proj>_demand_profile_NMI#` | `optima_<proj>_interval_NMI#` |

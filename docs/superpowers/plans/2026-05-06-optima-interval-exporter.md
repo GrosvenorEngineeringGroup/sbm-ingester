@@ -58,9 +58,11 @@ sbm-ingester/CLAUDE.md                        # update Lambda table + CI/CD poli
 
 ## Task Sequencing & Commit Strategy
 
-The 12 tasks below are ordered so each commit can stand on its own. Tasks 1-2 ship the parser fix + fixture tests as a first PR-able chunk (the parser bug crashes ~25% of daily site files today, so this is independently valuable). Tasks 3-8 build the new Lambda with TDD. Tasks 9-11 do infra wiring. Task 12 updates docs.
+The 13 tasks below are ordered so each commit can stand on its own. Tasks 1-2 ship the parser fix + fixture tests as a first PR-able chunk (the parser bug crashes ~25% of daily site files today, so this is independently valuable). Tasks 3-8 build the new Lambda with TDD. Tasks 9-11 do infra wiring (Task 10 split into 10a/10b around the `terraform apply` user gate). Task 12 pushes + verifies.
 
 **Branch:** main (per user's standing workflow — push triggers GitHub Actions deploy).
+
+**Push gate:** Tasks 9, 10a, 10b, 11 each create commits but **NONE** of them push. The single `git push` happens in Task 12, after all four prerequisites are confirmed in place. This avoids deploying a Lambda whose function name is missing from the IAM whitelist (would 403) or whose code references a function that doesn't yet exist (would 404).
 
 ---
 
@@ -1450,9 +1452,13 @@ def process_site(
     start_date: str,
     end_date: str,
     project: str,
-    country: str = "AU",
 ) -> dict[str, Any]:
     """Process a single site: download ZIP, extract CSV, upload to S3.
+
+    Note: no `country` parameter — the BidEnergy POST body for this endpoint
+    is only siteId/start/end, and the parser reads the Identifier column
+    directly (AU NMI / NZ ICP both work). See spec "Differences from
+    demand_exporter" table.
 
     The "No data is available" sentinel CSV is uploaded for audit retention;
     result["empty_data"] flag lets callers count them separately.
@@ -1597,7 +1603,6 @@ def process_export(
                 start_date=start_date,
                 end_date=end_date,
                 project=project,
-                country=site.get("country", "AU"),
             ): site
             for site in sites
         }
@@ -1831,8 +1836,10 @@ git commit -m "feat: add interval_exporter Lambda handler"
 ### Task 9: Update GitHub Actions workflow to build + deploy interval_exporter
 
 **Files:**
-- Modify: `.github/workflows/main.yml:170-179` (Build step)
-- Modify: `.github/workflows/main.yml:245-263` (Deploy step)
+- Modify: `.github/workflows/main.yml` — Build step (locate via `grep -n "Build Optima Exporter Lambda" .github/workflows/main.yml`)
+- Modify: `.github/workflows/main.yml` — Deploy step (locate via `grep -n "Upload Optima Exporter & Refresh" .github/workflows/main.yml`)
+
+> ⛔ **SEQUENCING RULE — READ BEFORE STARTING.** This task creates a commit only. **DO NOT `git push` in this task.** The push happens in Task 12, after Task 10 (terraform apply) and Task 11 (CI/CD policy v10) are both complete. If you push the commit from this task before Task 10+11, GitHub Actions will fail with `ResourceNotFoundException: Function not found: optima-interval-exporter` (Lambda doesn't exist yet) or `AccessDeniedException: lambda:UpdateFunctionCode` (whitelist doesn't include the new Lambda yet). The commit + push are intentionally split across tasks.
 
 - [ ] **Step 1: Add interval_exporter to the build step**
 
@@ -1907,29 +1914,36 @@ python3 -c "import yaml; yaml.safe_load(open('.github/workflows/main.yml'))" && 
 
 Expected: `OK`
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Commit (DO NOT PUSH)**
 
 ```bash
 git add .github/workflows/main.yml
+# DO NOT git push — push happens in Task 12 after Task 10 + Task 11.
 git commit -m "ci: build and deploy optima-interval-exporter via GitHub Actions"
 ```
 
-> **Important:** This commit will trigger a deploy on push, but the Terraform-managed Lambda function does not exist yet — the `update-function-code` line will fail with `ResourceNotFoundException`. **DO NOT push this commit until Task 10 (Terraform) is also complete and `terraform apply` has succeeded.** The two changes ship together.
+After committing, verify there are no uncommitted changes (`git status` clean) and that the commit is on `main` but unpushed (`git log origin/main..HEAD --oneline` should show this commit). Then STOP — Task 10 is next.
 
 ---
 
-### Task 10: Update Terraform — remove `moved` blocks, add new resources, comment NEM12 schedules
+### Task 10a: Edit Terraform + validate + plan (no apply)
 
 **Files:**
 - Modify: `terraform/optima_exporter.tf`
 
-**Why:** Terraform must run BEFORE the Lambda code deploy, so the function exists when GitHub Actions tries to update its code. Bundle all TF changes into one task to keep `terraform apply` atomic.
+**Why split:** Subagents cannot interactively prompt the user. This task does all the editing + `terraform plan` review and stops at the gate. The actual `terraform apply` happens in Task 10b after the orchestrator/user explicitly approves the plan output.
 
-**Pre-flight:** Ensure CI/CD policy v10 work (Task 11) is queued — if it's not done before deploy, GitHub Actions will fail with `AccessDeniedException`.
+**Pre-flight:** Ensure CI/CD policy v10 work (Task 11) is queued — if it's not done before push (Task 12), GitHub Actions will fail with `AccessDeniedException`.
 
-- [ ] **Step 1: Remove the 5 stale `moved` blocks (lines 465-491)**
+- [ ] **Step 1: Remove the 5 stale `moved` blocks**
 
-Open `terraform/optima_exporter.tf` and delete the entire block from line 465 through line 491:
+First locate them by anchor (line numbers in this plan are advisory — find actual line range with grep before editing):
+
+```bash
+grep -n "Terraform state moves\|^moved {" terraform/optima_exporter.tf
+```
+
+Expected: 1 heading line + 5 `moved {` opening lines. Delete the heading comment block plus all 5 `moved { ... }` blocks (~30 lines total). The content to remove looks exactly like:
 
 ```hcl
 # ================================
@@ -1961,9 +1975,15 @@ moved {
 }
 ```
 
-- [ ] **Step 2: Comment out the 2 NEM12 schedule resources (lines 163-199)**
+- [ ] **Step 2: Comment out the 2 NEM12 schedule resources**
 
-Replace the entire block from line 162 (`# Bunnings NEM12 - Daily 2:00 PM Sydney`) through line 199 (closing `}` of `optima_racv_nem12`) with this commented-out version that documents the disable + revival:
+First locate by anchor:
+
+```bash
+grep -n 'aws_scheduler_schedule" "optima_bunnings_nem12"\|aws_scheduler_schedule" "optima_racv_nem12"' terraform/optima_exporter.tf
+```
+
+Expected: 2 hits — the opening lines of `optima_bunnings_nem12` and `optima_racv_nem12` schedule resources (NOT the `..._weekly` variants which are already commented out). Find the comment line `# Bunnings NEM12 - Daily 2:00 PM Sydney` just above the first hit; that marks the start of the block to replace. The end is the closing `}` of `optima_racv_nem12`. Replace that whole range with this commented-out version:
 
 ```hcl
 # === DISABLED 2026-05-06 ===
@@ -2011,9 +2031,15 @@ Replace the entire block from line 162 (`# Bunnings NEM12 - Daily 2:00 PM Sydney
 # }
 ```
 
-- [ ] **Step 3: Update the scheduler invoke-lambda IAM policy (line 290)**
+- [ ] **Step 3: Update the scheduler invoke-lambda IAM policy**
 
-Find the `aws_iam_role_policy "optima_scheduler_invoke_lambda"` block and add the 4th ARN to the `Resource` list:
+Locate by anchor:
+
+```bash
+grep -n 'aws_iam_role_policy" "optima_scheduler_invoke_lambda"' terraform/optima_exporter.tf
+```
+
+Find the `aws_iam_role_policy "optima_scheduler_invoke_lambda"` block and add the 4th ARN to the `Resource` list. Replace the existing block with:
 
 ```hcl
 resource "aws_iam_role_policy" "optima_scheduler_invoke_lambda" {
@@ -2173,11 +2199,26 @@ Specifically:
 
 If the plan output mentions "moved" blocks anywhere, STOP — Step 1 was incomplete. If you see destroys for the NEM12 Lambda function, log group, or alarm, STOP — Step 2 over-deleted. The Lambda function/log group/alarm for `optima_nem12_exporter` must be untouched.
 
-- [ ] **Step 7: Stop and ask the user to confirm before applying**
+- [ ] **Step 7: STOP — emit plan summary for orchestrator gate**
 
-Show the user the plan output and ask: "Plan looks correct (5 add / 1 change / 2 destroy). Apply now?"
+Subagents cannot interactively prompt the user. Instead, finish this task by:
 
-- [ ] **Step 8: After user confirms, apply Terraform**
+1. Outputting the entire `cat /tmp/interval-plan.txt` content (or at minimum the resource summary and the `Plan: X to add, Y to change, Z to destroy` line).
+2. Reporting status `BLOCKED — awaiting user approval before terraform apply (Task 10b).` Do NOT run `terraform apply`. Do NOT commit yet (the commit happens in Task 10b after apply succeeds, so the commit message can reference the verified outcome).
+3. Leaving `/tmp/interval.tfplan` on disk so Task 10b can apply the same plan without recomputing.
+
+The orchestrator (parent session or user) will review the plan and dispatch Task 10b explicitly.
+
+---
+
+### Task 10b: Apply Terraform plan + verify + commit
+
+**Pre-requisites:** Task 10a complete; orchestrator/user has explicitly approved the plan; `/tmp/interval.tfplan` exists.
+
+**Files:**
+- Modify: `terraform/optima_exporter.tf` (already edited in Task 10a; this task only commits it after apply succeeds)
+
+- [ ] **Step 1: Apply the saved Terraform plan**
 
 ```bash
 cd terraform && terraform apply /tmp/interval.tfplan
@@ -2185,7 +2226,9 @@ cd terraform && terraform apply /tmp/interval.tfplan
 
 Expected: `Apply complete! Resources: 5 added, 1 changed, 2 destroyed.`
 
-- [ ] **Step 9: Verify the new Lambda function exists and uses placeholder code**
+If the apply fails, report status `BLOCKED — terraform apply failed: <error>` and STOP. Do not retry without orchestrator instruction.
+
+- [ ] **Step 2: Verify the new Lambda function exists**
 
 ```bash
 aws lambda get-function-configuration --function-name optima-interval-exporter --region ap-southeast-2 --query '{name:FunctionName,handler:Handler,runtime:Runtime,memory:MemorySize,timeout:Timeout}' --output table
@@ -2193,9 +2236,9 @@ aws lambda get-function-configuration --function-name optima-interval-exporter -
 
 Expected: `name=optima-interval-exporter`, `handler=interval_exporter.app.lambda_handler`, `runtime=python3.13`, `memory=256`, `timeout=900`.
 
-The Lambda code at this point is whatever was in the existing `optima_exporter.zip` artefact in S3 (which does not yet contain `interval_exporter/`). Invoking it now would fail with `Unable to import module 'interval_exporter.app'`. That is fixed by Task 11 below (CI/CD policy update + git push triggers GitHub Actions deploy).
+The Lambda code at this point is whatever was in the existing `optima_exporter.zip` artefact in S3 (which does not yet contain `interval_exporter/`). Invoking it now would fail with `Unable to import module 'interval_exporter.app'`. That is fixed by Task 11 (CI/CD policy update) + Task 12 (push triggers GitHub Actions deploy).
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 3: Commit the Terraform change**
 
 ```bash
 git add terraform/optima_exporter.tf
@@ -2206,8 +2249,12 @@ git commit -m "infra: add optima-interval-exporter Lambda + schedules; disable N
   and aws_cloudwatch_metric_alarm for optima-interval-exporter.
 - Add the new Lambda ARN to the optima_scheduler_invoke_lambda IAM policy.
 - Comment out optima_bunnings_nem12 and optima_racv_nem12 schedules
-  (Lambda function/log group/alarm preserved for backup/debug)."
+  (Lambda function/log group/alarm preserved for backup/debug).
+
+Applied: 5 added, 1 changed, 2 destroyed."
 ```
+
+> ⛔ Same sequencing rule as Task 9: **DO NOT `git push` here.** Push happens in Task 12.
 
 ---
 
@@ -2375,9 +2422,18 @@ Expected: The file appears in `newP/` (Hudi rows written) — no leftover in `ne
 
 - [ ] **Step 8: After Glue job runs, verify Athena rows**
 
+Resolve the Hudi sensor IDs dynamically from the live mappings (do NOT hard-code — IDs may rotate):
+
 ```bash
+SENSOR_E1=$(aws s3 cp s3://sbm-file-ingester/nem12_mappings.json - --region ap-southeast-2 \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['Optima_2002105104-E1'])")
+SENSOR_B1=$(aws s3 cp s3://sbm-file-ingester/nem12_mappings.json - --region ap-southeast-2 \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['Optima_2002105104-B1'])")
+echo "E1 sensor: $SENSOR_E1"
+echo "B1 sensor: $SENSOR_B1"
+
 QUERY_ID=$(aws athena start-query-execution \
-  --query-string "SELECT sensorid, COUNT(*) AS cnt, MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM sensordata_default WHERE sensorid IN ('p:bunnings:19c02b20bed-794f5df0','p:bunnings:19c02b20c15-9bd3af24') GROUP BY sensorid" \
+  --query-string "SELECT sensorid, COUNT(*) AS cnt, MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM sensordata_default WHERE sensorid IN ('$SENSOR_E1','$SENSOR_B1') GROUP BY sensorid" \
   --query-execution-context '{"Database":"default"}' \
   --result-configuration '{"OutputLocation":"s3://sbm-file-ingester/athena-results/"}' \
   --region ap-southeast-2 --query 'QueryExecutionId' --output text)
@@ -2387,7 +2443,9 @@ aws athena get-query-results --query-execution-id "$QUERY_ID" --region ap-southe
   --query 'ResultSet.Rows[*].Data[*].VarCharValue' --output text
 ```
 
-The two sensor IDs are the Hudi mappings for `Optima_2002105104-E1` and `-B1`. Expected: Recent rows for the smoke-test date.
+Expected: Recent rows for the smoke-test date showing both `cnt > 0` and a `max_ts` close to today.
+
+If the mapping lookup raises `KeyError`, the smoke-test NMI's mapping has changed — pick another NMI from `aws s3 cp s3://sbm-file-ingester/nem12_mappings.json - | python3 -c "import json,sys; print([k for k in json.load(sys.stdin) if k.startswith('Optima_2002') and k.endswith('-E1')][:5])"` and re-run the smoke test from Step 4 with the chosen NMI.
 
 - [ ] **Step 9: Watch the first 14:00 scheduled run**
 
