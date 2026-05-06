@@ -160,43 +160,49 @@ resource "aws_lambda_function" "optima_billing_exporter" {
 # EventBridge Scheduler: NEM12 (Daily)
 # ================================
 
-# Bunnings NEM12 - Daily 2:00 PM Sydney
-resource "aws_scheduler_schedule" "optima_bunnings_nem12" {
-  name       = "optima-bunnings-nem12-daily"
-  group_name = "default"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  schedule_expression          = "cron(0 14 * * ? *)"
-  schedule_expression_timezone = "Australia/Sydney"
-
-  target {
-    arn      = aws_lambda_function.optima_nem12_exporter.arn
-    role_arn = aws_iam_role.optima_scheduler_role.arn
-    input    = jsonencode({ project = "bunnings" })
-  }
-}
-
-# RACV NEM12 - Daily 2:00 PM Sydney
-resource "aws_scheduler_schedule" "optima_racv_nem12" {
-  name       = "optima-racv-nem12-daily"
-  group_name = "default"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  schedule_expression          = "cron(0 14 * * ? *)"
-  schedule_expression_timezone = "Australia/Sydney"
-
-  target {
-    arn      = aws_lambda_function.optima_nem12_exporter.arn
-    role_arn = aws_iam_role.optima_scheduler_role.arn
-    input    = jsonencode({ project = "racv" })
-  }
-}
+# === DISABLED 2026-05-06 ===
+# Replaced by optima-interval-exporter (uses POST /BuyerReport/exportdailyusagecsv).
+# The optima-nem12-exporter Lambda function, log group, and alarm are intentionally
+# kept for manual invoke / backup / debug. To re-enable: uncomment these two
+# resource blocks + run `terraform apply`.
+#
+# # Bunnings NEM12 - Daily 2:00 PM Sydney
+# resource "aws_scheduler_schedule" "optima_bunnings_nem12" {
+#   name       = "optima-bunnings-nem12-daily"
+#   group_name = "default"
+#
+#   flexible_time_window {
+#     mode = "OFF"
+#   }
+#
+#   schedule_expression          = "cron(0 14 * * ? *)"
+#   schedule_expression_timezone = "Australia/Sydney"
+#
+#   target {
+#     arn      = aws_lambda_function.optima_nem12_exporter.arn
+#     role_arn = aws_iam_role.optima_scheduler_role.arn
+#     input    = jsonencode({ project = "bunnings" })
+#   }
+# }
+#
+# # RACV NEM12 - Daily 2:00 PM Sydney
+# resource "aws_scheduler_schedule" "optima_racv_nem12" {
+#   name       = "optima-racv-nem12-daily"
+#   group_name = "default"
+#
+#   flexible_time_window {
+#     mode = "OFF"
+#   }
+#
+#   schedule_expression          = "cron(0 14 * * ? *)"
+#   schedule_expression_timezone = "Australia/Sydney"
+#
+#   target {
+#     arn      = aws_lambda_function.optima_nem12_exporter.arn
+#     role_arn = aws_iam_role.optima_scheduler_role.arn
+#     input    = jsonencode({ project = "racv" })
+#   }
+# }
 
 # ================================
 # EventBridge Scheduler: Billing (Monthly)
@@ -300,6 +306,7 @@ resource "aws_iam_role_policy" "optima_scheduler_invoke_lambda" {
         aws_lambda_function.optima_nem12_exporter.arn,
         aws_lambda_function.optima_billing_exporter.arn,
         aws_lambda_function.optima_demand_exporter.arn,
+        aws_lambda_function.optima_interval_exporter.arn,
       ]
     }]
   })
@@ -458,34 +465,110 @@ resource "aws_cloudwatch_metric_alarm" "optima_demand_errors" {
   tags = local.common_tags
 }
 
+# ================================
+# Lambda 4: Interval Exporter (NEW primary interval data source)
+# ================================
+
+resource "aws_cloudwatch_log_group" "optima_interval_exporter" {
+  name              = "/aws/lambda/optima-interval-exporter"
+  retention_in_days = var.log_retention_days
+
+  tags = local.common_tags
+}
+
+resource "aws_lambda_function" "optima_interval_exporter" {
+  function_name = "optima-interval-exporter"
+  description   = "Exports Optima interval CSVs (POST exportdailyusagecsv) to S3 - primary source"
+  role          = data.aws_iam_role.ingester_role.arn
+  handler       = "interval_exporter.app.lambda_handler"
+  runtime       = "python3.13"
+  timeout       = 900
+  memory_size   = 256
+  s3_bucket     = var.deployment_bucket
+  s3_key        = "${local.lambda_s3_prefix}/optima_exporter.zip"
+
+  environment {
+    variables = merge(local.optima_common_env, {
+      POWERTOOLS_SERVICE_NAME = "optima-interval-exporter"
+      S3_UPLOAD_BUCKET        = "sbm-file-ingester"
+      S3_UPLOAD_PREFIX        = "newTBP/"
+      OPTIMA_DAYS_BACK        = "1"
+      OPTIMA_MAX_WORKERS      = "20"
+    })
+  }
+
+  tracing_config {
+    mode = "PassThrough"
+  }
+
+  depends_on = [aws_cloudwatch_log_group.optima_interval_exporter]
+
+  tags = local.common_tags
+}
+
+# Bunnings Interval - Daily 2:00 PM Sydney (taking the slot vacated by NEM12)
+resource "aws_scheduler_schedule" "optima_bunnings_interval" {
+  name       = "optima-bunnings-interval-daily"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 14 * * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_interval_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "bunnings" })
+  }
+
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
+}
+
+# RACV Interval - Daily 2:00 PM Sydney
+resource "aws_scheduler_schedule" "optima_racv_interval" {
+  name       = "optima-racv-interval-daily"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 14 * * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_interval_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "racv" })
+  }
+
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
+}
+
+resource "aws_cloudwatch_metric_alarm" "optima_interval_errors" {
+  alarm_name          = "optima-interval-exporter-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 3600 # 1 hour
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Optima interval exporter Lambda errors"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.optima_interval_exporter.function_name
+  }
+
+  alarm_actions = [data.aws_sns_topic.sbm_alerts.arn]
+  ok_actions    = [data.aws_sns_topic.sbm_alerts.arn]
+
+  tags = local.common_tags
+}
+
 data "aws_sns_topic" "sbm_alerts" {
   name = "sbm-ingester-alerts"
-}
-
-# ================================
-# Terraform state moves (rename interval_exporter → nem12_exporter)
-# ================================
-moved {
-  from = aws_cloudwatch_log_group.optima_interval_exporter
-  to   = aws_cloudwatch_log_group.optima_nem12_exporter
-}
-
-moved {
-  from = aws_lambda_function.optima_interval_exporter
-  to   = aws_lambda_function.optima_nem12_exporter
-}
-
-moved {
-  from = aws_scheduler_schedule.optima_bunnings_interval
-  to   = aws_scheduler_schedule.optima_bunnings_nem12
-}
-
-moved {
-  from = aws_scheduler_schedule.optima_racv_interval
-  to   = aws_scheduler_schedule.optima_racv_nem12
-}
-
-moved {
-  from = aws_cloudwatch_metric_alarm.optima_interval_errors
-  to   = aws_cloudwatch_metric_alarm.optima_nem12_errors
 }
