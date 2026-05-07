@@ -1502,6 +1502,49 @@ class TestNemEmptyEnvelopeShortCircuit:
         assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
 
     @mock_aws
+    def test_unexpected_runtime_error_in_nem_path_propagates_as_parser_error(self) -> None:
+        # An unexpected RuntimeError/AttributeError from nemreader internals
+        # (e.g. genuine parser bug, not "this is not NEM12") must propagate
+        # as ParserError through the dispatcher, NOT silently fall through
+        # to the non-NEM dispatcher (which would mask the bug). Spec / Task 17:
+        # NEM fallback narrowing catches only specific exceptions known to
+        # mean "not a NEM12 file"; everything else surfaces.
+        s3_resource = _create_outcome_test_buckets(
+            file_name="nem12_bug.csv",
+            body=b"100,NEM12,202605060200,MDP1,Origin\n200,row\n900\n",
+        )
+
+        with (
+            patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch(
+                "functions.file_processor.app.stream_as_data_frames",
+                side_effect=RuntimeError("simulated nemreader internal bug"),
+            ),
+            patch(
+                "functions.file_processor.app.output_as_data_frames",
+                side_effect=RuntimeError("simulated nemreader internal bug"),
+            ),
+            patch(
+                "functions.file_processor.app.get_non_nem_outcome",
+                side_effect=AssertionError("non-NEM dispatcher must NOT be consulted on RuntimeError"),
+            ),
+        ):
+            # The RuntimeError from the NEM path is not in the narrowed
+            # fallthrough tuple, so it bubbles up out of the per-file try
+            # and is caught by the outer batch handler. Concretely the
+            # batch handler logs and returns None for the whole batch.
+            result = file_processor_app.parse_and_write_data(
+                tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/nem12_bug.csv"}]
+            )
+
+        # Whole-batch abandonment: result is None, file remains in newTBP/.
+        # This is intentional — a real parser bug should NOT be silently
+        # routed to newParseErr/ via the non-NEM fallback.
+        assert result is None
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == []
+        assert _list_keys(s3_resource, "sbm-file-ingester", "newParseErr/") == []
+
+    @mock_aws
     def test_non_nem_envelope_with_empty_stream_still_falls_through(self) -> None:
         # A file that does NOT start with 100,NEM12, or 100,NEM13, must still
         # fall through to the non-NEM dispatcher even when the streaming

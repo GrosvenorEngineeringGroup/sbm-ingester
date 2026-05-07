@@ -2183,7 +2183,7 @@ These tasks are **independently deployable** and **additive**: each preserves Hu
 
 **Additional steps for gaps G19, G20, G21:**
 
-- [ ] **G19 — Synthesize `idempotency_skip` outcome**: in file_processor where the DynamoDB idempotency layer detects a previously-processed file, construct `ParserOutcome(status="processed_empty", reason="idempotency_skip")` and route through the same logging/metric path. Move source to `newP/`. Spec lines 79, 196.
+- [x] **G19 — Synthesize `idempotency_skip` outcome**: ~~in file_processor where the DynamoDB idempotency layer detects a previously-processed file~~ **Reclassified as out-of-scope.** Pipeline dedups at batch granularity via Powertools `@idempotent_function`; per-file dedup hook does not exist and would require an architectural addition. `idempotency_skip` removed from `ParserReason` and added to "Out of Scope Validations" in spec.
 - [ ] **G20 — Implement final-status calc ladder**: in file_processor's DataFrame path, replace the current ad-hoc post-processing with the explicit ladder from spec lines 460-471:
   ```
   if rows_written > 0:                                          processed
@@ -2336,7 +2336,7 @@ Document the decision in this task's commit message before implementing the help
   - `status="unmapped"` → `rows_written == 0` and `candidate_row_count > 0` and `unmapped_count == candidate_row_count`
   - `status="processed_external"` → `rows_written == 0` and `dfs == []`
   - `sum(skip_reasons.values()) == rows_skipped` when `skip_reasons` is non-empty
-  - **Exception:** `reason="idempotency_skip"` is allowed with any combination — file_processor synthesizes it for the duplicate-skip case.
+  - (No reason-based exceptions; `idempotency_skip` was removed in G19 cleanup.)
 - [ ] Hook the helper into every test that constructs or asserts a `ParserOutcome`. Easiest: a pytest fixture that wraps the outcome-producing call and applies the helper post-hoc.
 - [ ] Add tests that construct each violating outcome and assert the helper raises `AssertionError`.
 - [ ] Do NOT add `__post_init__` raise to `ParserOutcome` — keep production code unaffected.

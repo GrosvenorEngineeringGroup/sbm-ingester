@@ -261,22 +261,20 @@ Partial recognition is real and common in production. The pipeline surfaces it a
 | Field | Type | Populated by | Purpose |
 |---|---|---|---|
 | `unmapped_count` | `int` | parser or file_processor | Numeric counter of skipped candidates due to mapping miss. |
-| `unmapped_identifiers` | `tuple[tuple[str, str], ...]` | parser or file_processor | (`kind`, `value`) pairs of identifiers that missed mapping. `kind` is parser-namespaced (e.g., `"nmi"`, `"comx_topic"`, `"p_id"`). De-duplicated, capped at 100 per file. |
+| `unmapped_identifiers` | `tuple[tuple[str, str], ...]` | parser or file_processor | (`kind`, `value`) pairs of identifiers that missed mapping. `kind` distinguishes lookup namespaces (e.g., `"nmi"`, `"nem12_nmi"`, `"p_id"`). De-duplicated, capped at 100 per file. |
 | `unsupported_suffixes` | `frozenset[str]` | file_processor | Distinct suffix strings observed but not in `NMI_DATA_STREAM_COMBINED`. |
 | `rows_skipped` | `int` | parser or file_processor | Source rows skipped (regardless of reason). Counts source rows, NOT expanded Hudi output rows. |
 | `skip_reasons` | `dict[SkipReason, int]` | parser or file_processor | Source-row count by skip reason. Keys must be valid `SkipReason` values. |
 
-`unmapped_identifiers` MUST use the (`kind`, `value`) tuple form. Suggested kinds (extend per parser):
+`unmapped_identifiers` MUST use the (`kind`, `value`) tuple form. Currently emitted kinds:
 
 | `kind` | Used by | `value` example |
 |---|---|---|
-| `nmi` | NEM12, Optima interval, Optima demand, Bunnings billing | `"OPTIMA_VCCCRE0075"`, `"4001260599"` |
-| `nem12_nmi` | NEM12 streaming | `"4310894358"` |
-| `p_id` | Noosa Solar, future direct-`p:` parsers | `"p:racv:r:31425a11-ef34f44a"` |
-| `envizi_column_nmi` | Envizi vertical | `"4310894358 (kWh)"` |
-| `comx_topic` | Green Square ComX | `"Aquatic Centre/1621"` |
+| `nmi` | side-effect parsers (Optima demand, Bunnings billing) — populated directly by the parser before its S3 PUT lookup | `"Optima_VCCCRE0075-demand-kw"`, `"4001260599-peak"` |
+| `nem12_nmi` | DataFrame parsers via `file_processor` (`nem12_mappings.json` lookup miss): NEM12 streaming, Optima interval, Envizi vertical, RACV elec, ComX, etc. | `"4310894358-E1"`, `"Optima_VCCCRE0075-E1"` |
+| `p_id` | RACV Noosa Solar (direct `p:` Neptune ID with no Neptune-side mapping check) | `"p:racv:r:31425a11-ef34f44a"` |
 
-Dashboards must filter or group by `kind` before aggregating; mixing kinds is meaningless.
+Adding a new `kind` requires a spec update and accompanying code that emits it. Dashboards group/filter by `kind` so the namespace stays meaningful.
 
 ## Count and Identifier Semantics
 
@@ -516,16 +514,17 @@ Rules:
 Each `DirectCSVWriter` instance is bound to one source file and owns a unique writer token (uuid4). Staging and final keys both include the writer token to prevent cross-file collision in concurrent processing.
 
 ```
-staging key: sensorDataFilesStaging/<writer_token>/<batch_index>.csv
-final key:   sensorDataFiles/batch_<batch_timestamp>_<writer_token>_<batch_random>.csv
+batch_file_name = batch_<batch_timestamp>_<writer_token>_<batch_random>.csv
+
+staging key: sensorDataFilesStaging/<writer_token>/<batch_file_name>
+final key:   sensorDataFiles/<batch_file_name>
 
 writer_token = uuid4()                # writer-level isolation; never collides across writers
-batch_index  = monotonic counter      # within-writer ordering inside the staging dir
 batch_random = randint(1, 1_000_000)  # per-flush salt; same-timestamp flushes within one writer
-                                      # (rare; capped by per-writer flush count) get distinct final keys
+                                      # (rare; capped by per-writer flush count) get distinct file names
 ```
 
-Cross-writer uniqueness is guaranteed by `writer_token` (uuid4). Within a single writer, `batch_random` salt prevents same-timestamp flushes from colliding; the carry probability of 1/1,000,000 per flush pair is negligible given the bounded per-writer flush count.
+Staging and final use the same `batch_file_name`; only the S3 prefix differs. Cross-writer uniqueness is guaranteed by `writer_token` (uuid4). Within a single writer, `batch_random` salt prevents same-timestamp flushes from colliding; the carry probability of 1/1,000,000 per flush pair is negligible given the bounded per-writer flush count.
 
 Boundary rules:
 
