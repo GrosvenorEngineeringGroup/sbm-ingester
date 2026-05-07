@@ -35,18 +35,7 @@ The goal is **production-grade clarity and correctness** under the constraint th
 
 These are explicitly out of scope for this spec/PR:
 
-### Tier 2 — Deferred to separate PRs
-
-These improvements are real but belong to dedicated terraform / observability PRs:
-
-- S3 server-side encryption verification and configuration (`aws_s3_bucket_server_side_encryption_configuration` on `sbm-file-ingester`, `hudibucketsrc`, `gegoptimareports` if not already enforced at account level).
-- DynamoDB `deletion_protection_enabled = true` on the idempotency table.
-- SQS `maxReceiveCount` / custom `_retry_count` budget alignment.
-- CloudWatch alarms on `ParseErrorFiles`, `MaxRetriesExceeded`, DLQ depth, `Errors / Invocations` ratio.
-- `tests/unit/test_edge_cases.py` (2000+ lines) split by behavior.
-- `moto` fixture standardization in `tests/conftest.py`.
-
-### Tier 3 — Intentionally NOT done
+### Intentionally NOT done
 
 These were proposed by review but are over-engineered or out of scope for the per-file refactor's goal:
 
@@ -364,7 +353,7 @@ metrics.add_metric(name="IdempotentSkip", unit=MetricUnit.Count, value=1)
 
 ## Pre-flight Infrastructure Changes
 
-Two production-correctness BLOCKERs that must land in this PR.
+Production-correctness fixes and infrastructure hardening that must land in this PR.
 
 ### `SQS_QUEUE_URL` becomes required
 
@@ -396,6 +385,55 @@ Change to: `visibility_timeout_seconds = 1080` (Lambda timeout + 180 s buffer).
 Rationale: when a Lambda runs the full 900 s and SQS releases the message at exactly 900 s, a duplicate delivery races with the in-flight invocation completing. AWS guidance is `visibility >= function_timeout + buffer` for SQS-triggered Lambdas. 180 s buffer covers Lambda's hand-back-to-SQS latency.
 
 Terraform: edit `aws_sqs_queue.sbm_files_ingester_queue.visibility_timeout_seconds`.
+
+### S3 server-side encryption verification
+
+Verify that the three S3 buckets have SSE configured (either via account-level default encryption OR via per-bucket terraform). Run:
+
+```bash
+aws s3api get-bucket-encryption --bucket sbm-file-ingester
+aws s3api get-bucket-encryption --bucket hudibucketsrc
+aws s3api get-bucket-encryption --bucket gegoptimareports
+```
+
+If any bucket returns `ServerSideEncryptionConfigurationNotFoundError`, add `aws_s3_bucket_server_side_encryption_configuration` to terraform with SSE-S3 (AES256). Cost is zero. The audit sidecar (`audit/<batch_ts>/<source>.skipped.json`) writes vendor row content that may include PII (NMIs, site addresses, customer numbers from RACV billing); SSE at rest is non-negotiable for that prefix.
+
+If buckets are managed in a different repo, the verification step still happens here; remediation may land in the other repo's PR.
+
+### DynamoDB idempotency table — `deletion_protection_enabled`
+
+Set `deletion_protection_enabled = true` on the idempotency table in terraform (`aws_dynamodb_table.sbm_ingester_idempotency`). Cost: zero (it's a flag). Prevents accidental table deletion (e.g., misdirected `terraform destroy`) which would silently disable idempotency for the entire 12 h cache-rebuild window, leading to duplicate processing.
+
+To delete the table intentionally requires two steps after this change: (1) disable protection, (2) delete. Compatible with normal operations.
+
+### SQS retry budget alignment
+
+Current state:
+- SQS `maxReceiveCount = 3` on the source queue (after 3 receives, message goes to DLQ).
+- Custom `_retry_count` budget = 5 in `requeue_message` for file-stability retries.
+
+Issue: a file that fails stability check 3 times would already be DLQ'd by SQS before the custom retry budget of 5 is exhausted. The two budgets disagree and the DLQ effectively wins.
+
+Fix: align the budgets. Two options, choose during implementation:
+
+- **Option A (preferred)**: drop custom `MAX_REQUEUE_RETRIES` from 5 to 3. Custom retry exists only as a wrapper around the SQS retry; aligning the limits makes the contract clear: "3 attempts total, then DLQ".
+- **Option B**: bump SQS `maxReceiveCount` to 7 or 8 (custom retry of 5 plus headroom). Acceptable if file-stability retries are common and the additional latency before DLQ is tolerable.
+
+Option A is recommended unless ops history shows file-stability retries succeed past attempt 3.
+
+### CloudWatch alarms
+
+Create alarms in `terraform/monitoring.tf` for the file_processor Lambda:
+
+| Alarm | Metric | Threshold | Period |
+|---|---|---|---|
+| `FileProcessor-DLQDepth` | SQS `ApproximateNumberOfMessagesVisible` on DLQ | `> 0` | 5 min |
+| `FileProcessor-MaxRetriesExceeded` | Custom metric `MaxRetriesExceeded` | `> 0` per day | 1 day |
+| `FileProcessor-ParseErrorSpike` | Custom metric `ParseErrorFiles` | `> 2× rolling 7-day avg` | 1 hour |
+| `FileProcessor-ErrorRate` | `Errors / Invocations` | `> 1 %` | 5 min |
+| `FileProcessor-IdempotentSkip` | Custom metric `IdempotentSkip` | `> 5 % of invocations` over 1 h | 1 hour |
+
+Each alarm publishes to an SNS topic (existing or new) for ops notification. Threshold values are starting points; tune after 1-2 weeks of baseline data.
 
 ## Naming Changes
 
@@ -486,22 +524,64 @@ Existing metrics (`ValidProcessedFiles`, `ParseErrorFiles`, `IrrelevantFiles`, `
 
 SQS `messageId` is set as the Powertools logger `correlation_id` via `inject_lambda_context(correlation_id_path="Records[0].messageId")` or equivalent. All log lines emitted during this invocation carry the same correlation ID for downstream log search.
 
+### X-Ray instrumentation
+
+X-Ray tracing is already enabled (`tracing_config { mode = "Active" }` in terraform; Powertools `Tracer` instantiated in code). The refactor preserves and improves coverage:
+
+- **Preserve**: `@tracer.capture_method` on `ingest_file` (replaces the existing decorator on `parse_and_write_data` so traces still cover the per-file flow).
+- **Add**: `@tracer.capture_method` on `HudiCsvWriter.commit` and `HudiCsvWriter.abort` — these are S3 multi-object copy + delete operations that are common bottleneck candidates; without instrumentation, slow Hudi commits are invisible in the trace.
+- **Remove**: the dead `@tracer.capture_method` on `_flush_buffer_to_s3` (deleted with the function).
+- **Propagate trace context through `ThreadPoolExecutor`**: Powertools auto-instrumentation does not propagate to worker threads. Use `aws_xray_sdk.core.recorder.in_segment` (or pass segment id explicitly) so the 4 parallel S3 PUT subsegments are children of the parent `ingest_file` segment instead of orphans.
+
+Cost: X-Ray is $5 per million traces + $0.50 per million retrieved. At ~700 traces/day this is < $0.05/month — negligible. Value: when investigating a slow file or planning future memory tuning, the trace timeline immediately answers "where did the time go?"
+
 ## Test Strategy
 
 ### Test layout
 
-Tests reorganized to mirror the three-module split:
+Tests reorganized to mirror the three-module split AND to break up `tests/unit/test_edge_cases.py` (currently 2000+ lines, a "god file" that bisecting failures takes longer than running):
 
 ```
-tests/unit/
-├── test_lambda_handler.py        # SQS adapter behavior; mocks ingest_file
-├── test_ingest_file.py           # End-to-end per-file flow with moto
-├── test_csv_writer.py            # HudiCsvWriter staging/commit/abort
-├── parsers/                      # (existing) per-parser tests
-└── ...
+tests/
+├── conftest.py                              # shared moto fixtures (mock_s3_buckets, mock_dynamodb_idempotency, mock_cloudwatch_logs)
+├── helpers/
+│   └── outcome_invariants.py                # moved from tests/_outcome_invariants.py
+├── unit/
+│   ├── test_lambda_handler.py               # SQS adapter behavior; mocks ingest_file
+│   ├── test_ingest_file.py                  # End-to-end per-file flow with moto
+│   ├── test_csv_writer.py                   # HudiCsvWriter staging/commit/abort
+│   ├── test_idempotency_boundary.py         # Cache hit/miss, raise-vs-return contract
+│   ├── test_nem_envelope_short_circuit.py   # 100/900-only handling
+│   ├── test_dataframe_partial_skip.py       # row-skip + skip_reasons aggregation
+│   ├── test_unmapped_disposition.py         # newIrrevFiles/ routing
+│   ├── test_audit_sidecar_contract.py       # JSON schema + sample cap
+│   ├── parsers/                             # (existing) per-parser tests, kept
+│   └── ...
 ```
 
-`tests/unit/test_batch_s3_writes.py` is **deleted** along with `_flush_buffer_to_s3`. Equivalent staging/commit/abort coverage moves to `test_csv_writer.py`, exercising `HudiCsvWriter` directly.
+The following files are **deleted** in this PR:
+- `tests/unit/test_batch_s3_writes.py` (440 lines, all testing `_flush_buffer_to_s3` dead code).
+- `tests/unit/test_edge_cases.py` (2000+ lines): split into the focused files listed above. Each test moves to the file matching its behavior.
+
+### Shared moto fixtures
+
+`tests/conftest.py` defines fixtures so every test does NOT repeat boto3 monkeypatching boilerplate:
+
+```python
+@pytest.fixture
+def mock_s3_buckets():
+    """Yields a moto-mocked S3 with all three buckets created and SSE configured."""
+
+@pytest.fixture
+def mock_dynamodb_idempotency():
+    """Yields a moto-mocked DynamoDB with the idempotency table created."""
+
+@pytest.fixture
+def file_in_newtbp(mock_s3_buckets):
+    """Factory: places a CSV body at newTBP/<key> and returns SourceFile."""
+```
+
+Tests inject these instead of running `@mock_aws` + `s3 = boto3.resource(...)` + `s3.create_bucket(...)` per test.
 
 ### New tests
 
