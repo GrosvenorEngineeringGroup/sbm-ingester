@@ -60,7 +60,7 @@ If any Tier 3 item is needed later, it gets its own ticket and PR.
 src/functions/file_processor/
 ├── app.py            # ~80 lines: lambda_handler (SQS adapter only)
 ├── pipeline.py       # ingest_file + @idempotent_function + side-effect orchestration
-└── csv_writer.py     # HudiCsvWriter + StagedCsvUpload
+└── csv_writer.py     # HudiSourceCsvWriter + StagedCsvUpload
 ```
 
 Cross-cutting helpers move to `src/shared/`:
@@ -97,11 +97,13 @@ SQS message (batch_size=1)
 │ ────────────────────────────────────────────────────────────│
 │  with tempfile.TemporaryDirectory() as tmp_dir:             │
 │    • Download to tmp_dir                                    │
-│    • Try NEM12 stream → batch → non-NEM dispatcher          │
+│    • Try NEM12 streaming parser → non-NEM dispatcher        │
 │      (with NEM envelope short-circuit for empty files)      │
+│      (batch-parser fallback removed — see Behavioral        │
+│       Simplifications)                                      │
 │    • Compute final outcome via                              │
 │      ParserOutcome.derive_final(...) for DataFrame path     │
-│    • Write Hudi rows via HudiCsvWriter (commit/abort)       │
+│    • Write Hudi rows via HudiSourceCsvWriter (commit/abort)       │
 │    • Move source file by outcome.status                     │
 │      (newP/ | newIrrevFiles/ | newParseErr/)                │
 │    • Emit per-file CloudWatch metrics                       │
@@ -115,7 +117,7 @@ SQS message (batch_size=1)
 └─────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
-                  HudiCsvWriter (csv_writer.py)
+                  HudiSourceCsvWriter (csv_writer.py)
                   ParserOutcome contract (shared.parsers.outcome)
                   Existing parsers (shared.parsers.*)
                   shared.audit.write_audit_sidecar
@@ -128,7 +130,7 @@ SQS message (batch_size=1)
 |---|---|---|
 | `functions/file_processor/app.py` | Decode SQS event, file-stability check, redelivery, call `ingest_file`, return statusCode. **No business decisions.** | `lambda_handler(event, context)` |
 | `functions/file_processor/pipeline.py` | `ingest_file` orchestrating download → parse → Hudi → disposition → observability, all inside `@idempotent_function`. | `ingest_file(source_file)` |
-| `functions/file_processor/csv_writer.py` | `HudiCsvWriter` (formerly `DirectCSVWriter`) and `StagedCsvUpload` dataclass. Staging/commit/abort lifecycle. | `HudiCsvWriter`, `StagedCsvUpload` |
+| `functions/file_processor/csv_writer.py` | `HudiSourceCsvWriter` (formerly `DirectCSVWriter`) and `StagedCsvUpload` dataclass. Staging/commit/abort lifecycle. | `HudiSourceCsvWriter`, `StagedCsvUpload` |
 | `shared/parsers/outcome.py` | `ParserOutcome` contract; gains `derive_final` method (formerly `_compute_dataframe_final_status`). | (existing + `derive_final`) |
 | `shared/nem_adapter.py` | NEM12 streaming/batch wrappers; gains `_is_nem_envelope_only` (formerly `_looks_like_nem_envelope`). | (existing + envelope sniff) |
 | `shared/parsers/dispatcher.py` | Renamed from `shared/non_nem_parsers.py`; `dispatch_non_nem` (formerly `get_non_nem_outcome`). | `dispatch_non_nem` |
@@ -151,7 +153,7 @@ class SourceFile:
     key: str
 ```
 
-Used as the `data_keyword_argument` for Powertools idempotency. A frozen dataclass serializes deterministically to JSON for hashing (unlike a plain dict whose key insertion order, while preserved in modern Python, is fragile across construction sites).
+Used as the `data_keyword_argument` for Powertools idempotency. Powertools natively supports plain dataclasses as idempotency-key payloads — its `_prepare_data` (in `aws_lambda_powertools/utilities/idempotency/base.py`) detects `__dataclass_fields__` and calls `dataclasses.asdict(data)`, which works on `frozen=True, slots=True` instances because `asdict` iterates `__dataclass_fields__` rather than `__dict__`. Verified empirically: `json.dumps(asdict(SourceFile("a","b")))` produces `{"bucket":"a","key":"b"}`. **No custom `output_serializer` or `DataclassSerializer` is needed.** A frozen dataclass also serializes deterministically (field order from `__dataclass_fields__` is stable across constructions, unlike dict insertion order at distant call sites).
 
 ### `ParserOutcome.derive_final` method
 
@@ -214,10 +216,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
 ### `ingest_file`
 
+**Decorator order is load-bearing.** Powertools idempotency docs require `@idempotent_function` to be the **innermost** decorator (closest to `def`). Source: <https://docs.aws.amazon.com/powertools/python/latest/utilities/idempotency/#tracer> — verbatim "Ensure that idempotency is the innermost decorator." The current `parse_and_write_data` in `app.py:643-644` violates this (idempotent outer, tracer inner) — on cache hit, Powertools returns the cached value before the tracer wrapper opens its X-Ray subsegment, so cached invocations are **invisible** in X-Ray. The order below corrects this regression as part of the refactor.
+
 ```python
 # src/functions/file_processor/pipeline.py
-@tracer.capture_method
-@idempotent_function(
+@tracer.capture_method                          # OUTER — wraps everything, including cache lookup
+@idempotent_function(                           # INNER — closest to def, per Powertools docs
     data_keyword_argument="source_file",
     persistence_store=persistence_layer,
     config=idempotency_config,
@@ -247,9 +251,10 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
 
     Side effects (all INSIDE the idempotent boundary):
       - Downloads source object from s3://<bucket>/<key> to tmp directory.
-      - Parses via NEM12 streaming → batch → non-NEM dispatcher.
+      - Parses via NEM12 streaming parser → non-NEM dispatcher
+        (batch-parser fallback removed; see Behavioral Simplifications).
       - Writes Hudi rows to s3://hudibucketsrc/sensorDataFiles/ via
-        HudiCsvWriter (commit/abort transaction).
+        HudiSourceCsvWriter (commit/abort transaction).
       - Writes external-sink artifacts (RACV billing → gegoptimareports).
       - Moves source to newP/ | newIrrevFiles/ | newParseErr/ by status.
       - Emits per-file CloudWatch metrics.
@@ -261,7 +266,7 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
     """
 ```
 
-### `HudiCsvWriter` (renamed from `DirectCSVWriter`)
+### `HudiSourceCsvWriter` (renamed from `DirectCSVWriter`)
 
 Public surface unchanged. Rename only. Dataclass `StagedCsvUpload` (formerly `CSVUploadJob`) moves with it.
 
@@ -332,24 +337,55 @@ A precise contract that maps exception class to caching behavior:
 | Hudi PUT 5xx / DynamoDB throttle / S3 transient error | **Raise** `ProcessingError` (or `ClientError` propagates) | Powertools deletes in-progress record. | SQS retries; idempotent cache miss; re-executes. |
 | `RuntimeError` / `AttributeError` / unexpected | **Raise** as `ParserError` (per existing dispatch narrowing rule) | Powertools deletes in-progress record. | SQS retries until DLQ; visible to ops. |
 | File not found in source bucket (404 on download) | **Raise** `ProcessingError` | Powertools deletes in-progress record. | SQS retries; if file is genuinely gone, DLQ catches it. |
-| Source-move to destination prefix fails after Hudi commit | Roll back via `HudiCsvWriter.abort()`, then **raise** `ProcessingError` | Powertools deletes in-progress record. | SQS retries; idempotent re-execution; transient error usually clears. |
+| Source-move to destination prefix fails after Hudi commit | Roll back via `HudiSourceCsvWriter.abort()`, then **raise** `ProcessingError` | Powertools deletes in-progress record. | SQS retries; idempotent re-execution; transient error usually clears. |
 
 The key invariant: **a deterministic content failure is cached; a transient infrastructure failure is raised**. Operators recover content failures by manual remediation; transient failures self-heal via SQS retry.
 
 ### Cache-hit observability
 
-Powertools does not natively log cache hits. To make duplicate skips visible:
+Two-layer approach — **AWS-native metric for the alarm, structured log for per-invocation debugging**. No custom CloudWatch metric (avoids dual-emission ambiguity with the underlying DynamoDB metric).
+
+**Layer 1 — Alarm via DynamoDB native metric.**
+
+CloudWatch automatically emits `AWS/DynamoDB::ConditionalCheckFailedRequests` for every conditional-write conflict on the idempotency table. Since `sbm-ingester-idempotency` is dedicated to this Lambda, that metric *is* the cache-hit count. The alarm definition lives in the Alarms section below, not in code.
+
+**Layer 2 — Per-invocation structured log via persistence-layer subclass.**
+
+Powertools' `_process_idempotency` (`aws_lambda_powertools/utilities/idempotency/base.py`) optimistically calls `save_inprogress`; on duplicates it raises `IdempotencyItemAlreadyExistsError`. Subclass the persistence layer to emit a structured log on that path — preserving Powertools' subsequent cached-response handling intact:
 
 ```python
-# Detection: subscribe to DynamoDB ConditionalCheckFailedException via custom
-# hook OR detect via Powertools event handler if exposed in a future version.
-# Pragmatic interim: when ingest_file returns very fast AND no log lines from
-# its body were emitted in this invocation, classify as cache hit. The handler
-# emits IdempotentSkip metric in that case.
-metrics.add_metric(name="IdempotentSkip", unit=MetricUnit.Count, value=1)
+# src/functions/file_processor/persistence.py (new)
+from aws_lambda_powertools.utilities.idempotency import DynamoDBPersistenceLayer
+from aws_lambda_powertools.utilities.idempotency.exceptions import (
+    IdempotencyItemAlreadyExistsError,
+)
+
+class InstrumentedDynamoDBPersistenceLayer(DynamoDBPersistenceLayer):
+    """DynamoDB persistence layer that logs cache hits.
+
+    Powertools does not expose a native cache-hit hook. The cache-hit code
+    path is the IdempotencyItemAlreadyExistsError raised by save_inprogress
+    when a record already exists. We log here; the alarm uses DynamoDB's
+    own ConditionalCheckFailedRequests metric (no custom metric needed).
+    """
+
+    def save_inprogress(self, data, remaining_time_in_millis=None):
+        try:
+            return super().save_inprogress(data, remaining_time_in_millis)
+        except IdempotencyItemAlreadyExistsError:
+            logger.info(
+                "idempotent_cache_hit",
+                extra={
+                    "source_bucket": data.get("bucket"),
+                    "source_key": data.get("key"),
+                },
+            )
+            raise  # let Powertools handle the cached response
 ```
 
-(Final emission mechanism TBD during implementation; specify in plan.)
+Used at module init in place of the bare `DynamoDBPersistenceLayer`. Logs are correlation-ID-tagged via Powertools logger context, so `idempotent_cache_hit` lines join the request trace alongside the rest of the invocation.
+
+**What this is NOT**: no custom `IdempotentSkip` Lambda metric is emitted. The DynamoDB native metric is the alarm source of truth; the log is per-invocation diagnostic only.
 
 ## Pre-flight Infrastructure Changes
 
@@ -374,7 +410,23 @@ SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]   # KeyError on import = deploy fail
 
 Rationale: a missing env var in a non-prod account would currently silently target the production SQS queue (different account ID, but boto3 would still attempt the call). Failing at import time is the correct behavior — Lambda's runtime fails to start, deploy fails immediately, no cross-account writes.
 
-Terraform: `terraform/ingester.tf` must set `SQS_QUEUE_URL` in the Lambda function's environment variables. Verify it does already; if not, add.
+Terraform: the `aws_lambda_function.sbm_files_ingester` resource in `terraform/ingester.tf` (lines 16-30) currently has **no `environment {}` block at all** — verified at spec authoring time. The code change to `os.environ["SQS_QUEUE_URL"]` MUST land in the same PR as adding this block, otherwise Lambda fails at cold start with `KeyError`. Required addition:
+
+```hcl
+resource "aws_lambda_function" "sbm_files_ingester" {
+  # ... existing fields ...
+  tracing_config {
+    mode = "Active"
+  }
+  environment {
+    variables = {
+      SQS_QUEUE_URL = aws_sqs_queue.sbm_files_ingester_queue.url
+    }
+  }
+}
+```
+
+Test setup: a module-level `os.environ["SQS_QUEUE_URL"] = "https://sqs.test.local/queue"` (or equivalent autouse fixture) must be added to `tests/conftest.py` so test collection does not crash on import — every test that imports `functions.file_processor.app` would otherwise fail at collection time, including `tests/unit/test_file_stability.py:375-378` which already imports the module.
 
 ### SQS visibility timeout bump
 
@@ -431,7 +483,7 @@ Create alarms in `terraform/monitoring.tf` for the file_processor Lambda:
 | `FileProcessor-MaxRetriesExceeded` | Custom metric `MaxRetriesExceeded` | `> 0` per day | 1 day |
 | `FileProcessor-ParseErrorSpike` | Custom metric `ParseErrorFiles` | `> 2× rolling 7-day avg` | 1 hour |
 | `FileProcessor-ErrorRate` | `Errors / Invocations` | `> 1 %` | 5 min |
-| `FileProcessor-IdempotentSkip` | Custom metric `IdempotentSkip` | `> 5 % of invocations` over 1 h | 1 hour |
+| `FileProcessor-IdempotentSkipSpike` | `AWS/DynamoDB::ConditionalCheckFailedRequests` (TableName=`sbm-ingester-idempotency`) | `> 5 % of Lambda invocations` over 1 h | 1 hour |
 
 Each alarm publishes to an SNS topic (existing or new) for ops notification. Threshold values are starting points; tune after 1-2 weeks of baseline data.
 
@@ -447,7 +499,7 @@ Items the user explicitly prioritized for semantic clarity. **All applied in thi
 | `parse_and_write_data(tbp_files)` | `ingest_file(source_file)` | Domain verb; service is the "ingester". |
 | `tbp_files: list[dict]` | `source_file: SourceFile` | `tbp` is opaque (S3-prefix artifact); `SourceFile` names the role. |
 | (delete) `_flush_buffer_to_s3` | (delete) | Dead code (only called from tests). |
-| `DirectCSVWriter` | `HudiCsvWriter` | "Direct" was a "bypasses pandas" historical note; the class writes Hudi-shaped CSV with staging. |
+| `DirectCSVWriter` | `HudiSourceCsvWriter` | "Direct" was a "bypasses pandas" historical note. The class does **not** write Hudi tables — it writes CSV objects to `s3://hudibucketsrc/sensorDataFiles/` that the downstream `DataImportIntoLake` Glue job consumes into the Hudi table. The new name captures "source CSV for Hudi ingestion" rather than misleadingly suggesting direct Hudi writes. |
 | `CSVUploadJob` | `StagedCsvUpload` | "Job" implies queued/scheduled; this is a staged upload record. |
 | `_candidate_values` | `extract_valid_readings` | Function action, not return-shape. |
 | `_compute_dataframe_final_status` | (moved to `ParserOutcome.derive_final`) | Belongs with the contract; co-locates ladder with statuses. |
@@ -516,7 +568,8 @@ This is the operator's primary debug surface. Schema is stable; downstream log q
 | Metric | Type | When emitted | Purpose |
 |---|---|---|---|
 | `FileProcessingDurationMs` | Milliseconds | Once per file at end of `ingest_file` | Latency / memory-tuning input. |
-| `IdempotentSkip` | Count | When a duplicate is detected | Visibility into SQS redelivery rate. |
+
+Cache-hit visibility uses DynamoDB's native `ConditionalCheckFailedRequests` metric (no custom Lambda metric) — see Cache-hit observability above.
 
 Existing metrics (`ValidProcessedFiles`, `ParseErrorFiles`, `IrrelevantFiles`, `PartialMappedRatio`, `RowsSkippedRatio`, `MalformedValueCount`, `UnsupportedSuffixesFound`, `UnmappedIdentifierKind_<kind>`) emitted as today, but inside `ingest_file` (per-file rather than per-batch).
 
@@ -529,7 +582,7 @@ SQS `messageId` is set as the Powertools logger `correlation_id` via `inject_lam
 X-Ray tracing is already enabled (`tracing_config { mode = "Active" }` in terraform; Powertools `Tracer` instantiated in code). The refactor preserves and improves coverage:
 
 - **Preserve**: `@tracer.capture_method` on `ingest_file` (replaces the existing decorator on `parse_and_write_data` so traces still cover the per-file flow).
-- **Add**: `@tracer.capture_method` on `HudiCsvWriter.commit` and `HudiCsvWriter.abort` — these are S3 multi-object copy + delete operations that are common bottleneck candidates; without instrumentation, slow Hudi commits are invisible in the trace.
+- **Add**: `@tracer.capture_method` on `HudiSourceCsvWriter.commit` and `HudiSourceCsvWriter.abort` — these are S3 multi-object copy + delete operations that are common bottleneck candidates; without instrumentation, slow Hudi commits are invisible in the trace.
 - **Remove**: the dead `@tracer.capture_method` on `_flush_buffer_to_s3` (deleted with the function).
 - **Propagate trace context through `ThreadPoolExecutor`**: Powertools auto-instrumentation does not propagate to worker threads. Use `aws_xray_sdk.core.recorder.in_segment` (or pass segment id explicitly) so the 4 parallel S3 PUT subsegments are children of the parent `ingest_file` segment instead of orphans.
 
@@ -549,7 +602,7 @@ tests/
 ├── unit/
 │   ├── test_lambda_handler.py               # SQS adapter behavior; mocks ingest_file
 │   ├── test_ingest_file.py                  # End-to-end per-file flow with moto
-│   ├── test_csv_writer.py                   # HudiCsvWriter staging/commit/abort
+│   ├── test_csv_writer.py                   # HudiSourceCsvWriter staging/commit/abort
 │   ├── test_idempotency_boundary.py         # Cache hit/miss, raise-vs-return contract
 │   ├── test_nem_envelope_short_circuit.py   # 100/900-only handling
 │   ├── test_dataframe_partial_skip.py       # row-skip + skip_reasons aggregation
@@ -587,7 +640,7 @@ Tests inject these instead of running `@mock_aws` + `s3 = boto3.resource(...)` +
 
 - **Idempotency-collision integration test** in `test_ingest_file.py`: call `ingest_file(source_file)` twice with the same `SourceFile`; assert second call returns identical `ParserOutcome` AND the source file is not moved twice (manually placed back in newTBP/ after first call → not moved on second; cache hit).
 - **NEM12 RuntimeError propagation test** in `test_ingest_file.py`: mock `stream_as_data_frames` to raise `RuntimeError`; assert (a) `dispatch_non_nem` is NOT called (per `_NEM_FALLTHROUGH_ERRORS` narrowing), (b) the exception propagates out of `ingest_file`, (c) Powertools deletes the in-progress record (verify via DynamoDB scan).
-- **Cache-hit metric test**: trigger a duplicate; assert `IdempotentSkip` metric was emitted exactly once.
+- **Cache-hit log test**: with moto-mocked DynamoDB, call `ingest_file` twice with the same `SourceFile`; assert the second call emits exactly one `idempotent_cache_hit` structured log line carrying `source_bucket` and `source_key`. (No custom metric to assert — the alarm uses DynamoDB's native `ConditionalCheckFailedRequests`, which is exercised implicitly by the second call's conditional-write conflict.)
 - **`SQS_QUEUE_URL` missing test**: import the module without the env var set; assert `KeyError`.
 - **Visibility-timeout race regression test** (terraform plan output assertion only — no runtime test).
 
@@ -614,7 +667,7 @@ The refactor is functionality-preserving in disposition + Hudi rows. Behavioral 
 | `app.py` total lines | 1165 | ~80 |
 | Per-file structured log | Partial | Complete (`parser_outcome` with all signal fields) |
 | Latency metric | Absent | `FileProcessingDurationMs` |
-| Cache-hit visibility | Absent | `IdempotentSkip` metric |
+| Cache-hit visibility | Absent | `idempotent_cache_hit` structured log + DynamoDB `ConditionalCheckFailedRequests` alarm |
 | `SQS_QUEUE_URL` fallback | Hard-coded prod URL | Required env var |
 | SQS visibility timeout | 900 s | 1080 s |
 | `_flush_buffer_to_s3` | Present (dead) | Deleted |
@@ -622,6 +675,10 @@ The refactor is functionality-preserving in disposition + Hudi rows. Behavioral 
 | `read_nem12_mappings` duplicate | Two loaders | One (`shared.parsers._mappings.get_nem12_mappings`) |
 | `_compute_dataframe_final_status` location | `app.py` free function | `ParserOutcome.derive_final` method |
 | `_looks_like_nem_envelope` location | `app.py` | `shared/nem_adapter.py` as `_is_nem_envelope_only` |
+| NEM12 batch-parser fallback | `stream → batch → non-NEM` chain (3 hops) | `stream → non-NEM` chain (2 hops) — see Behavioral Simplifications |
+| Decorator order (`@idempotent_function` + `@tracer.capture_method`) | `@idempotent_function` outer / `@tracer.capture_method` inner — violates Powertools docs, cache hits invisible in X-Ray | `@tracer.capture_method` outer / `@idempotent_function` inner — per Powertools docs, cache hits captured in X-Ray subsegment |
+| Cache-hit observability mechanism | None | `idempotent_cache_hit` structured log via `InstrumentedDynamoDBPersistenceLayer.save_inprogress` override; alarm via DynamoDB native `ConditionalCheckFailedRequests` |
+| `SQS_QUEUE_URL` Lambda env var | Hardcoded fallback in code; **no `environment {}` block in terraform** | Required env var (`os.environ[...]`); terraform adds `environment { variables = { SQS_QUEUE_URL = ... } }` |
 
 The DynamoDB idempotency hash format changes (from `tbp_files` list-shape to `SourceFile` dataclass-shape). Old records and new records do not collide. For 12 h after deploy, a duplicate file processed under the old code may not be detected under the new code, leading to one of:
 
@@ -629,6 +686,29 @@ The DynamoDB idempotency hash format changes (from `tbp_files` list-shape to `So
 - Or: re-execution proceeds and writes Hudi rows again, but Hudi upsert by `(sensorid, ts)` deduplicates, so the data layer is unaffected.
 
 Estimated impact: 1 % of files in the 12 h window (SQS at-least-once redelivery rate) ≈ a few files out of ~350 over the transition.
+
+### Behavioral Simplifications
+
+#### Remove NEM12 batch-parser fallback in `app.py`
+
+**Current (3-hop chain)**: streaming parser → on `_NEM_FALLTHROUGH_ERRORS` → batch parser (`output_as_data_frames`) → on same errors → non-NEM dispatcher.
+
+**New (2-hop chain)**: streaming parser → on `_NEM_FALLTHROUGH_ERRORS` → non-NEM dispatcher.
+
+**Rationale**:
+
+- The batch parser fallback has been present since the initial commit (`bedbced`) but **no commit, test, or production fix** has ever exercised the "stream raised, batch returned data" recovery path.
+- Standing equivalence tests (`tests/unit/test_nem12_streaming.py::TestStreamingVsBatchEquivalence`, `tests/unit/test_nem12_real_file_equivalence.py::TestFinalOutputEquivalence`) assert byte-for-byte equivalence between the two parsers on real NEM12 files. They are the safety net that makes single-parser operation safe.
+- Keeping a defensive fallback that may never have fired has costs: it doubles read I/O on streaming failures, masks genuine bugs in `src/libs/nemreader/streaming.py` (since failures silently route to the batch path), and adds reasoning surface to error paths.
+- All 13 mocks of `output_as_data_frames` in `tests/unit/test_edge_cases.py` (audited at spec authoring time) are paired with a `stream_as_data_frames` mock carrying the same side-effect or a semantically equivalent one. 12 of 13 pairs use identical side-effects (e.g. both `ValueError("not nem")`); the remaining pair (lines 1561-1562) uses `iter([])` for streaming and `[]` for batch — both meaning "no data parsed", so still the equivalent disposition. **Zero pairs assert "stream raised but batch returned data"**, so the recovery path is never exercised by tests. Removing those `output_as_data_frames` mock lines is mechanical cleanup.
+
+**Scope**:
+
+- Delete the `output_as_data_frames` import and the inner `try/except` block in `ingest_file` that calls it.
+- Keep `output_as_data_frames` defined in `shared/nem_adapter.py` — it remains in use by the Optima NEM12 exporter (`tests/unit/optima_exporter/nem12_exporter/test_downloader.py`) and the equivalence tests.
+- Remove the redundant `output_as_data_frames` mocks from the file-processor test suite during the test reorganization.
+
+**Risk mitigation**: equivalence tests stay green as a precondition for deploy. If any real-world file fails streaming after deploy, it now lands in `newParseErr/` instead of being silently recovered — which is the **desired** signal: a streaming bug should be visible, not silently masked.
 
 ## Migration Plan
 
@@ -638,7 +718,7 @@ Estimated impact: 1 % of files in the 12 h window (SQS at-least-once redelivery 
 2. **Code merge**: feature branch lands on `main` after review.
 3. **Deploy**: standard CI/CD path. No DynamoDB migration; old idempotency records expire on their own (12 h TTL).
 4. **Post-deploy monitoring (1 week)**:
-   - `IdempotentSkip` metric: confirm SQS redelivery rate is in expected range (< 1 %).
+   - `ConditionalCheckFailedRequests` on `sbm-ingester-idempotency` table: confirm SQS redelivery cache-hit rate is in expected range (< 1 % of Lambda invocations). Cross-reference `idempotent_cache_hit` log lines for per-file detail.
    - `FileProcessingDurationMs`: establish p50 / p99 baseline.
    - `ParseErrorFiles`: should NOT spike; if it does, investigate (likely transition-window 404s).
    - `newParseErr/` directory: ops periodically reviews, restores misclassified files to `newTBP/`.
@@ -646,6 +726,5 @@ Estimated impact: 1 % of files in the 12 h window (SQS at-least-once redelivery 
 
 ## Open Decisions
 
-- The exact mechanism for detecting Powertools cache hits to emit `IdempotentSkip` (custom event hook vs. side-channel inference from execution duration / log emission) — finalize during implementation.
 - Whether to add a `processed_with_partial_rollback` reason for the rare case where Hudi commit succeeded but source-move failed and was rolled back — defer until first occurrence in production.
 - Whether the audit sidecar JSON should be versioned (`schema_version: 1`). Recommended yes; trivial to add and prevents future schema-drift breaking downstream consumers — may decide during implementation.
