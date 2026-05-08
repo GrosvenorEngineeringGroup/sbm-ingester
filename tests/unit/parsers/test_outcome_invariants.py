@@ -98,6 +98,52 @@ class TestProcessedExternalInvariant:
             assert_parser_outcome_invariants(outcome)
 
 
+class TestParseFailedInvariant:
+    def test_parse_failed_with_parser_error_passes(self) -> None:
+        outcome = ParserOutcome(
+            status="parse_failed",
+            reason="parser_error",
+            rows_written=0,
+        )
+        assert_parser_outcome_invariants(outcome)
+
+    def test_parse_failed_with_processing_error_passes(self) -> None:
+        outcome = ParserOutcome(
+            status="parse_failed",
+            reason="processing_error",
+            rows_written=0,
+        )
+        assert_parser_outcome_invariants(outcome)
+
+    def test_parse_failed_with_other_reason_fails(self) -> None:
+        # ``all_skipped`` is a valid ParserReason but not in the parse_failed allowed set.
+        outcome = ParserOutcome(
+            status="parse_failed",
+            reason="all_skipped",
+            rows_written=0,
+        )
+        with pytest.raises(AssertionError, match="reason in"):
+            assert_parser_outcome_invariants(outcome)
+
+    def test_parse_failed_with_none_reason_fails(self) -> None:
+        outcome = ParserOutcome(
+            status="parse_failed",
+            reason=None,
+            rows_written=0,
+        )
+        with pytest.raises(AssertionError, match="reason in"):
+            assert_parser_outcome_invariants(outcome)
+
+    def test_parse_failed_with_rows_written_fails(self) -> None:
+        outcome = ParserOutcome(
+            status="parse_failed",
+            reason="parser_error",
+            rows_written=5,
+        )
+        with pytest.raises(AssertionError, match="rows_written == 0"):
+            assert_parser_outcome_invariants(outcome)
+
+
 class TestSkipReasonsInvariant:
     def test_rows_skipped_zero_with_no_skip_reasons_passes(self) -> None:
         outcome = ParserOutcome(status="processed", rows_written=1, rows_skipped=0)
