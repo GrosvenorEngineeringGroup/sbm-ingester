@@ -13,7 +13,7 @@ from shared.parsers.envizi.vertical_water_bulk import envizi_vertical_parser_wat
 def _processed_dfs(result: ParserOutcome):
     assert result.status == "processed"
     assert result.source_row_count > 0
-    return result.dfs
+    return result.dataframes
 
 
 class TestEnviziVerticalParserWaterBulk:
@@ -119,7 +119,7 @@ class TestParserOutputConsistency:
 
         result = envizi_vertical_parser_water_bulk(str(path), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
 
@@ -158,7 +158,7 @@ class TestParserOutputConsistency:
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
 
 class TestEnviziVerticalParserWaterBulkCheapGate:

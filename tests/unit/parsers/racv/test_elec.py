@@ -15,7 +15,7 @@ from shared.parsers import NotRelevantParser, ParserOutcome
 def _processed_dfs(result: ParserOutcome):
     assert result.status == "processed"
     assert result.source_row_count > 0
-    return result.dfs
+    return result.dataframes
 
 
 class TestRacvElecParser:
@@ -115,7 +115,7 @@ Date,Start Time,Meter1 kWh
 
             assert result.status == "processed_empty"
             assert result.reason == "all_zero_valid"
-            assert result.dfs == []
+            assert result.dataframes == []
 
     def test_whitespace_blank_kwh_values_are_empty_values(self, temp_directory: str) -> None:
         """Whitespace-only kWh cells are valid blanks, not malformed values."""
@@ -139,7 +139,7 @@ Date,Start Time,Meter1 kWh
 
             assert result.status == "processed_empty"
             assert result.reason == "all_zero_valid"
-            assert result.dfs == []
+            assert result.dataframes == []
 
     def test_mixed_nonzero_and_blank_kwh_values_parse(self, temp_directory: str) -> None:
         """Non-zero usable rows survive when the same file also contains blanks."""
@@ -180,7 +180,7 @@ Date,Start Time,Meter1 kWh
             result = racv_elec_parser(filepath, "error_log")
             # The single bad cell becomes NaN; daily sum is NaN/0 → all_zero_valid.
             assert result.status == "processed_empty"
-            assert result.dfs == []
+            assert result.dataframes == []
             assert result.skip_reasons["unparseable_value"] == 1
 
     def test_partial_malformed_kwh_with_valid_rows_skip_counts(self, temp_directory: str) -> None:
@@ -202,7 +202,7 @@ Date,Start Time,Meter1 kWh
             result = racv_elec_parser(filepath, "error_log")
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_value"] == 1
-            assert len(result.dfs) == 1
+            assert len(result.dataframes) == 1
 
     def test_handles_mixed_zero_nonzero_meters(self, temp_directory: str) -> None:
         """Test that racv_elec_parser handles files with some zero and some non-zero meters."""

@@ -125,7 +125,7 @@ class TestDataFrameOutputFormat:
             create_envizi_water_csv(water_file, serial_numbers=["1"])
             result = envizi_vertical_parser_water(water_file, "error")
             assert result.status == "processed"
-            _, df = result.dfs[0]
+            _, df = result.dataframes[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
             # Test Envizi electricity
@@ -133,7 +133,7 @@ class TestDataFrameOutputFormat:
             create_envizi_electricity_csv(elec_file, serial_numbers=["1"])
             result = envizi_vertical_parser_electricity(elec_file, "error")
             assert result.status == "processed"
-            _, df = result.dfs[0]
+            _, df = result.dataframes[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
             # Test Optima generation
@@ -141,7 +141,7 @@ class TestDataFrameOutputFormat:
             create_optima_csv(gen_file, identifiers=["1"])
             result = interval_parser(gen_file, "error")
             assert result.status == "processed"
-            _, df = result.dfs[0]
+            _, df = result.dataframes[0]
             assert df.index.name == "t_start" or "t_start" in df.columns
 
 
@@ -158,7 +158,7 @@ class TestOutcomeDispatcher:
         result = get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
 
         assert result.status == "processed"
-        assert len(result.dfs) == 1
+        assert len(result.dataframes) == 1
 
     def test_legacy_get_non_nem_df_still_returns_raw_dfs(self, tmp_path, monkeypatch) -> None:
         from shared.non_nem_parsers import get_non_nem_df
@@ -259,5 +259,5 @@ class TestOutcomeDispatcher:
         result = get_non_nem_outcome(str(filepath), "error_log")
 
         assert result.status == "processed"
-        assert len(result.dfs) == 1
-        assert result.dfs[0][0] == "Optima_4001260599"
+        assert len(result.dataframes) == 1
+        assert result.dataframes[0][0] == "Optima_4001260599"

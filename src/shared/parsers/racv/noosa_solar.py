@@ -149,7 +149,7 @@ def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
 
     return ParserOutcome(
         status="processed",
-        dfs=results,
+        dataframes=results,
         source_row_count=source_row_count,
         candidate_row_count=candidate_row_count,
         rows_skipped=rows_skipped,

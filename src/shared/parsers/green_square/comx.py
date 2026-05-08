@@ -119,7 +119,7 @@ def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_p
 
     return ParserOutcome(
         status="processed",
-        dfs=[(f"GPWComX_{site_name}", buf_df)],
+        dataframes=[(f"GPWComX_{site_name}", buf_df)],
         source_row_count=source_row_count,
         candidate_row_count=candidate_row_count,
         rows_skipped=rows_skipped,

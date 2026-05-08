@@ -20,7 +20,7 @@ from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 def _processed_dfs(result: ParserOutcome) -> list[tuple[str, pd.DataFrame]]:
     assert result.status == "processed"
     assert result.source_row_count >= 1
-    return result.dfs
+    return result.dataframes
 
 
 # ==================== Helpers ====================
@@ -103,8 +103,8 @@ class TestParseNumericColumns:
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_value"] == 1
             # Two valid rows survive in the output DataFrame.
-            assert len(result.dfs) == 1
-            _sensor, df = result.dfs[0]
+            assert len(result.dataframes) == 1
+            _sensor, df = result.dataframes[0]
             assert len(df) == 2
 
     def test_partial_malformed_timestamp_with_valid_rows_skip_counts(self, tmp_path: Path) -> None:
@@ -126,8 +126,8 @@ class TestParseNumericColumns:
             result = noosa_solar_parser(filepath, "error_log")
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_timestamp"] == 1
-            assert len(result.dfs) == 1
-            _sensor, df = result.dfs[0]
+            assert len(result.dataframes) == 1
+            _sensor, df = result.dataframes[0]
             assert len(df) == 2
 
 
@@ -445,7 +445,7 @@ class TestEmptyFile:
 
         assert result.status == "processed_empty"
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
 
 class TestMissingTimestampColumn:

@@ -13,7 +13,7 @@ from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_el
 def _processed_dfs(result: ParserOutcome):
     assert result.status == "processed"
     assert result.source_row_count > 0
-    return result.dfs
+    return result.dataframes
 
 
 class TestEnviziVerticalParserElectricity:
@@ -66,7 +66,7 @@ class TestEnviziVerticalParserElectricity:
 
         result = envizi_vertical_parser_electricity(str(path), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
 
@@ -86,7 +86,7 @@ class TestEnviziVerticalParserElectricity:
         assert result.candidate_row_count == 24
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
-        assert len(result.dfs) == 1
+        assert len(result.dataframes) == 1
 
     def test_partial_malformed_timestamp_with_valid_rows_skip_counts(self, tmp_path) -> None:
         """N valid rows + 1 malformed timestamp → N rows in output, rows_skipped=1."""
@@ -116,7 +116,7 @@ class TestEnviziVerticalParserElectricity:
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
 
 class TestEnviziVerticalParserElectricityCheapGate:

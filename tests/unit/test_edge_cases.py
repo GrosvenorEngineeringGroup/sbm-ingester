@@ -776,7 +776,7 @@ class TestParserOutcomeDisposition:
             }
         )
 
-        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dfs=[("NMI1", df)]))
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dataframes=[("NMI1", df)]))
 
         assert result == 1
         assert _list_keys(s3_resource, "sbm-file-ingester", "newIrrevFiles/") == ["newIrrevFiles/outcome.csv"]
@@ -793,7 +793,7 @@ class TestParserOutcomeDisposition:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -822,7 +822,7 @@ class TestParserOutcomeDisposition:
             }
         )
 
-        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dfs=[("NMI1", df)]))
+        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dataframes=[("NMI1", df)]))
 
         assert result == 1
         assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
@@ -838,7 +838,7 @@ class TestParserOutcomeDisposition:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -855,7 +855,9 @@ class TestParserOutcomeDisposition:
             }
         )
 
-        result, s3_resource = _run_with_non_nem_outcome(ParserOutcome(status="processed", dfs=[("p:direct:id", df)]))
+        result, s3_resource = _run_with_non_nem_outcome(
+            ParserOutcome(status="processed", dataframes=[("p:direct:id", df)])
+        )
 
         assert result == 1
         assert _list_keys(s3_resource, "sbm-file-ingester", "newP/") == ["newP/outcome.csv"]
@@ -875,7 +877,7 @@ class TestParserOutcomeDisposition:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -892,7 +894,7 @@ class TestParserOutcomeDisposition:
         df = pd.DataFrame({"t_start": ["not-a-date"], "E1_kWh": [1.0]})
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -907,7 +909,7 @@ class TestParserOutcomeDisposition:
         df = pd.DataFrame({"t_start": pd.to_datetime(["2024-01-01 00:00"]), "E1_kWh": ["not-number"]})
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -934,7 +936,7 @@ class TestParserOutcomeDisposition:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -981,7 +983,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.BATCH_SIZE", 1),
             patch("functions.file_processor.app._upload_csv_to_s3", side_effect=upload_with_second_failure),
@@ -1021,8 +1023,8 @@ class TestParserOutcomeDisposition:
 
         def get_outcome(local_file_path: str, _parse_error_log_group: str) -> ParserOutcome:
             if Path(local_file_path).name == "first.csv":
-                return ParserOutcome(status="processed", dfs=[("NMI1", success_df)])
-            return ParserOutcome(status="processed", dfs=[("NMI1", failing_df)])
+                return ParserOutcome(status="processed", dataframes=[("NMI1", success_df)])
+            return ParserOutcome(status="processed", dataframes=[("NMI1", failing_df)])
 
         # The first file emits one batch (1 upload). The second file emits two
         # batches; the second batch's upload raises -> abort path runs.
@@ -1085,7 +1087,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.move_s3_file", side_effect=move_s3_file_with_final_failure),
         ):
@@ -1110,7 +1112,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app._upload_csv_to_s3", side_effect=RuntimeError("boom")),
         ):
@@ -1349,7 +1351,7 @@ class TestProcessorUnsupportedSuffixAccumulation:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-Z9Z": "p:test:z"},
         )
 
@@ -1371,7 +1373,7 @@ class TestProcessorUnsupportedSuffixAccumulation:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -1587,7 +1589,7 @@ class TestMissingTStartIsParserError:
         df = pd.DataFrame({"E1_kWh": [1.0, 2.0]})
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -1615,7 +1617,7 @@ class TestAuditSidecarIntegration:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -1646,7 +1648,7 @@ class TestAuditSidecarIntegration:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -1665,7 +1667,7 @@ class TestAuditSidecarIntegration:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={},  # no mapping for NMI1-E1
         )
 
@@ -1686,7 +1688,7 @@ class TestAuditSidecarIntegration:
         df = pd.DataFrame({"t_start": timestamps, "E1_kWh": values})
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={"NMI1-E1": "p:test:e1"},
         )
 
@@ -1718,7 +1720,7 @@ class TestAuditSidecarIntegration:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch(
                 "functions.file_processor.app.write_audit_sidecar",
@@ -1759,7 +1761,7 @@ class TestPartialRecognitionMetrics:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
         ):
@@ -1791,7 +1793,7 @@ class TestPartialRecognitionMetrics:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
         ):
@@ -1824,7 +1826,7 @@ class TestIdentifierObservability:
         # only when the mapping exists. With an empty mapping the lookup
         # returns None and the file_processor records the kind as ``p_id``.
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("p:direct:id", df)]),
+            ParserOutcome(status="processed", dataframes=[("p:direct:id", df)]),
             mappings={},
         )
 
@@ -1845,7 +1847,7 @@ class TestIdentifierObservability:
         )
 
         result, s3_resource = _run_with_non_nem_outcome(
-            ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+            ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             mappings={},  # mapping miss
         )
 
@@ -1879,7 +1881,7 @@ class TestIdentifierObservability:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
         ):
@@ -1908,7 +1910,7 @@ class TestIdentifierObservability:
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.get_non_nem_outcome",
-                return_value=ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
         ):
@@ -1933,7 +1935,7 @@ class TestIdentifierObservability:
 
         with caplog.at_level("WARNING"):
             result, _ = _run_with_non_nem_outcome(
-                ParserOutcome(status="processed", dfs=[("NMI1", df)]),
+                ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
                 mappings={"NMI1-E1": "p:test:e1"},  # mapping irrelevant — no E* column
             )
 

@@ -15,7 +15,7 @@ from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 def _processed_dfs(result: ParserOutcome):
     assert result.status == "processed"
     assert result.source_row_count > 0
-    return result.dfs
+    return result.dataframes
 
 
 class TestGreenSquarePrivateWireSchneiderComXParser:
@@ -170,7 +170,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
             assert result.status == "processed_empty"
             assert result.reason == "all_blank"
-            assert result.dfs == []
+            assert result.dataframes == []
 
     def test_skip_counts_for_malformed_energy_value(self, temp_directory: str) -> None:
         """ComX parser skip-counts non-blank malformed energy values
@@ -194,7 +194,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
             result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
             assert result.status == "processed_empty"
-            assert result.dfs == []
+            assert result.dataframes == []
             assert result.skip_reasons["unparseable_value"] == 1
             assert result.reason == "all_blank"
 

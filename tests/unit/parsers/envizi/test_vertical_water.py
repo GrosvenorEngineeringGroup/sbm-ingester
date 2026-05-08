@@ -14,7 +14,7 @@ from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
 def _processed_dfs(result: ParserOutcome):
     assert result.status == "processed"
     assert result.source_row_count > 0
-    return result.dfs
+    return result.dataframes
 
 
 class TestEnviziVerticalParserWater:
@@ -92,7 +92,7 @@ class TestEnviziVerticalParserWater:
 
         result = envizi_vertical_parser_water(str(path), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
 
@@ -147,7 +147,7 @@ class TestEnviziVerticalParserWater:
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
 
 class TestEnviziVerticalParserWaterCheapGate:

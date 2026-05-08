@@ -39,7 +39,7 @@ PARSERS = [
 def _as_outcome(result: ParserOutcome | ParserResult) -> ParserOutcome:
     if isinstance(result, ParserOutcome):
         return result
-    return ParserOutcome(status="processed", dfs=result)
+    return ParserOutcome(status="processed", dataframes=result)
 
 
 def get_non_nem_outcome(file_name: str, error_file_path: str) -> ParserOutcome:
@@ -65,4 +65,4 @@ def get_non_nem_outcome(file_name: str, error_file_path: str) -> ParserOutcome:
 
 
 def get_non_nem_df(file_name: str, error_file_path: str) -> ParserResult:
-    return get_non_nem_outcome(file_name, error_file_path).dfs
+    return get_non_nem_outcome(file_name, error_file_path).dataframes

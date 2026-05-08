@@ -15,7 +15,9 @@ Invariants:
 - status="unmapped"           → rows_written == 0 AND
                                 candidate_row_count > 0 AND
                                 unmapped_count == candidate_row_count
-- status="processed_external" → rows_written == 0 AND dfs == []
+- status="processed_external" → rows_written == 0 AND dataframes == []
+- status="parse_failed"       → rows_written == 0 AND
+                                reason in {parser_error, processing_error}
 - rows_skipped <= sum(skip_reasons.values())
   (cell-level skip counts can exceed row count when a row contributes
   multiple value-column skips — see Tasks 10/11/16.)
@@ -57,8 +59,15 @@ def assert_parser_outcome_invariants(outcome: ParserOutcome) -> None:
         assert outcome.rows_written == 0, (
             f"status='processed_external' requires rows_written == 0, got {outcome.rows_written}"
         )
-        assert list(outcome.dfs) == [], (
-            f"status='processed_external' requires dfs == [], got {len(list(outcome.dfs))} dfs"
+        assert list(outcome.dataframes) == [], (
+            f"status='processed_external' requires dataframes == [], got {len(list(outcome.dataframes))} dataframes"
+        )
+    elif outcome.status == "parse_failed":
+        assert outcome.rows_written == 0, (
+            f"status='parse_failed' requires rows_written == 0, got {outcome.rows_written}"
+        )
+        assert outcome.reason in {"parser_error", "processing_error"}, (
+            f"status='parse_failed' requires reason in {{parser_error, processing_error}}, got {outcome.reason}"
         )
 
     if outcome.skip_reasons:

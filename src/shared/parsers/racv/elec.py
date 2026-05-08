@@ -113,7 +113,7 @@ def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
     if dfs:
         return ParserOutcome(
             status="processed",
-            dfs=dfs,
+            dataframes=dfs,
             source_row_count=source_row_count,
             candidate_row_count=candidate_row_count,
             rows_skipped=rows_skipped,

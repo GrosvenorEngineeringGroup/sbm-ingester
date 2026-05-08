@@ -737,7 +737,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         raise ValueError("No data parsed from file")
                 else:
                     # Chain first item back with the rest of the stream
-                    outcome = ParserOutcome(status="processed", dfs=chain([first_item], stream))
+                    outcome = ParserOutcome(status="processed", dataframes=chain([first_item], stream))
             except _NEM_FALLTHROUGH_ERRORS:
                 # Fall back to batch parser
                 try:
@@ -755,7 +755,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         else:
                             raise ValueError("No data parsed from file")
                     else:
-                        outcome = ParserOutcome(status="processed", dfs=dfs)
+                        outcome = ParserOutcome(status="processed", dataframes=dfs)
                 except _NEM_FALLTHROUGH_ERRORS:
                     # Try non-NEM parsers as last resort
                     try:
@@ -781,7 +781,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
             file_total_skipped_seen = 0
             final_reason: ParserReason | None = outcome.reason
             try:
-                if outcome.dfs:
+                if outcome.dataframes:
                     candidate_row_count = 0
                     unmapped_count = 0
                     rows_written = 0
@@ -795,7 +795,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     # captured upstream.
                     unmapped_identifiers: set[tuple[str, str]] = set(outcome.unmapped_identifiers)
 
-                    for nmi, df in outcome.dfs:
+                    for nmi, df in outcome.dataframes:
                         # Reset index if t_start is the index
                         if "t_start" not in df.columns and df.index.name == "t_start":
                             df = df.reset_index()

@@ -18,7 +18,7 @@ def test_processed_empty_outcome_defaults_to_no_rows() -> None:
     outcome = ParserOutcome(status="processed_empty", reason="no_data_sentinel")
 
     assert outcome.status == "processed_empty"
-    assert outcome.dfs == []
+    assert outcome.dataframes == []
     assert outcome.source_row_count == 0
     assert outcome.candidate_row_count == 0
     assert outcome.rows_written == 0

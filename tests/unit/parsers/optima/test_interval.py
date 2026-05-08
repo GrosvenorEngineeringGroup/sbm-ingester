@@ -13,7 +13,7 @@ from shared.parsers import NotRelevantParser, ParserError, ParserOutcome
 def _processed_dfs(result: ParserOutcome) -> list[tuple[str, pd.DataFrame]]:
     assert result.status == "processed"
     assert result.source_row_count > 0
-    return result.dfs
+    return result.dataframes
 
 
 class TestIntervalParser:
@@ -38,7 +38,7 @@ class TestIntervalParser:
 
         assert result.status == "processed_empty"
         assert result.reason == "no_data_sentinel"
-        assert result.dfs == []
+        assert result.dataframes == []
 
     def test_pseudo_no_data_sentinel_with_malformed_usage_skip_counts(self, tmp_path) -> None:
         """Pseudo-sentinel row with malformed Usage and blank date is skipped.
@@ -57,7 +57,7 @@ class TestIntervalParser:
 
         result = interval_parser(str(filepath), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
         assert result.skip_reasons["unparseable_timestamp"] == 1
@@ -81,7 +81,7 @@ class TestIntervalParser:
 
         result = interval_parser(str(filepath), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_timestamp"] == 1
         assert result.reason == "all_skipped"
@@ -106,7 +106,7 @@ class TestIntervalParser:
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
     def test_header_only_generation_file_returns_processed_empty(self, tmp_path) -> None:
         from shared.parsers.optima.interval import interval_parser
@@ -119,7 +119,7 @@ class TestIntervalParser:
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
     def test_blank_date_with_malformed_usage_skip_counts(self, tmp_path) -> None:
         """Row with blank Date AND malformed Usage is double-skipped."""
@@ -161,7 +161,7 @@ class TestIntervalParser:
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
         assert result.reason == "all_blank"
-        assert result.dfs == []
+        assert result.dataframes == []
 
     def test_malformed_usage_after_schema_match_skip_counts(self, tmp_path) -> None:
         """Single malformed Usage value is skipped (counted), not raised."""
@@ -172,7 +172,7 @@ class TestIntervalParser:
 
         result = interval_parser(str(filepath), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
 
@@ -185,7 +185,7 @@ class TestIntervalParser:
 
         result = interval_parser(str(filepath), "error_log")
         assert result.status == "processed_empty"
-        assert result.dfs == []
+        assert result.dataframes == []
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
 
@@ -211,8 +211,8 @@ class TestIntervalParser:
         assert result.candidate_row_count == 99
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
-        assert len(result.dfs) == 1
-        _nmi, df = result.dfs[0]
+        assert len(result.dataframes) == 1
+        _nmi, df = result.dataframes[0]
         assert len(df) == 99
 
     def test_partial_bad_timestamp_in_otherwise_valid_file_skip_counts(self, tmp_path) -> None:
@@ -236,8 +236,8 @@ class TestIntervalParser:
         assert result.candidate_row_count == 99
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_timestamp"] == 1
-        assert len(result.dfs) == 1
-        _nmi, df = result.dfs[0]
+        assert len(result.dataframes) == 1
+        _nmi, df = result.dataframes[0]
         assert len(df) == 99
 
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
@@ -414,7 +414,7 @@ class TestIntervalParserOnRealFixtures:
 
         assert result.status == "processed_empty"
         assert result.reason == "no_data_sentinel"
-        assert result.dfs == []
+        assert result.dataframes == []
 
 
 class TestIntervalParserCheapGate:

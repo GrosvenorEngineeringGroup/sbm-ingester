@@ -126,7 +126,7 @@ def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> Parser
 
     return ParserOutcome(
         status="processed",
-        dfs=dfs,
+        dataframes=dfs,
         source_row_count=source_row_count,
         candidate_row_count=candidate_row_count,
         rows_skipped=rows_skipped,
