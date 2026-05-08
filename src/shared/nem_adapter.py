@@ -13,6 +13,7 @@ Key features:
 
 import logging
 from collections.abc import Generator
+from pathlib import Path
 
 import pandas as pd
 from aws_lambda_powertools import Logger
@@ -269,3 +270,24 @@ def _build_dataframe_from_channels(
         df.loc[:, f"quality_{suffix}"] = pd.Series(data=quality, index=index, name=f"quality_{suffix}")
 
     return df
+
+
+def _is_nem_envelope_only(file_path: str) -> bool:
+    """Return True if the file's first line is a NEM12 or NEM13 envelope header.
+
+    Reads up to ~64 bytes (BOM-stripped via ``utf-8-sig``) and matches the
+    prefix ``100,NEM12,`` OR ``100,NEM13,``. Used to short-circuit empty
+    NEM-format files (only 100/900 records, no 200/300 payload) to
+    ``processed_empty(reason="no_data_sentinel")`` instead of falling through
+    to the non-NEM dispatcher (which never matches NEM-format files and would
+    incorrectly route them to ``newParseErr/``).
+
+    Defensive: returns ``False`` on any I/O or decoding error so a failing
+    helper never crashes the lambda.
+    """
+    try:
+        with Path(file_path).open(encoding="utf-8-sig") as f:
+            first_line = f.readline(64)
+    except (OSError, UnicodeDecodeError):
+        return False
+    return first_line.startswith("100,NEM12,") or first_line.startswith("100,NEM13,")
