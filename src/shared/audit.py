@@ -17,7 +17,9 @@ from typing import Any
 
 import boto3
 
-AUDIT_BUCKET = "hudibucketsrc"
+from shared.common import HUDI_BUCKET
+
+AUDIT_BUCKET = HUDI_BUCKET
 AUDIT_PREFIX = "audit"
 SAMPLE_CAP = 100
 

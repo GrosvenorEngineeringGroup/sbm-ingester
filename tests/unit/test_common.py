@@ -23,13 +23,19 @@ class TestConstants:
     def test_bucket_constants_exist(self) -> None:
         """Test that bucket and directory constants are defined."""
         from shared.common import (
-            BUCKET_NAME,
-            IRREVFILES_DIR,
+            HUDI_BUCKET,
+            HUDI_FINAL_PREFIX,
+            HUDI_STAGING_PREFIX,
+            INPUT_BUCKET,
             PARSE_ERR_DIR,
             PROCESSED_DIR,
+            UNMAPPED_DIR,
         )
 
-        assert BUCKET_NAME == "sbm-file-ingester"
+        assert INPUT_BUCKET == "sbm-file-ingester"
         assert PARSE_ERR_DIR == "newParseErr/"
-        assert IRREVFILES_DIR == "newIrrevFiles/"
+        assert UNMAPPED_DIR == "newIrrevFiles/"
         assert PROCESSED_DIR == "newP/"
+        assert HUDI_BUCKET == "hudibucketsrc"
+        assert HUDI_FINAL_PREFIX == "sensorDataFiles"
+        assert HUDI_STAGING_PREFIX == "sensorDataFilesStaging"

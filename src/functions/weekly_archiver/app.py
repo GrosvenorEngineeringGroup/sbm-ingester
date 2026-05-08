@@ -19,12 +19,13 @@ from aws_lambda_powertools.metrics import MetricUnit
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from shared.common import INPUT_BUCKET, PARSE_ERR_DIR, PROCESSED_DIR, UNMAPPED_DIR
+
 logger = Logger(service="weekly-archiver")
 tracer = Tracer(service="weekly-archiver")
 metrics = Metrics(namespace="SBM/Ingester")
 
-BUCKET_NAME = "sbm-file-ingester"
-PREFIXES = ["newP/", "newIrrevFiles/", "newParseErr/"]
+PREFIXES = [PROCESSED_DIR, UNMAPPED_DIR, PARSE_ERR_DIR]
 MAX_WORKERS = 50
 TARGET_WEEK_PATTERN = re.compile(r"^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$")
 
@@ -61,11 +62,11 @@ def archive_single_file(key: str, prefix: str, target_week: str) -> tuple[Archiv
 
     try:
         s3.copy_object(
-            Bucket=BUCKET_NAME,
-            CopySource={"Bucket": BUCKET_NAME, "Key": key},
+            Bucket=INPUT_BUCKET,
+            CopySource={"Bucket": INPUT_BUCKET, "Key": key},
             Key=dest_key,
         )
-        s3.delete_object(Bucket=BUCKET_NAME, Key=key)
+        s3.delete_object(Bucket=INPUT_BUCKET, Key=key)
         return ArchiveResult.SUCCESS, key
 
     except ClientError as e:
@@ -112,7 +113,7 @@ def archive_files_for_prefix(prefix: str, target_week: str) -> dict[str, int]:
 
     # Collect files to archive
     files_to_archive: list[str] = []
-    for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix, Delimiter="/"):
+    for page in paginator.paginate(Bucket=INPUT_BUCKET, Prefix=prefix, Delimiter="/"):
         for obj in page.get("Contents", []):
             key = obj["Key"]
             if "/archived/" in key:

@@ -26,11 +26,14 @@ from aws_lambda_powertools.utilities.idempotency import (
 )
 
 from shared import (
-    BUCKET_NAME,
-    IRREVFILES_DIR,
+    HUDI_BUCKET,
+    HUDI_FINAL_PREFIX,
+    HUDI_STAGING_PREFIX,
+    INPUT_BUCKET,
     PARSE_ERR_DIR,
     PARSE_ERROR_LOG_GROUP,
     PROCESSED_DIR,
+    UNMAPPED_DIR,
     output_as_data_frames,
     stream_as_data_frames,
 )
@@ -164,7 +167,7 @@ def _processed_destination_for_status(status: str) -> str:
     if status in {"processed", "processed_empty", "processed_external"}:
         return PROCESSED_DIR
     if status == "unmapped":
-        return IRREVFILES_DIR
+        return UNMAPPED_DIR
     raise ValueError(f"Unsupported parser outcome status: {status}")
 
 
@@ -493,7 +496,7 @@ def _move_final_source_or_parse_error(
     timestamp_now: str,
 ) -> bool:
     """Move source to its final prefix, or roll back writer output and mark parse error."""
-    dest_key = move_s3_file(BUCKET_NAME, local_file_path, dest_prefix)
+    dest_key = move_s3_file(INPUT_BUCKET, local_file_path, dest_prefix)
     if dest_key is not None:
         return True
 
@@ -505,7 +508,7 @@ def _move_final_source_or_parse_error(
     )
     logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {error_message}"
 
-    parse_error_key = move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+    parse_error_key = move_s3_file(INPUT_BUCKET, local_file_path, PARSE_ERR_DIR)
     if parse_error_key is None:
         logger.error(
             "Failed to move source file to parse error after final move failure",
@@ -517,7 +520,7 @@ def _move_final_source_or_parse_error(
 
 def _upload_csv_to_s3(csv_content: str, output_key: str) -> None:
     """Upload CSV content to S3. Used by ThreadPoolExecutor."""
-    s3_resource.Object("hudibucketsrc", output_key).put(Body=csv_content)
+    s3_resource.Object(HUDI_BUCKET, output_key).put(Body=csv_content)
     logger.debug("Uploaded CSV to S3", extra={"output_key": output_key})
 
 
@@ -528,8 +531,8 @@ def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
         return
 
     merged_df = pd.concat(buffer, ignore_index=True)
-    output_key = f"sensorDataFiles/batch_{batch_timestamp}_{random.randint(1, 1000000)}.csv"
-    s3_resource.Object("hudibucketsrc", output_key).put(Body=merged_df.to_csv(index=False))
+    output_key = f"{HUDI_FINAL_PREFIX}/batch_{batch_timestamp}_{random.randint(1, 1000000)}.csv"
+    s3_resource.Object(HUDI_BUCKET, output_key).put(Body=merged_df.to_csv(index=False))
     logger.debug("Flushed buffer to S3", extra={"output_key": output_key, "rows": len(merged_df)})
 
 
@@ -578,8 +581,8 @@ class DirectCSVWriter:
 
         csv_content = self.buffer.getvalue()
         batch_file_name = f"batch_{self.batch_timestamp}_{self.writer_token}_{random.randint(1, 1000000)}.csv"
-        staging_key = f"sensorDataFilesStaging/{self.writer_token}/{batch_file_name}"
-        final_key = f"sensorDataFiles/{batch_file_name}"
+        staging_key = f"{HUDI_STAGING_PREFIX}/{self.writer_token}/{batch_file_name}"
+        final_key = f"{HUDI_FINAL_PREFIX}/{batch_file_name}"
 
         # Submit upload task to thread pool
         future = self.executor.submit(_upload_csv_to_s3, csv_content, staging_key)
@@ -603,9 +606,9 @@ class DirectCSVWriter:
             job.future.result()
 
         for job in jobs:
-            s3_resource.Object("hudibucketsrc", job.final_key).copy({"Bucket": "hudibucketsrc", "Key": job.staging_key})
+            s3_resource.Object(HUDI_BUCKET, job.final_key).copy({"Bucket": HUDI_BUCKET, "Key": job.staging_key})
             self.committed_final_keys.append(job.final_key)
-            s3_resource.Object("hudibucketsrc", job.staging_key).delete()
+            s3_resource.Object(HUDI_BUCKET, job.staging_key).delete()
             logger.debug(
                 "Committed staged CSV upload",
                 extra={"staging_key": job.staging_key, "final_key": job.final_key},
@@ -632,7 +635,7 @@ class DirectCSVWriter:
                 continue
             seen_keys.add(key)
             try:
-                s3_resource.Object("hudibucketsrc", key).delete()
+                s3_resource.Object(HUDI_BUCKET, key).delete()
             except Exception as e:
                 logger.warning("Failed to delete staged CSV object", extra={"key": key, "error": str(e)})
 
@@ -659,7 +662,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
         logger.info("Script started", extra={"timestamp": timestamp_now, "files_count": len(tbp_files or [])})
 
         logs_dict: dict[str, str] = {}
-        nem12_mappings = read_nem12_mappings(BUCKET_NAME)
+        nem12_mappings = read_nem12_mappings(INPUT_BUCKET)
 
         if nem12_mappings is None:
             raise Exception("Failed to read NEM12 mappings from S3.")
@@ -759,7 +762,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         outcome = get_non_nem_outcome(local_file_path, PARSE_ERROR_LOG_GROUP)
                     except (ParserError, ProcessingError) as e:
                         logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}] {e}"
-                        move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                        move_s3_file(INPUT_BUCKET, local_file_path, PARSE_ERR_DIR)
                         parse_err_files_count += 1
                         continue
 
@@ -943,7 +946,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     extra={"file": local_file_path, "error": str(e)},
                 )
                 logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {e}"
-                move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                move_s3_file(INPUT_BUCKET, local_file_path, PARSE_ERR_DIR)
                 parse_err_files_count += 1
                 continue
 
@@ -956,7 +959,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                     extra={"file": local_file_path, "status": final_status, "error": str(e)},
                 )
                 logs_dict[f"Processing Error: {local_file_path}"] = f"[{timestamp_now}] {e}"
-                move_s3_file(BUCKET_NAME, local_file_path, PARSE_ERR_DIR)
+                move_s3_file(INPUT_BUCKET, local_file_path, PARSE_ERR_DIR)
                 parse_err_files_count += 1
                 continue
 

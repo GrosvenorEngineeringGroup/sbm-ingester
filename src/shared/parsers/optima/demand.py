@@ -25,6 +25,7 @@ from typing import Any
 import boto3
 from aws_lambda_powertools import Logger
 
+from shared.common import HUDI_BUCKET, HUDI_FINAL_PREFIX
 from shared.parsers import (
     NotRelevantParser,
     ParserError,
@@ -36,8 +37,7 @@ from shared.parsers import _mappings as _mappings_mod
 
 logger = Logger(service="optima-demand-parser", child=True)
 
-HUDI_BUCKET = "hudibucketsrc"
-HUDI_PREFIX = "sensorDataFiles"
+HUDI_PREFIX = HUDI_FINAL_PREFIX
 
 # (CSV column name, demand suffix in nem12_id, Hudi unit string)
 CSV_FIELD_MAPPING: list[tuple[str, str, str]] = [

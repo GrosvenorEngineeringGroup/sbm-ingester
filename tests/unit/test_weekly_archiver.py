@@ -535,10 +535,10 @@ class TestConstants:
     """Tests for module constants."""
 
     def test_bucket_name_constant(self) -> None:
-        """Test BUCKET_NAME constant is correct."""
-        from functions.weekly_archiver.app import BUCKET_NAME
+        """Test INPUT_BUCKET constant is correct."""
+        from functions.weekly_archiver.app import INPUT_BUCKET
 
-        assert BUCKET_NAME == "sbm-file-ingester"
+        assert INPUT_BUCKET == "sbm-file-ingester"
 
     def test_prefixes_constant(self) -> None:
         """Test PREFIXES constant contains all required prefixes."""
