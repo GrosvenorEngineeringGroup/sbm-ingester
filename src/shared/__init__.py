@@ -18,6 +18,7 @@ from shared.common import (
 )
 from shared.nem_adapter import output_as_data_frames, stream_as_data_frames
 from shared.non_nem_parsers import get_non_nem_df
+from shared.source_file import SourceFile
 
 __all__ = [
     "BUCKET_NAME",
@@ -29,6 +30,7 @@ __all__ = [
     "PARSE_ERR_DIR",
     "PROCESSED_DIR",
     "RUNTIME_ERROR_LOG_GROUP",
+    "SourceFile",
     "get_non_nem_df",
     "output_as_data_frames",
     "stream_as_data_frames",
