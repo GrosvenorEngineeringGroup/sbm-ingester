@@ -13,7 +13,7 @@ from collections import Counter
 import pytest
 
 from shared.parsers import ParserOutcome, SkipReason
-from tests._outcome_invariants import assert_parser_outcome_invariants
+from tests.helpers.outcome_invariants import assert_parser_outcome_invariants
 
 
 class TestProcessedInvariant:

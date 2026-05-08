@@ -27,7 +27,7 @@ from moto import mock_aws
 import shared.parsers.optima.bunnings_billing as bp_mod
 from shared.parsers import _mappings as mappings_mod
 from shared.parsers.optima.demand import demand_parser
-from tests._outcome_invariants import assert_parser_outcome_invariants
+from tests.helpers.outcome_invariants import assert_parser_outcome_invariants
 
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures"
 
