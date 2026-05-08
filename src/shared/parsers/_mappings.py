@@ -11,9 +11,11 @@ import json
 import boto3
 from aws_lambda_powertools import Logger
 
+from shared.common import INPUT_BUCKET
+
 logger = Logger(service="nem12-mappings-loader", child=True)
 
-MAPPINGS_BUCKET = "sbm-file-ingester"
+MAPPINGS_BUCKET = INPUT_BUCKET
 MAPPINGS_KEY = "nem12_mappings.json"
 
 _cache: dict | None = None

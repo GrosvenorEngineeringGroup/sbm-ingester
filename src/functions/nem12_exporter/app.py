@@ -12,6 +12,8 @@ from gremlin_python.process.graph_traversal import GraphTraversalSource
 from gremlin_python.process.strategies import *  # noqa: F403
 from tornado.websocket import WebSocketClosedError
 
+from shared.common import INPUT_BUCKET
+
 s3 = boto3.client("s3")
 
 reconnectable_err_msgs = ["ReadOnlyViolationException", "Server disconnected", "Connection refused"]
@@ -87,7 +89,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     try:
         nem12Ids = {d["nem12Id"][0]: d["id"] for d in g.V().has("nem12Id").valueMap(True, "nem12Id").toList()}
         nem12_json = json.dumps(nem12Ids, indent=2)
-        bucket_name = "sbm-file-ingester"
+        bucket_name = INPUT_BUCKET
         object_key = "nem12_mappings.json"
         s3.put_object(Bucket=bucket_name, Key=object_key, Body=nem12_json, ContentType="application/json")
         return {"statusCode": 200, "body": "Nem12 mappings successfully written to S3"}

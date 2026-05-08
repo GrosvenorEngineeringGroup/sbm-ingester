@@ -4,6 +4,8 @@ from typing import Any
 
 import boto3
 
+from shared.common import INPUT_BUCKET
+
 s3 = boto3.client("s3")
 
 
@@ -19,7 +21,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
 
     # Get bucket & prefix from event or environment
-    bucket = "sbm-file-ingester"
+    bucket = INPUT_BUCKET
     prefix = "newTBP/"
 
     if not bucket:
