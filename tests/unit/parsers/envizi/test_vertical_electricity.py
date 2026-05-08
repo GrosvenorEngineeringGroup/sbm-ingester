@@ -25,7 +25,7 @@ class TestEnviziVerticalParserElectricity:
             filepath = str(Path(temp_directory) / "elec_data.csv")
             create_envizi_electricity_csv(filepath, serial_numbers=["E001"], rows_per_meter=5)
 
-            result = envizi_vertical_parser_electricity(filepath, "error_log")
+            result = envizi_vertical_parser_electricity(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 1
@@ -41,21 +41,21 @@ class TestEnviziVerticalParserElectricity:
             create_envizi_electricity_csv(filepath, serial_numbers=["E001"])
 
             with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
-                envizi_vertical_parser_electricity(filepath, "error_log")
+                envizi_vertical_parser_electricity(filepath)
 
     def test_missing_required_columns_is_not_relevant(self, tmp_path) -> None:
         path = tmp_path / "bunnings_demand_profile.csv"
         path.write_text('Commodities:,"Electricity"\nNo data found\n')
 
         with pytest.raises(NotRelevantParser, match="Not an Envizi electricity CSV"):
-            envizi_vertical_parser_electricity(str(path), "error_log")
+            envizi_vertical_parser_electricity(str(path))
 
     def test_decode_error_is_not_relevant(self, tmp_path) -> None:
         path = tmp_path / "20260414-RACV-Usage and Spend Report.csv"
         path.write_bytes("Commodities:\n".encode("utf-16-le"))
 
         with pytest.raises(NotRelevantParser, match="Not readable as an Envizi CSV"):
-            envizi_vertical_parser_electricity(str(path), "error_log")
+            envizi_vertical_parser_electricity(str(path))
 
     def test_malformed_kwh_after_schema_match_skip_counts(self, tmp_path) -> None:
         """Single malformed kWh value is skipped (counted), not raised."""
@@ -64,7 +64,7 @@ class TestEnviziVerticalParserElectricity:
             "Serial_No,Interval_Start,Interval_End,kWh\nE001,2026-05-01T00:00:00,2026-05-01T00:30:00,not-a-number\n"
         )
 
-        result = envizi_vertical_parser_electricity(str(path), "error_log")
+        result = envizi_vertical_parser_electricity(str(path))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -80,7 +80,7 @@ class TestEnviziVerticalParserElectricity:
             + "\nE001,2026-05-02T00:00:00,2026-05-02T00:30:00,not-a-number\n"
         )
 
-        result = envizi_vertical_parser_electricity(str(path), "error_log")
+        result = envizi_vertical_parser_electricity(str(path))
         assert result.status == "processed"
         assert result.source_row_count == 25
         assert result.candidate_row_count == 24
@@ -96,7 +96,7 @@ class TestEnviziVerticalParserElectricity:
             "Serial_No,Interval_Start,Interval_End,kWh\n" + good_rows + "\nE001,not-a-date,2026-05-02T00:30:00,1.0\n"
         )
 
-        result = envizi_vertical_parser_electricity(str(path), "error_log")
+        result = envizi_vertical_parser_electricity(str(path))
         assert result.status == "processed"
         assert result.source_row_count == 25
         assert result.candidate_row_count == 24
@@ -111,7 +111,7 @@ class TestEnviziVerticalParserElectricity:
             "E001,2026-05-01T00:30:00,2026-05-01T01:00:00,   \n"
         )
 
-        result = envizi_vertical_parser_electricity(str(path), "error_log")
+        result = envizi_vertical_parser_electricity(str(path))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
@@ -128,7 +128,7 @@ class TestEnviziVerticalParserElectricityCheapGate:
             b"\xef\xbb\xbfSerial_No,Interval_Start,Interval_End,kWh\nE001,2026-05-01T00:00:00,2026-05-01T00:30:00,1.0\n"
         )
 
-        result = envizi_vertical_parser_electricity(str(path), "error_log")
+        result = envizi_vertical_parser_electricity(str(path))
         assert result.status == "processed"
         assert result.candidate_row_count == 1
 
@@ -140,11 +140,11 @@ class TestEnviziVerticalParserElectricityCheapGate:
 
         with patch.object(mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
             with pytest.raises(NotRelevantParser):
-                mod.envizi_vertical_parser_electricity(str(path), "error_log")
+                mod.envizi_vertical_parser_electricity(str(path))
 
     def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
         path = tmp_path / "corrupt.csv"
         path.write_bytes(b'Serial_No,Interval_Start,Interval_End,kWh\nE001,"unterminated,2026-05-01,1.0\n')
 
         with pytest.raises(ParserError, match="Failed to read Envizi electricity CSV"):
-            envizi_vertical_parser_electricity(str(path), "error_log")
+            envizi_vertical_parser_electricity(str(path))

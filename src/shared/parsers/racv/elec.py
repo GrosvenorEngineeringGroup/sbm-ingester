@@ -27,7 +27,7 @@ from shared.parsers._coerce import coerce_numeric_column
 logger = Logger(service="racv-elec-parser", child=True)
 
 
-def racv_elec_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+def racv_elec_parser(file_name: str) -> ParserOutcome:
     if "OptimaGenerationData" in file_name:
         raise NotRelevantParser("Not Relevant Parser For File")
 

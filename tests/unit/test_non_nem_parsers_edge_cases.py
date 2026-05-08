@@ -8,21 +8,21 @@ def test_processed_empty_outcome_stops_dispatch(tmp_path, monkeypatch) -> None:
 
     calls: list[str] = []
 
-    def first_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    def first_parser(file_name: str) -> ParserOutcome:
         calls.append("first")
         raise NotRelevantParser("not mine")
 
-    def empty_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    def empty_parser(file_name: str) -> ParserOutcome:
         calls.append("empty")
         return ParserOutcome(status="processed_empty", reason="all_zero_valid")
 
-    def later_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    def later_parser(file_name: str) -> ParserOutcome:
         calls.append("later")
         raise AssertionError("dispatcher should stop after processed_empty")
 
     monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, empty_parser, later_parser])
 
-    result = get_non_nem_outcome(str(tmp_path / "file.csv"), "error_log")
+    result = get_non_nem_outcome(str(tmp_path / "file.csv"))
 
     assert calls == ["first", "empty"]
     assert result.status == "processed_empty"
@@ -32,11 +32,11 @@ def test_processed_empty_outcome_stops_dispatch(tmp_path, monkeypatch) -> None:
 def test_legacy_get_non_nem_df_returns_empty_list_for_processed_empty(tmp_path, monkeypatch) -> None:
     from shared.non_nem_parsers import get_non_nem_df
 
-    def parser(file_name: str, error_file_path: str) -> ParserOutcome:
+    def parser(file_name: str) -> ParserOutcome:
         return ParserOutcome(status="processed_empty", reason="all_blank")
 
     monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
 
-    result = get_non_nem_df(str(tmp_path / "file.csv"), "error_log")
+    result = get_non_nem_df(str(tmp_path / "file.csv"))
 
     assert not result

@@ -28,7 +28,7 @@ def test_demand_no_data_file_routes_past_broad_envizi_gates(tmp_path) -> None:
     _write_demand_no_data_csv(path)
 
     with patch("shared.non_nem_parsers.logger") as logger:
-        result = get_non_nem_outcome(str(path), "error_log")
+        result = get_non_nem_outcome(str(path))
 
     attempted_parsers = [call.kwargs["extra"]["parser"] for call in logger.debug.call_args_list]
     assert "envizi_vertical_parser_electricity" in attempted_parsers
@@ -42,6 +42,6 @@ def test_legacy_get_non_nem_df_unwraps_routed_empty_outcome(tmp_path) -> None:
     path = tmp_path / "Bunnings_Demand_Profile.csv"
     _write_demand_no_data_csv(path)
 
-    result = get_non_nem_df(str(path), "error_log")
+    result = get_non_nem_df(str(path))
 
     assert not result

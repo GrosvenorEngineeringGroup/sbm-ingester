@@ -39,7 +39,7 @@ Date,Start Time,Meter1 kWh,Meter2 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             # Should have parsed meter columns
@@ -63,7 +63,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             # Result should only have non-zero day data
@@ -87,7 +87,7 @@ Date,Start Time,Meter1 kWh
                 f.write(content)
 
             with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
-                racv_elec_parser(filepath, "error_log")
+                racv_elec_parser(filepath)
 
 
 class TestRacvElecParserEdgeCases:
@@ -111,7 +111,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
 
             assert result.status == "processed_empty"
             assert result.reason == "all_zero_valid"
@@ -135,7 +135,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
 
             assert result.status == "processed_empty"
             assert result.reason == "all_zero_valid"
@@ -153,7 +153,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 1
@@ -177,7 +177,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
             # The single bad cell becomes NaN; daily sum is NaN/0 → all_zero_valid.
             assert result.status == "processed_empty"
             assert result.dataframes == []
@@ -199,7 +199,7 @@ Date,Start Time,Meter1 kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_value"] == 1
             assert len(result.dataframes) == 1
@@ -221,7 +221,7 @@ Date,Start Time,ZeroMeter kWh,NonZeroMeter kWh
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = racv_elec_parser(filepath, "error_log")
+            result = racv_elec_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             # Should only have nonzero meter
@@ -246,7 +246,7 @@ class TestRacvElecParserCheapGate:
             b"2024-01-01,00:30,6.0\n"
         )
 
-        result = racv_elec_parser(str(path), "error_log")
+        result = racv_elec_parser(str(path))
         assert result.status == "processed"
 
     def test_cheap_gate_does_not_invoke_pd_read_csv(self, tmp_path) -> None:
@@ -259,7 +259,7 @@ class TestRacvElecParserCheapGate:
 
         with patch.object(elec_mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
             with pytest.raises(NotRelevantParser):
-                elec_mod.racv_elec_parser(str(path), "error_log")
+                elec_mod.racv_elec_parser(str(path))
 
     def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
         from shared.parsers import ParserError
@@ -271,4 +271,4 @@ class TestRacvElecParserCheapGate:
         path.write_bytes(b'Header Row 1\nHeader Row 2\nDate,Start Time,Meter1 kWh\n2024-01-01,00:00,"unterminated\n')
 
         with pytest.raises(ParserError, match="Failed to read RACV electricity CSV"):
-            racv_elec_parser(str(path), "error_log")
+            racv_elec_parser(str(path))

@@ -74,7 +74,7 @@ def test_demand_parser_partial_skip_passes_invariants(write_demand_csv, monkeypa
 
     with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
         mock_client.return_value.put_object.return_value = {"ETag": "fake"}
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
 
     assert_parser_outcome_invariants(result)
 
@@ -101,7 +101,7 @@ def test_demand_parser_all_skipped_passes_invariants(write_demand_csv, monkeypat
     path = write_demand_csv(body_override=body)
 
     with patch("shared.parsers.optima.demand.boto3.client"):
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
 
     assert_parser_outcome_invariants(result)
 
@@ -162,7 +162,7 @@ def test_bunnings_billing_partial_skip_passes_invariants(_reset_mappings_cache, 
         {"Peak": "not-a-number", "Total Spend": "1234.56"},
     )
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert_parser_outcome_invariants(result)
 
 
@@ -173,5 +173,5 @@ def test_bunnings_billing_happy_path_passes_invariants(_reset_mappings_cache, tm
     _setup_s3_with_mappings(mappings)
     src = _make_billing_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert_parser_outcome_invariants(result)

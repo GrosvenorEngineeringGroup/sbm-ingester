@@ -21,8 +21,7 @@ S3_BUCKET = "gegoptimareports"
 S3_KEY = "usageAndSpendReports/racvUsageAndSpend.csv"
 
 
-def racv_billing_parser(file_name: str, error_file_path: str) -> ParserOutcome:
-    _ = error_file_path
+def racv_billing_parser(file_name: str) -> ParserOutcome:
     path = Path(file_name)
     if "OptimaGenerationData" in path.name:
         raise NotRelevantParser("Not Relevant Parser For File")

@@ -33,7 +33,7 @@ class TestEnviziVerticalParserWaterBulk:
             )
             df.to_csv(filepath, index=False)
 
-            result = envizi_vertical_parser_water_bulk(filepath, "error_log")
+            result = envizi_vertical_parser_water_bulk(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 2  # Two unique serial numbers
@@ -61,7 +61,7 @@ class TestEnviziVerticalParserWaterBulk:
             df.to_csv(filepath, index=False)
 
             with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
-                envizi_vertical_parser_water_bulk(filepath, "error_log")
+                envizi_vertical_parser_water_bulk(filepath)
 
     def test_bulk_water_handles_multiple_meters(self, temp_directory: str) -> None:
         """Test that bulk water parser handles multiple meters correctly."""
@@ -82,7 +82,7 @@ class TestEnviziVerticalParserWaterBulk:
             )
             df.to_csv(filepath, index=False)
 
-            result = envizi_vertical_parser_water_bulk(filepath, "error_log")
+            result = envizi_vertical_parser_water_bulk(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 3
@@ -106,7 +106,7 @@ class TestParserOutputConsistency:
             )
             df.to_csv(filepath, index=False)
 
-            result = envizi_vertical_parser_water_bulk(filepath, "error_log")
+            result = envizi_vertical_parser_water_bulk(filepath)
             result_dfs = _processed_dfs(result)
 
             _, result_df = result_dfs[0]
@@ -117,7 +117,7 @@ class TestParserOutputConsistency:
         path = tmp_path / "bulk_water.csv"
         path.write_text("Serial_No,Date_Time,kL\n12345,2026-05-01T00:00:00,not-a-number\n")
 
-        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        result = envizi_vertical_parser_water_bulk(str(path))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -129,7 +129,7 @@ class TestParserOutputConsistency:
         good_rows = "\n".join(f"12345,2026-05-01T{h:02d}:00:00,{h * 0.5}" for h in range(24))
         path.write_text("Serial_No,Date_Time,kL\n" + good_rows + "\n12345,2026-05-02T00:00:00,not-a-number\n")
 
-        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        result = envizi_vertical_parser_water_bulk(str(path))
         assert result.status == "processed"
         assert result.source_row_count == 25
         assert result.candidate_row_count == 24
@@ -142,7 +142,7 @@ class TestParserOutputConsistency:
         good_rows = "\n".join(f"12345,2026-05-01T{h:02d}:00:00,{h * 0.5}" for h in range(24))
         path.write_text("Serial_No,Date_Time,kL\n" + good_rows + "\n12345,not-a-date,1.0\n")
 
-        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        result = envizi_vertical_parser_water_bulk(str(path))
         assert result.status == "processed"
         assert result.source_row_count == 25
         assert result.candidate_row_count == 24
@@ -153,7 +153,7 @@ class TestParserOutputConsistency:
         path = tmp_path / "bulk_water.csv"
         path.write_text("Serial_No,Date_Time,kL\n12345,2026-05-01T00:00:00,\n12345,2026-05-01T00:30:00,   \n")
 
-        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        result = envizi_vertical_parser_water_bulk(str(path))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
@@ -168,7 +168,7 @@ class TestEnviziVerticalParserWaterBulkCheapGate:
         path = tmp_path / "bom_water_bulk.csv"
         path.write_bytes(b"\xef\xbb\xbfSerial_No,Date_Time,kL\nW001,2026-05-01T00:00:00,1.0\n")
 
-        result = envizi_vertical_parser_water_bulk(str(path), "error_log")
+        result = envizi_vertical_parser_water_bulk(str(path))
         assert result.status == "processed"
         assert result.candidate_row_count == 1
 
@@ -180,11 +180,11 @@ class TestEnviziVerticalParserWaterBulkCheapGate:
 
         with patch.object(mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
             with pytest.raises(NotRelevantParser):
-                mod.envizi_vertical_parser_water_bulk(str(path), "error_log")
+                mod.envizi_vertical_parser_water_bulk(str(path))
 
     def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
         path = tmp_path / "corrupt.csv"
         path.write_bytes(b'Serial_No,Date_Time,kL\nW001,"unterminated,1.0\n')
 
         with pytest.raises(ParserError, match="Failed to read Envizi bulk water CSV"):
-            envizi_vertical_parser_water_bulk(str(path), "error_log")
+            envizi_vertical_parser_water_bulk(str(path))

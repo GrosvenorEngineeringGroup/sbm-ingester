@@ -28,7 +28,7 @@ def test_filename_mismatch_raises(tmp_path) -> None:
     f = tmp_path / "20260414-RACV-Usage and Spend Report.csv"
     f.write_bytes(b"irrelevant content")
     with pytest.raises(NotRelevantParser, match="Not Bunnings Usage and Spend File"):
-        bunnings_billing_parser(str(f), "dummy-error-log")
+        bunnings_billing_parser(str(f))
 
 
 def test_utf16_decoding_and_row_parsing(tmp_path) -> None:
@@ -123,7 +123,7 @@ def test_happy_path_writes_expected_hudi_rows(_reset_mappings_cache, tmp_path) -
     dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
     dst.write_bytes(src.read_bytes())
 
-    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(dst))
     assert result.status == "processed"
     assert result.source_row_count == 3
     assert result.candidate_row_count == 69
@@ -190,7 +190,7 @@ def test_quality_cell_is_empty_for_billing_rows(_reset_mappings_cache, tmp_path)
     dst = tmp_path / "20260414.155519-Bunnings-Usage and Spend Report.csv"
     dst.write_bytes(src.read_bytes())
 
-    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(dst))
     assert result.status == "processed"
 
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
@@ -321,7 +321,7 @@ def test_whitespace_only_unit_falls_back_to_default(_reset_mappings_cache, tmp_p
     dst = tmp_path / "20260414.000000-Bunnings-Usage and Spend Report.csv"
     dst.write_bytes(data)
 
-    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(dst))
     assert result.status == "processed"
     assert result.source_row_count == 1
     assert result.candidate_row_count == 2
@@ -451,7 +451,7 @@ def test_missing_mapping_skipped(_reset_mappings_cache, tmp_path) -> None:
     """Rows for NMIs not in nem12_mappings produce no output but do not error."""
     s3 = _setup_s3_with_mappings({})  # empty mappings
     src = _make_fixture(tmp_path, "UNKNOWN_NMI", "Mar 2026", {"Peak": "100.00"})
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert result.status == "unmapped"
     assert result.source_row_count == 1
     assert result.candidate_row_count == 1
@@ -468,7 +468,7 @@ def test_all_valid_billing_candidates_unmapped_returns_unmapped(_reset_mappings_
     dst.write_bytes(src.read_bytes())
     monkeypatch.setattr(bp_mod, "get_nem12_mappings", lambda: {})
 
-    result = bp_mod.bunnings_billing_parser(str(dst), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(dst))
 
     assert result.status == "unmapped"
     assert result.source_row_count == 3
@@ -495,7 +495,7 @@ def test_truncated_billing_row_is_skipped_without_upload(_reset_mappings_cache, 
     )
 
     with patch("shared.parsers.optima.bunnings_billing.boto3.client") as mock_client:
-        result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+        result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed_empty"
     assert result.reason == "all_skipped"
@@ -516,7 +516,7 @@ def test_blank_value_skipped(_reset_mappings_cache, tmp_path) -> None:
     }
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00", "OffPeak": ""})
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert result.status == "processed"
     assert result.source_row_count == 1
     assert result.candidate_row_count == 1
@@ -535,7 +535,7 @@ def test_blank_billing_values_return_processed_empty(_reset_mappings_cache, tmp_
     s3 = _setup_s3_with_mappings({})
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", cells={})
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed_empty"
     assert result.reason == "all_blank"
@@ -552,7 +552,7 @@ def test_invalid_date_returns_processed_empty_all_skipped(_reset_mappings_cache,
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "not-a-month", {"Peak": "100.00"})
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed_empty"
     assert result.reason == "all_skipped"
@@ -579,7 +579,7 @@ def test_mixed_mapped_row_and_invalid_billing_value_writes_good_row(_reset_mappi
     lines.append(",".join(invalid_row))
     src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed"
     assert result.rows_written == 1
@@ -604,7 +604,7 @@ def test_unit_selection_in_output(_reset_mappings_cache, tmp_path) -> None:
         "Mar 2026",
         {"Peak": "100.00", "Total Spend": "1234.56"},
     )
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert result.status == "processed"
     assert result.source_row_count == 1
     assert result.candidate_row_count == 2
@@ -622,7 +622,7 @@ def test_zero_rows_skips_s3_put(_reset_mappings_cache, tmp_path) -> None:
     mappings: dict[str, str] = {}  # none match
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert result.status == "unmapped"
     assert result.source_row_count == 1
     assert result.candidate_row_count == 1
@@ -647,7 +647,7 @@ def test_bunnings_hudi_write_failure_raises_processing_error(_reset_mappings_cac
         mock_client.return_value.put_object.side_effect = RuntimeError("boom")
 
         with pytest.raises(ProcessingError, match="Failed to write Bunnings billing Hudi CSV"):
-            bp_mod.bunnings_billing_parser(str(dst), "dummy")
+            bp_mod.bunnings_billing_parser(str(dst))
 
 
 @mock_aws
@@ -656,7 +656,7 @@ def test_s3_write_target_is_hudibucketsrc(_reset_mappings_cache, tmp_path) -> No
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
     assert result.status == "processed"
     listed = s3.list_objects_v2(Bucket="hudibucketsrc", Prefix="sensorDataFiles/")
     keys = [o["Key"] for o in listed.get("Contents", [])]
@@ -683,7 +683,7 @@ def test_partial_failure_one_bad_date_writes_other_rows(_reset_mappings_cache, t
     lines.append(",".join(bad_row))
     src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed"
     assert result.source_row_count == 2
@@ -712,7 +712,7 @@ def test_partial_failure_one_unparseable_value_other_value_writes(_reset_mapping
         {"Peak": "not-a-number", "Total Spend": "1234.56"},
     )
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed"
     assert result.rows_written == 1
@@ -737,7 +737,7 @@ def test_partial_failure_extra_trailing_cells_row_skipped(_reset_mappings_cache,
     lines.append(extra_row)
     src.write_bytes(b"\xff\xfe" + ("\n".join(lines) + "\n").encode("utf-16-le"))
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed"
     assert result.rows_written == 1
@@ -757,7 +757,7 @@ def test_dispatcher_routes_bunnings_file(_reset_mappings_cache, tmp_path) -> Non
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
 
-    result = get_non_nem_outcome(str(src), "dummy")
+    result = get_non_nem_outcome(str(src))
 
     assert result.status == "processed"
     assert result.source_row_count == 1
@@ -783,7 +783,7 @@ def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache,
     dst = tmp_path / "20260414.024550-RACV-Usage and Spend Report.csv"
     dst.write_bytes(b"dummy content")
 
-    result = get_non_nem_outcome(str(dst), "dummy")
+    result = get_non_nem_outcome(str(dst))
     assert result.status == "processed_external"
     assert result.reason == "external_gegoptimareports"
 
@@ -812,7 +812,7 @@ def test_partial_mapping_populates_unmapped_identifiers(_reset_mappings_cache, t
         {"Peak": "100.00", "OffPeak": "50.00"},
     )
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "processed"
     assert result.unmapped_count >= 1
@@ -826,7 +826,7 @@ def test_all_unmapped_outcome_carries_identifiers(_reset_mappings_cache, tmp_pat
     _setup_s3_with_mappings({})
     src = _make_fixture(tmp_path, "UNKNOWN_NMI", "Mar 2026", {"Peak": "100.00"})
 
-    result = bp_mod.bunnings_billing_parser(str(src), "dummy")
+    result = bp_mod.bunnings_billing_parser(str(src))
 
     assert result.status == "unmapped"
     assert len(result.unmapped_identifiers) >= 1

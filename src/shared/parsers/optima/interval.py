@@ -42,7 +42,7 @@ def _is_no_data_sentinel(raw_df: pd.DataFrame) -> bool:
     return not non_blank_values.any()
 
 
-def interval_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+def interval_parser(file_name: str) -> ParserOutcome:
     # Cheap relevance gate: read first line only. ``utf-8-sig`` strips a BOM
     # transparently so BOM-prefixed files (R1746-style exports) still match.
     try:

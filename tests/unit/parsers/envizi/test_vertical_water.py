@@ -26,7 +26,7 @@ class TestEnviziVerticalParserWater:
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"], rows_per_meter=5)
 
-            result = envizi_vertical_parser_water(filepath, "error_log")
+            result = envizi_vertical_parser_water(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 1
@@ -42,7 +42,7 @@ class TestEnviziVerticalParserWater:
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["111", "222", "333"], rows_per_meter=3)
 
-            result = envizi_vertical_parser_water(filepath, "error_log")
+            result = envizi_vertical_parser_water(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 3
@@ -58,7 +58,7 @@ class TestEnviziVerticalParserWater:
             create_envizi_water_csv(filepath, serial_numbers=["12345"])
 
             with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
-                envizi_vertical_parser_water(filepath, "error_log")
+                envizi_vertical_parser_water(filepath)
 
     def test_logs_warning_for_multiple_units(self, temp_directory: str) -> None:
         """Test that multiple units per meter triggers warning."""
@@ -77,7 +77,7 @@ class TestEnviziVerticalParserWater:
             )
             df.to_csv(filepath, index=False)
 
-            envizi_vertical_parser_water(filepath, "error_log")
+            envizi_vertical_parser_water(filepath)
 
             # Should log warning about multiple units
             assert mock_log.error.called
@@ -90,7 +90,7 @@ class TestEnviziVerticalParserWater:
             "12345,2026-05-01T00:00:00,2026-05-01T00:30:00,not-a-number,kL\n"
         )
 
-        result = envizi_vertical_parser_water(str(path), "error_log")
+        result = envizi_vertical_parser_water(str(path))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -108,7 +108,7 @@ class TestEnviziVerticalParserWater:
             + "\n12345,2026-05-02T00:00:00,2026-05-02T00:30:00,not-a-number,kL\n"
         )
 
-        result = envizi_vertical_parser_water(str(path), "error_log")
+        result = envizi_vertical_parser_water(str(path))
         assert result.status == "processed"
         assert result.source_row_count == 25
         assert result.candidate_row_count == 24
@@ -127,7 +127,7 @@ class TestEnviziVerticalParserWater:
             + "\n12345,not-a-date,2026-05-02T00:30:00,1.0,kL\n"
         )
 
-        result = envizi_vertical_parser_water(str(path), "error_log")
+        result = envizi_vertical_parser_water(str(path))
         assert result.status == "processed"
         assert result.source_row_count == 25
         assert result.candidate_row_count == 24
@@ -142,7 +142,7 @@ class TestEnviziVerticalParserWater:
             "12345,2026-05-01T00:30:00,2026-05-01T01:00:00,   ,kL\n"
         )
 
-        result = envizi_vertical_parser_water(str(path), "error_log")
+        result = envizi_vertical_parser_water(str(path))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
@@ -160,7 +160,7 @@ class TestEnviziVerticalParserWaterCheapGate:
             b"W001,2026-05-01T00:00:00,2026-05-01T00:30:00,1.0,kL\n"
         )
 
-        result = envizi_vertical_parser_water(str(path), "error_log")
+        result = envizi_vertical_parser_water(str(path))
         assert result.status == "processed"
         assert result.candidate_row_count == 1
 
@@ -172,7 +172,7 @@ class TestEnviziVerticalParserWaterCheapGate:
 
         with patch.object(mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
             with pytest.raises(NotRelevantParser):
-                mod.envizi_vertical_parser_water(str(path), "error_log")
+                mod.envizi_vertical_parser_water(str(path))
 
     def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
         path = tmp_path / "corrupt.csv"
@@ -182,4 +182,4 @@ class TestEnviziVerticalParserWaterCheapGate:
         )
 
         with pytest.raises(ParserError, match="Failed to read Envizi water CSV"):
-            envizi_vertical_parser_water(str(path), "error_log")
+            envizi_vertical_parser_water(str(path))

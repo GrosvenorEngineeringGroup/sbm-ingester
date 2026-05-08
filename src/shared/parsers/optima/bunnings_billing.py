@@ -290,13 +290,11 @@ def _build_hudi_csv(
     )
 
 
-def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+def bunnings_billing_parser(file_name: str) -> ParserOutcome:
     """Parse Bunnings billing CSV and write Hudi sensor rows to S3.
 
     Args:
         file_name: Local path to the downloaded CSV.
-        error_file_path: CloudWatch log group for parse errors (unused here,
-            accepted for signature compatibility with other non_nem_parsers).
 
     Returns:
         ParserOutcome describing side-effect write status. The legacy
@@ -307,7 +305,6 @@ def bunnings_billing_parser(file_name: str, error_file_path: str) -> ParserOutco
         ParserError: If a matching report cannot form valid billing candidates.
         ProcessingError: If the Hudi CSV cannot be written.
     """
-    _ = error_file_path
     if "Bunnings-Usage and Spend Report" not in file_name:
         raise NotRelevantParser("Not Bunnings Usage and Spend File")
 

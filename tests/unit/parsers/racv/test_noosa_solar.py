@@ -80,7 +80,7 @@ class TestParseNumericColumns:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         assert len(result) == 1
         sensor_id, df = result[0]
@@ -99,7 +99,7 @@ class TestParseNumericColumns:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = noosa_solar_parser(filepath, "error_log")
+            result = noosa_solar_parser(filepath)
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_value"] == 1
             # Two valid rows survive in the output DataFrame.
@@ -123,7 +123,7 @@ class TestParseNumericColumns:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = noosa_solar_parser(filepath, "error_log")
+            result = noosa_solar_parser(filepath)
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_timestamp"] == 1
             assert len(result.dataframes) == 1
@@ -151,7 +151,7 @@ class TestParseStatusColumns:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         assert len(result) == 1
         sensor_id, df = result[0]
@@ -172,7 +172,7 @@ class TestRejectsNonMatchingFile:
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             with pytest.raises(NotRelevantParser, match="Not a Noosa Solar file"):
-                noosa_solar_parser(filepath, "error_log")
+                noosa_solar_parser(filepath)
 
 
 class TestTimestampParsing:
@@ -190,7 +190,7 @@ class TestTimestampParsing:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         _, df = result[0]
         ts = df.index[0]
@@ -217,7 +217,7 @@ class TestTimezoneWarning:
         with patch("shared.parsers.racv.noosa_solar.logger", mock_log):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         # Should still return valid data
         assert len(result) == 1
@@ -247,7 +247,7 @@ class TestNanValuesDropped:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         _, df = result[0]
         assert len(df) == 2
@@ -273,7 +273,7 @@ class TestMixedEmptyAndNanValues:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         _, df = result[0]
         # Both empty and nan rows should be dropped
@@ -302,7 +302,7 @@ class TestUnknownStatusWarning:
         with patch("shared.parsers.racv.noosa_solar.logger", mock_log):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         # Unknown status should be dropped (mapped to NaN then dropped)
         _, df = result[0]
@@ -336,7 +336,7 @@ class TestAllColumnsReturnTStart:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         assert len(result) == 2
         for _, df in result:
@@ -364,7 +364,7 @@ class TestSensorIdFormat:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         for sensor_id, _ in result:
             assert sensor_id.startswith("p:racv:r:")
@@ -384,7 +384,7 @@ class TestStripParenthesizedSuffix:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         assert len(result) == 1
         sensor_id, _ = result[0]
@@ -405,7 +405,7 @@ class TestStripParenthesizedSuffix:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         ids = [sid for sid, _ in result]
         assert "p:racv:r:sensor-a" in ids
@@ -423,7 +423,7 @@ class TestStripParenthesizedSuffix:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         sensor_id, _ = result[0]
         assert sensor_id == "p:racv:r:xyz"
@@ -441,7 +441,7 @@ class TestEmptyFile:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = noosa_solar_parser(filepath, "error_log")
+            result = noosa_solar_parser(filepath)
 
         assert result.status == "processed_empty"
         assert result.reason == "all_blank"
@@ -461,7 +461,7 @@ class TestMissingTimestampColumn:
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
             with pytest.raises(ParserError, match="Missing timestamp column"):
-                noosa_solar_parser(filepath, "error_log")
+                noosa_solar_parser(filepath)
 
 
 class TestAllNanColumnSkipped:
@@ -481,7 +481,7 @@ class TestAllNanColumnSkipped:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         # Only the good column should be in results
         sensor_ids = [sid for sid, _ in result]
@@ -503,7 +503,7 @@ class TestAllZeroColumnPreserved:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         assert len(result) == 1
         sensor_id, df = result[0]
@@ -553,7 +553,7 @@ class TestMultipleStatusValues:
         with patch("shared.parsers.racv.noosa_solar.logger"):
             from shared.parsers.racv.noosa_solar import noosa_solar_parser
 
-            result = _processed_dfs(noosa_solar_parser(filepath, "error_log"))
+            result = _processed_dfs(noosa_solar_parser(filepath))
 
         assert len(result) == 1
         _, df = result[0]
@@ -576,7 +576,7 @@ class TestDispatcherIntegration:
         with patch("shared.parsers.racv.noosa_solar.logger"), patch("shared.non_nem_parsers.logger"):
             from shared.non_nem_parsers import get_non_nem_df
 
-            result = get_non_nem_df(filepath, "error_log")
+            result = get_non_nem_df(filepath)
 
         assert len(result) == 1
         sensor_id, df = result[0]

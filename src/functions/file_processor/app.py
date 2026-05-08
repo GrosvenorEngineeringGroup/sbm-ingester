@@ -31,7 +31,6 @@ from shared import (
     HUDI_STAGING_PREFIX,
     INPUT_BUCKET,
     PARSE_ERR_DIR,
-    PARSE_ERROR_LOG_GROUP,
     PROCESSED_DIR,
     UNMAPPED_DIR,
     output_as_data_frames,
@@ -759,7 +758,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 except _NEM_FALLTHROUGH_ERRORS:
                     # Try non-NEM parsers as last resort
                     try:
-                        outcome = get_non_nem_outcome(local_file_path, PARSE_ERROR_LOG_GROUP)
+                        outcome = get_non_nem_outcome(local_file_path)
                     except (ParserError, ProcessingError) as e:
                         logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}] {e}"
                         move_s3_file(INPUT_BUCKET, local_file_path, PARSE_ERR_DIR)

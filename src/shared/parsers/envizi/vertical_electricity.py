@@ -22,7 +22,7 @@ logger = Logger(service="envizi-vertical-electricity-parser", child=True)
 ENVIZI_ELECTRICITY_REQUIRED = {"Serial_No", "Interval_Start", "Interval_End", "kWh"}
 
 
-def envizi_vertical_parser_electricity(file_name: str, error_file_path: str) -> ParserOutcome:
+def envizi_vertical_parser_electricity(file_name: str) -> ParserOutcome:
     if "OptimaGenerationData" in file_name:
         raise NotRelevantParser("Not Relevant Parser For File")
 

@@ -27,7 +27,7 @@ class TestRacvBillingParser:
             Path(filepath).write_text("dummy content")
 
             with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
-                racv_billing_parser(filepath, "error_log")
+                racv_billing_parser(filepath)
 
     def test_rejects_non_racv_usage_file(self, temp_directory: str) -> None:
         """Test that non-RACV Usage and Spend files are rejected."""
@@ -39,7 +39,7 @@ class TestRacvBillingParser:
             Path(filepath).write_text("dummy content")
 
             with pytest.raises(NotRelevantParser, match="Not Valid Optima Usage And Spend File"):
-                racv_billing_parser(filepath, "error_log")
+                racv_billing_parser(filepath)
 
     @pytest.fixture
     def aws_env(self) -> None:
@@ -67,7 +67,7 @@ class TestRacvBillingParser:
                 filepath = str(Path(temp_directory) / "RACV-Usage and Spend Report.csv")
                 Path(filepath).write_text("date,usage,spend\n2024-01-01,100,50.00")
 
-                result = racv_billing_parser(filepath, "error_log")
+                result = racv_billing_parser(filepath)
 
                 assert result.status == "processed_external"
                 assert result.reason == "external_gegoptimareports"
@@ -87,7 +87,7 @@ def test_racv_billing_success_returns_processed_external(tmp_path) -> None:
         patch("shared.parsers.optima.racv_billing.logger") as mock_logger,
     ):
         mock_client.return_value.put_object.return_value = {"ETag": "etag"}
-        result = racv_billing_parser(str(path), "error_log")
+        result = racv_billing_parser(str(path))
 
     assert result.status == "processed_external"
     assert result.reason == "external_gegoptimareports"
@@ -110,4 +110,4 @@ def test_racv_billing_upload_failure_raises_processing_error(tmp_path) -> None:
         mock_client.return_value.put_object.side_effect = RuntimeError("boom")
 
         with pytest.raises(ProcessingError, match="Failed to upload RACV billing report"):
-            racv_billing_parser(str(path), "error_log")
+            racv_billing_parser(str(path))

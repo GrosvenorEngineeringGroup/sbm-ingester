@@ -19,7 +19,7 @@ from shared.parsers._coerce import coerce_numeric_column
 logger = Logger(service="green-square-comx-parser", child=True)
 
 
-def green_square_private_wire_schneider_comx_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+def green_square_private_wire_schneider_comx_parser(file_name: str) -> ParserOutcome:
     # Cheap relevance gate: read at most the first 2 lines. The ComX header
     # is on line 2; column 0 is the marker ``ComX510_Green_Square`` and
     # column 4 is the site name. ``utf-8-sig`` strips a BOM transparently.

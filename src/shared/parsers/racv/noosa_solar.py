@@ -33,7 +33,7 @@ FRONIUS_MODE_MAP: dict[str, int] = {
 }
 
 
-def noosa_solar_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+def noosa_solar_parser(file_name: str) -> ParserOutcome:
     """Parse RACV Noosa Solar CSV with SkySpark point IDs as column headers."""
     if "RACV_Noosa_Solar" not in Path(file_name).name:
         raise NotRelevantParser("Not a Noosa Solar file")

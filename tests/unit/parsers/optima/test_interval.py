@@ -34,7 +34,7 @@ class TestIntervalParser:
         filepath = Path(temp_directory) / "empty.csv"
         filepath.write_bytes(sentinel_csv)
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
 
         assert result.status == "processed_empty"
         assert result.reason == "no_data_sentinel"
@@ -55,7 +55,7 @@ class TestIntervalParser:
             "No data is available,,,,,,,,not-a-number,,,\n"
         )
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -69,7 +69,7 @@ class TestIntervalParser:
         filepath.write_text("Identifier,Usage\nMETER001,1.0\n")
 
         with pytest.raises(NotRelevantParser, match="Not an Optima interval CSV"):
-            interval_parser(str(filepath), "error_log")
+            interval_parser(str(filepath))
 
     def test_invalid_timestamp_after_schema_match_skip_counts(self, tmp_path) -> None:
         """Single bad-timestamp row is skipped, not raised. File stays
@@ -79,7 +79,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\nnot-a-date,00:00,METER001,1.0\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -93,7 +93,7 @@ class TestIntervalParser:
         filepath.write_text("Date,Start Time,Identifier,DemandKva\n2026-05-01,00:00,METER001,3.0\n")
 
         with pytest.raises(ParserError, match="Missing interval value column"):
-            interval_parser(str(filepath), "error_log")
+            interval_parser(str(filepath))
 
     def test_header_only_value_file_returns_processed_empty(self, tmp_path) -> None:
         from shared.parsers.optima.interval import interval_parser
@@ -101,7 +101,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
@@ -114,7 +114,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Generation\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
@@ -128,7 +128,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n,00:00,METER001,not-a-number\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed_empty"
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_value"] == 1
@@ -141,7 +141,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n,00:00,METER001,\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed_empty"
         assert result.rows_skipped == 1
         assert result.skip_reasons["unparseable_timestamp"] == 1
@@ -156,7 +156,7 @@ class TestIntervalParser:
             "2026-05-01,00:30,METER001,   ,\n"
         )
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 2
@@ -170,7 +170,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Usage\n2026-05-01,00:00,METER001,not-a-number\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -183,7 +183,7 @@ class TestIntervalParser:
         filepath = tmp_path / "interval.csv"
         filepath.write_text("Date,Start Time,Identifier,Generation\n2026-05-01,00:00,METER001,not-a-number\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed_empty"
         assert result.dataframes == []
         assert result.rows_skipped == 1
@@ -205,7 +205,7 @@ class TestIntervalParser:
             "Date,Start Time,Identifier,Usage\n" + "\n".join(good_rows) + "\n2026-05-06,00:00,METER001,not-a-number\n"
         )
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed"
         assert result.source_row_count == 100
         assert result.candidate_row_count == 99
@@ -230,7 +230,7 @@ class TestIntervalParser:
             "Date,Start Time,Identifier,Usage\n" + "\n".join(good_rows) + "\nnot-a-date,00:00,METER001,1.0\n"
         )
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed"
         assert result.source_row_count == 100
         assert result.candidate_row_count == 99
@@ -248,7 +248,7 @@ class TestIntervalParser:
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_optima_csv(filepath, identifiers=["SOLAR001"], rows_per_id=5)
 
-            result = interval_parser(filepath, "error_log")
+            result = interval_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 1
@@ -266,7 +266,7 @@ class TestIntervalParser:
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_optima_csv(filepath, identifiers=["SOLAR001", "SOLAR002"], rows_per_id=3)
 
-            result = interval_parser(filepath, "error_log")
+            result = interval_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 2
@@ -282,7 +282,7 @@ class TestIntervalParser:
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_optima_csv(filepath, identifiers=["METER001"], rows_per_id=5)
 
-            result = interval_parser(filepath, "error_log")
+            result = interval_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             _nmi, df = result_dfs[0]
@@ -302,7 +302,7 @@ class TestIntervalParser:
                 filepath, identifiers=["SOLAR001"], rows_per_id=3, include_usage=False, include_generation=True
             )
 
-            result = interval_parser(filepath, "error_log")
+            result = interval_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             nmi, df = result_dfs[0]
@@ -320,7 +320,7 @@ class TestIntervalParser:
                 filepath, identifiers=["METER001"], rows_per_id=3, include_usage=True, include_generation=False
             )
 
-            result = interval_parser(filepath, "error_log")
+            result = interval_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             nmi, df = result_dfs[0]
@@ -344,7 +344,7 @@ class TestIntervalParser:
                 '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:00,1.5,0.8,3.0,0.0\n'
                 '"Bunnings","AU","Electricity","TEST","NMI","ENERGYAP",01 May 2026,00:30,1.7,0.9,3.4,0.0\n'
             )
-            result = interval_parser(str(csv_path), str(tmp_path / "err.log"))
+            result = interval_parser(str(csv_path))
             result_dfs = _processed_dfs(result)
             assert len(result_dfs) == 1
             nmi_key, df = result_dfs[0]
@@ -369,7 +369,7 @@ class TestIntervalParserOnRealFixtures:
         from shared.parsers.optima.interval import interval_parser
 
         path = str(self.FIXTURE_DIR / "interval_au_single_day.csv")
-        result = interval_parser(path, "error_log")
+        result = interval_parser(path)
         result_dfs = _processed_dfs(result)
 
         assert len(result_dfs) == 1
@@ -384,7 +384,7 @@ class TestIntervalParserOnRealFixtures:
         from shared.parsers.optima.interval import interval_parser
 
         path = str(self.FIXTURE_DIR / "interval_nz_single_day.csv")
-        result = interval_parser(path, "error_log")
+        result = interval_parser(path)
         result_dfs = _processed_dfs(result)
 
         assert len(result_dfs) == 1
@@ -397,7 +397,7 @@ class TestIntervalParserOnRealFixtures:
         from shared.parsers.optima.interval import interval_parser
 
         path = str(self.FIXTURE_DIR / "interval_au_4month.csv")
-        result = interval_parser(path, "error_log")
+        result = interval_parser(path)
         result_dfs = _processed_dfs(result)
 
         assert len(result_dfs) == 1
@@ -410,7 +410,7 @@ class TestIntervalParserOnRealFixtures:
         from shared.parsers.optima.interval import interval_parser
 
         path = str(self.FIXTURE_DIR / "interval_empty.csv")
-        result = interval_parser(path, "error_log")
+        result = interval_parser(path)
 
         assert result.status == "processed_empty"
         assert result.reason == "no_data_sentinel"
@@ -427,7 +427,7 @@ class TestIntervalParserCheapGate:
         filepath = tmp_path / "bom_interval.csv"
         filepath.write_bytes(b"\xef\xbb\xbfDate,Start Time,Identifier,Usage\n2026-05-01,00:00,METER001,1.0\n")
 
-        result = interval_parser(str(filepath), "error_log")
+        result = interval_parser(str(filepath))
         assert result.status == "processed"
         assert result.candidate_row_count == 1
 
@@ -441,7 +441,7 @@ class TestIntervalParserCheapGate:
 
         with patch.object(interval_mod.pd, "read_csv", side_effect=RuntimeError("must not be called")):
             with pytest.raises(NotRelevantParser):
-                interval_mod.interval_parser(str(filepath), "error_log")
+                interval_mod.interval_parser(str(filepath))
 
     def test_full_parse_failure_after_gate_raises_parser_error(self, tmp_path) -> None:
         from shared.parsers.optima.interval import interval_parser
@@ -452,4 +452,4 @@ class TestIntervalParserCheapGate:
         filepath.write_bytes(b'Date,Start Time,Identifier,Usage\n2026-05-01,00:00,"unterminated,1.0\n')
 
         with pytest.raises(ParserError, match="Failed to read Optima interval CSV"):
-            interval_parser(str(filepath), "error_log")
+            interval_parser(str(filepath))

@@ -35,7 +35,7 @@ NotComX510_Green_Square,data,data,data,SiteName
                 f.write(content)
 
             with pytest.raises(NotRelevantParser, match="Not Relevant Parser"):
-                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+                green_square_private_wire_schneider_comx_parser(filepath)
 
     def test_converts_wh_to_kwh(self, temp_directory: str) -> None:
         """Test that Wh values are converted to kWh."""
@@ -57,7 +57,7 @@ Local Time Stamp,Active energy (Wh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 1
@@ -91,7 +91,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             assert len(result_dfs) == 1
@@ -121,7 +121,7 @@ Local Time Stamp,Other Column,col3,col4,col5
                 f.write(content)
 
             with pytest.raises(ParserError, match="Missing Active energy column"):
-                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+                green_square_private_wire_schneider_comx_parser(filepath)
 
     @pytest.mark.parametrize("header_site_name", ["", "   ", "123"])
     def test_missing_or_non_string_site_name_raises_parser_error(
@@ -145,7 +145,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
                 f.write(content)
 
             with pytest.raises(ParserError, match="Missing site name in ComX header"):
-                green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+                green_square_private_wire_schneider_comx_parser(filepath)
 
     def test_returns_processed_empty_when_no_valid_energy_rows(self, temp_directory: str) -> None:
         """Test that ComX parser returns processed_empty when energy rows are blank."""
@@ -166,7 +166,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
 
             assert result.status == "processed_empty"
             assert result.reason == "all_blank"
@@ -192,7 +192,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             assert result.status == "processed_empty"
             assert result.dataframes == []
             assert result.skip_reasons["unparseable_value"] == 1
@@ -218,7 +218,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_value"] == 1
             assert result.candidate_row_count == 2
@@ -244,7 +244,7 @@ not-a-date,3.0,data,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             assert result.status == "processed"
             assert result.skip_reasons["unparseable_timestamp"] == 1
             assert result.candidate_row_count == 2
@@ -268,7 +268,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             nmi, _ = result_dfs[0]
@@ -297,7 +297,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
             with Path(filepath).open("w") as f:
                 f.write(content)
 
-            result = green_square_private_wire_schneider_comx_parser(filepath, "error_log")
+            result = green_square_private_wire_schneider_comx_parser(filepath)
             result_dfs = _processed_dfs(result)
 
             _, result_df = result_dfs[0]
@@ -327,5 +327,5 @@ class TestGreenSquareComXCheapGate:
         )
         path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
 
-        result = green_square_private_wire_schneider_comx_parser(str(path), "error_log")
+        result = green_square_private_wire_schneider_comx_parser(str(path))
         assert result.status == "processed"

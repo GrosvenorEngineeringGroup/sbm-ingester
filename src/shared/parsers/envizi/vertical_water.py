@@ -22,7 +22,7 @@ logger = Logger(service="envizi-vertical-water-parser", child=True)
 ENVIZI_WATER_REQUIRED = {"Serial_No", "Interval_Start", "Interval_End", "Consumption", "Consumption Unit"}
 
 
-def envizi_vertical_parser_water(file_name: str, error_file_path: str) -> ParserOutcome:
+def envizi_vertical_parser_water(file_name: str) -> ParserOutcome:
     if "OptimaGenerationData" in file_name:
         raise NotRelevantParser("Not Relevant Parser For File")
 

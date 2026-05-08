@@ -1021,7 +1021,7 @@ class TestParserOutcomeDisposition:
         )
         s3_resource.Object("sbm-file-ingester", "newTBP/second.csv").put(Body=b"test")
 
-        def get_outcome(local_file_path: str, _parse_error_log_group: str) -> ParserOutcome:
+        def get_outcome(local_file_path: str) -> ParserOutcome:
             if Path(local_file_path).name == "first.csv":
                 return ParserOutcome(status="processed", dataframes=[("NMI1", success_df)])
             return ParserOutcome(status="processed", dataframes=[("NMI1", failing_df)])

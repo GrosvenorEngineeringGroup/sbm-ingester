@@ -263,7 +263,7 @@ def _build_hudi_csv(
     )
 
 
-def demand_parser(file_name: str, error_file_path: str) -> ParserOutcome:
+def demand_parser(file_name: str) -> ParserOutcome:
     # 1. Fast filename reject (no I/O) — case-insensitive, treat _ as space
     if "demand profile" not in Path(file_name).name.lower().replace("_", " "):
         raise NotRelevantParser("Not a Demand Profile file (filename mismatch)")

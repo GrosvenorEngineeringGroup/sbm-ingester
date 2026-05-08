@@ -13,7 +13,7 @@ class TestFilenameGate:
     def test_rejects_non_demand_files(self, write_demand_csv):
         path = write_demand_csv(filename="Bunnings_Interval_Usage.csv")
         with pytest.raises(NotRelevantParser, match="Not a Demand Profile"):
-            demand_parser(str(path), "/tmp/err.log")
+            demand_parser(str(path))
 
     def test_accepts_lowercase_user_download(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
         # The user's manual download is named "Bunnings demand profile.csv"
@@ -24,7 +24,7 @@ class TestFilenameGate:
         monkeypatch.setattr(mappings_mod, "get_nem12_mappings", lambda: {})
 
         path = write_demand_csv(filename="Bunnings demand profile.csv")
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
 
         assert result.status == "unmapped"
 
@@ -37,7 +37,7 @@ class TestContentGate:
             body_override="Wrong,Header\nfoo,bar\n",
         )
         with pytest.raises(NotRelevantParser, match="missing metadata header"):
-            demand_parser(str(path), "/tmp/err.log")
+            demand_parser(str(path))
 
     def test_bom_prefixed_metadata_header_passes_gate(self, tmp_path, monkeypatch, _reset_mappings_cache):
         # UTF-8 BOM (\xef\xbb\xbf) before "Commodities:" must still match the
@@ -60,7 +60,7 @@ class TestContentGate:
         path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
 
         # Gate must accept (mappings empty → unmapped, but no NotRelevantParser raise).
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
         assert result.status == "unmapped"
 
 
@@ -80,7 +80,7 @@ class TestNoDataFoundSentinel:
             "No data found"
         )
         path = write_demand_csv(filename="NZ demand profile.csv", body_override=body)
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
 
         assert result.status == "processed_empty"
         assert result.reason == "no_data_sentinel"
@@ -91,7 +91,7 @@ class TestEmptyData:
     def test_header_only_returns_processed_empty(self, write_demand_csv):
         # File has the column header but zero data rows
         path = write_demand_csv(filename="Bunnings_Demand_Profile.csv", rows=[])
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 0
@@ -103,7 +103,7 @@ class TestEmptyData:
         rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "", "", "")]
         path = write_demand_csv(rows=rows)
 
-        result = demand_parser(str(path), "/tmp/err.log")
+        result = demand_parser(str(path))
 
         assert result.status == "processed_empty"
         assert result.source_row_count == 1
@@ -139,7 +139,7 @@ class TestHeaderValidation:
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             with pytest.raises(ParserError, match="Missing demand columns"):
-                demand_parser(str(path), "/tmp/err.log")
+                demand_parser(str(path))
 
         mock_client.return_value.put_object.assert_not_called()
 
@@ -170,7 +170,7 @@ class TestRowShapeValidation:
         path = write_demand_csv(body_override=body)
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed_empty"
         assert result.reason == "all_skipped"
@@ -207,7 +207,7 @@ class TestRowShapeValidation:
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.rows_written == 3  # 1 good row x 3 channels
@@ -245,7 +245,7 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object = fake_put_object
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.source_row_count == 3
@@ -286,7 +286,7 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object = fake_put_object
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.rows_written == 9
@@ -321,7 +321,7 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object = fake_put_object
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         body = captured_body[0]
@@ -366,7 +366,7 @@ class TestMappingLookupAndHudiWrite:
             # Use values that would lose precision via float() round-trip
             rows = [("4001260599", "01-Feb-2026 00:00:00", "5.2400", "10.4800", "10.4800", "1.0000")]
             path = write_demand_csv(rows=rows)
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.source_row_count == 1
@@ -407,7 +407,7 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object = fake_put_object
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.source_row_count == 3
@@ -426,7 +426,7 @@ class TestMappingLookupAndHudiWrite:
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "unmapped"
         assert result.source_row_count == 3
@@ -450,7 +450,7 @@ class TestMappingLookupAndHudiWrite:
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             path = write_demand_csv(rows=rows)
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "unmapped"
         assert result.candidate_row_count == 3
@@ -479,7 +479,7 @@ class TestMappingLookupAndHudiWrite:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv(rows=rows)
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.rows_written == 3
@@ -495,7 +495,7 @@ class TestMappingLookupAndHudiWrite:
         path = write_demand_csv(rows=rows)
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed_empty"
         assert result.reason == "all_skipped"
@@ -515,7 +515,7 @@ class TestMappingLookupAndHudiWrite:
         path = write_demand_csv(rows=rows)
 
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed_empty"
         assert result.reason == "all_skipped"
@@ -540,7 +540,7 @@ class TestMappingLookupAndHudiWrite:
             path = write_demand_csv()
 
             with pytest.raises(ProcessingError, match="Failed to write demand Hudi CSV"):
-                demand_parser(str(path), "/tmp/err.log")
+                demand_parser(str(path))
 
 
 class TestPartialRowFailures:
@@ -566,7 +566,7 @@ class TestPartialRowFailures:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv(rows=rows)
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.source_row_count == 5
@@ -594,7 +594,7 @@ class TestPartialRowFailures:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv(rows=rows)
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.rows_written == 5  # row1: 2, row2: 3
@@ -616,7 +616,7 @@ class TestDispatcherIntegration:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv()
-            result = get_non_nem_outcome(str(path), "/tmp/err.log")
+            result = get_non_nem_outcome(str(path))
 
         assert result.status == "processed"
         assert result.source_row_count == 3
@@ -641,7 +641,7 @@ class TestUnmappedIdentifiersPopulated:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "processed"
         assert result.unmapped_count == 6
@@ -659,7 +659,7 @@ class TestUnmappedIdentifiersPopulated:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv()
-            result = demand_parser(str(path), "/tmp/err.log")
+            result = demand_parser(str(path))
 
         assert result.status == "unmapped"
         assert len(result.unmapped_identifiers) >= 1
