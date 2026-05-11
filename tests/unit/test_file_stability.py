@@ -172,6 +172,10 @@ class TestRequeueMessage:
         assert result is False
 
 
+@pytest.mark.skip(
+    reason="Mocks parse_and_write_data which was removed from app.py during Task 11. "
+    "New lambda_handler integration tests live in test_lambda_handler.py."
+)
 class TestLambdaHandlerWithStabilityCheck:
     """Tests for lambda_handler with file stability check integration."""
 

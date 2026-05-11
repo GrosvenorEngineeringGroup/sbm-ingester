@@ -1,4 +1,12 @@
 """Unit tests for batch S3 write functionality in gemsDataParseAndWrite.py."""
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "Tests _flush_buffer_to_s3 dead code, deleted in Task 15.",
+    allow_module_level=True,
+)
 
 from unittest.mock import patch
 

@@ -1,4 +1,14 @@
 """Integration tests for SBM Ingester pipeline."""
+# ruff: noqa: E402
+
+import pytest
+
+pytest.skip(
+    "References symbols (parse_and_write_data, move_s3_file, read_nem12_mappings, "
+    "download_files_to_tmp, s3_resource) removed from app.py during Task 11. "
+    "Pipeline-level integration tests now live in test_pipeline.py.",
+    allow_module_level=True,
+)
 
 import json
 import os

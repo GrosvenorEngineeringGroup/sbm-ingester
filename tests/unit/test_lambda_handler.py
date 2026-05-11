@@ -1,0 +1,90 @@
+"""Tests for the SQS adapter (lambda_handler)."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import patch
+
+import pytest
+
+from functions.file_processor.app import lambda_handler
+from shared.parsers.outcome import ParserOutcome
+
+
+class _MockLambdaContext:
+    """Minimal Lambda context shape needed by powertools logger."""
+
+    function_name = "test-function"
+    memory_limit_in_mb = 128
+    invoked_function_arn = "arn:aws:lambda:ap-southeast-2:123456789:function:test"
+    aws_request_id = "test-request-id"
+
+
+def _sqs_event(bucket: str, key: str, retry_count: int | None = None) -> dict:
+    body = {
+        "Records": [
+            {"s3": {"bucket": {"name": bucket}, "object": {"key": key}}},
+        ],
+    }
+    if retry_count is not None:
+        body["_retry_count"] = retry_count
+    return {"Records": [{"messageId": "abc-123", "body": json.dumps(body)}]}
+
+
+class TestLambdaHandler:
+    def test_calls_ingest_file_with_source_file(self) -> None:
+        event = _sqs_event("sbm-file-ingester", "newTBP/foo.csv")
+
+        with (
+            patch("functions.file_processor.app.check_file_stability", return_value=(True, 100)),
+            patch("functions.file_processor.app.ingest_file") as mock_ingest,
+        ):
+            mock_ingest.return_value = ParserOutcome(status="processed", rows_written=1)
+            result = lambda_handler(event, _MockLambdaContext())
+
+        mock_ingest.assert_called_once()
+        kwargs = mock_ingest.call_args.kwargs
+        assert kwargs["source_file"].bucket == "sbm-file-ingester"
+        assert kwargs["source_file"].key == "newTBP/foo.csv"
+        assert result["statusCode"] == 200
+
+    def test_unstable_file_requeues(self) -> None:
+        event = _sqs_event("sbm-file-ingester", "newTBP/in_flight.csv", retry_count=0)
+
+        with (
+            patch("functions.file_processor.app.check_file_stability", return_value=(False, 0)),
+            patch("functions.file_processor.app.requeue_message", return_value=True) as mock_requeue,
+            patch("functions.file_processor.app.ingest_file") as mock_ingest,
+        ):
+            result = lambda_handler(event, _MockLambdaContext())
+
+        mock_requeue.assert_called_once()
+        mock_ingest.assert_not_called()
+        assert result["statusCode"] == 200
+
+    def test_unstable_after_max_retries_skips(self) -> None:
+        event = _sqs_event("sbm-file-ingester", "newTBP/never_stabilises.csv", retry_count=3)
+
+        with (
+            patch("functions.file_processor.app.check_file_stability", return_value=(False, 0)),
+            patch("functions.file_processor.app.requeue_message") as mock_requeue,
+            patch("functions.file_processor.app.ingest_file") as mock_ingest,
+            patch("functions.file_processor.app.MAX_REQUEUE_RETRIES", 3),
+        ):
+            result = lambda_handler(event, _MockLambdaContext())
+
+        mock_requeue.assert_not_called()
+        mock_ingest.assert_not_called()
+        assert result["statusCode"] == 200
+
+
+class TestSqsQueueUrlRequired:
+    def test_module_reload_without_env_var_raises(self, monkeypatch) -> None:
+        """Without SQS_QUEUE_URL in env, re-importing app.py must raise KeyError."""
+        monkeypatch.delenv("SQS_QUEUE_URL", raising=False)
+        import importlib
+
+        import functions.file_processor.app as app_module
+
+        with pytest.raises(KeyError):
+            importlib.reload(app_module)
