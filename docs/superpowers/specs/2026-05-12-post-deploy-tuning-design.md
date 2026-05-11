@@ -92,15 +92,68 @@ raise  # other errors propagate
 ```
 
 In `lambda_handler`, when `vanished=True`:
-- Emit `info`-level structured log `s3_object_vanished` (with `source_bucket`,
+- Emit `info`-level structured log `s3_duplicate_event` (with `source_bucket`,
   `source_key`, `retry_count`)
 - Emit CloudWatch metric `S3DuplicateEvent` (Count, 1)
 - Delete the SQS message (no requeue)
 - **Do not** emit `MaxRetriesExceeded` metric — this is the expected path now
 
+Naming convention: the log uses the snake_case form of the metric so a single
+`grep s3_duplicate_event` in CloudWatch Logs matches what the metric counts.
+
+`check_file_stability` is called from a single in-module caller (`lambda_handler`
+in the same file); migrating the return type to `StabilityResult` is a local
+refactor with no cross-module impact.
+
 **Also revert `REQUEUE_DELAY_SECONDS` 90 → 60** (the `f8282f4` change was based on
 the wrong root cause). Real slow uploads (multipart) are not part of the observed
 failure population and are handled correctly by the existing retry loop.
+
+**Terraform — new alarm:** add `FileProcessor-DuplicateEventSpike` to
+`terraform/monitoring.tf` to operationalize the duplicate-event monitoring
+called out in Risks below:
+
+```hcl
+resource "aws_cloudwatch_metric_alarm" "file_processor_duplicate_event_spike" {
+  alarm_name          = "FileProcessor-DuplicateEventSpike"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 0.5            # >50% of invocations
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "S3 duplicate event ratio is abnormally high — investigate move-after-process logic"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+
+  metric_query {
+    id          = "ratio"
+    expression  = "duplicates / invocations"
+    label       = "S3DuplicateEvent ratio"
+    return_data = true
+  }
+  metric_query {
+    id = "duplicates"
+    metric {
+      namespace   = "sbm-ingester"
+      metric_name = "S3DuplicateEvent"
+      period      = 3600
+      stat        = "Sum"
+    }
+  }
+  metric_query {
+    id = "invocations"
+    metric {
+      namespace   = "AWS/Lambda"
+      metric_name = "Invocations"
+      dimensions  = { FunctionName = "sbm-files-ingester" }
+      period      = 3600
+      stat        = "Sum"
+    }
+  }
+}
+```
+
+Existing alarm `FileProcessor-MaxRetriesExceeded` stays unchanged as a safety
+net for genuinely slow uploads. Threshold tuning deferred to a one-week
+post-deploy review.
 
 ### Fix 2: Separate Synergy WA parser
 
@@ -127,9 +180,20 @@ def synergy_wa_meter_data_parser(file_name: str) -> ParserOutcome:
 ```
 
 **Modify:**
-- `src/shared/parsers/dispatcher.py` — register the new parser
+- `src/shared/parsers/dispatcher.py` — register `synergy_wa_meter_data_parser`
+  at **position 0** of `PARSERS` (most specific filename prefix; fail-fast on
+  `NotRelevantParser` for all other producers is cheap)
 - `src/shared/parsers/optima/interval.py` — **remove** the WA detection logic
-  added in `f8282f4` (no longer needed; cleaner SRP)
+  added in `f8282f4` (`_is_no_data_sentinel` WA branch + the widened cheap
+  relevance gate that accepts `Unnamed: 0`/`NMI`/`Unnamed: 2` header tokens);
+  restore SRP
+
+**Orphaned artifacts from `f8282f4` to clean up:**
+- Move `tests/unit/fixtures/optima_interval/wa_no_data_found.csv` →
+  `tests/unit/fixtures/synergy/wa_no_data_found.csv`
+- Remove `test_wa_no_data_found_fixture_returns_processed_empty` from
+  `tests/unit/parsers/optima/test_interval.py` (the WA detection it covers is
+  being moved out of `interval.py`; the new parser gets its own test file)
 
 **Why fail-safe (NotRelevantParser) on drift, not fail-loud (ParserError):**
 If Synergy starts emitting real data, filename or header will change. Falling
@@ -161,10 +225,63 @@ class InstrumentedDynamoDBPersistenceLayer(DynamoDBPersistenceLayer):
             raise
 ```
 
-**TDD requirement:** before writing the fix, write a failing test that asserts
-the structured JSON log contains `source_bucket`, `source_key`, and
-`idempotency_key`. This validates the Powertools `DataRecord` API (`get_payload`,
-`idempotency_key`) — currently inferred from naming, not verified.
+**TDD requirement — the existing test is wrong.**
+
+`tests/unit/test_persistence_cache_hit_log.py` currently asserts
+`getattr(record, "source_bucket", None) == "sbm-file-ingester"` via `caplog`.
+This is unable to catch the production bug because:
+
+1. `caplog` captures `LogRecord` instances **before formatting**. `extra=` keys
+   attach as attributes on the record regardless of which formatter runs, so
+   the assertion passes even when the JSON formatter is dropped (the production
+   bug is in the formatter, not the LogRecord).
+2. The test calls `layer.save_inprogress(data={"bucket": ..., "key": ...})` —
+   a `dict`. In production, Powertools passes a `DataRecord` instance. The
+   current code's `payload = data if isinstance(data, dict) else {}` branch
+   matches the test's dict but falls through to `{}` for the real `DataRecord`.
+   Test green, production silent.
+
+**Rewrite the test to use `capsys` and parse the JSON line that lands on
+stdout** (this is what CloudWatch sees):
+
+```python
+def test_emits_structured_json_on_cache_hit(capsys, idempotency_table):
+    layer = InstrumentedDynamoDBPersistenceLayer(
+        table_name="sbm-ingester-idempotency",
+        key_attr="file_key",
+    )
+    # Build a real DataRecord with payload (Powertools API):
+    data_record = build_data_record(  # helper: see implementation plan
+        idempotency_key="abc123",
+        payload={"bucket": "sbm-file-ingester", "key": "newTBP/foo.csv"},
+    )
+    with patch.object(
+        DynamoDBPersistenceLayer, "save_inprogress",
+        side_effect=IdempotencyItemAlreadyExistsError(),
+    ), pytest.raises(IdempotencyItemAlreadyExistsError):
+        layer.save_inprogress(data=data_record)
+
+    out = capsys.readouterr().out
+    lines = [json.loads(l) for l in out.splitlines() if l.strip().startswith("{")]
+    cache_hits = [l for l in lines if l.get("message") == "idempotent_cache_hit"]
+    assert len(cache_hits) == 1
+    log = cache_hits[0]
+    assert log["source_bucket"] == "sbm-file-ingester"
+    assert log["source_key"] == "newTBP/foo.csv"
+    assert log["idempotency_key"] == "abc123"
+```
+
+This test will **fail** against the current code (wrong service name → stdlib
+formatter → no JSON line; `isinstance(data, dict)` fails for `DataRecord` →
+fields would be `None` anyway). Implement the fix described above (service
+alignment + `data.get_payload()` + `data.idempotency_key`) to make it pass.
+
+The TDD red-state proves the Powertools `DataRecord` API works as inferred;
+no separate API validation is needed.
+
+The existing `test_no_log_on_first_call` test can stay (it's testing absence,
+not field content), but should be updated to also pass a `DataRecord` for
+consistency.
 
 ### Recovery: 3 WA files in `newParseErr/`
 
@@ -181,6 +298,8 @@ using `aws s3 mv`. No code change required.
   recovered.
 - **Reducing `MAX_REQUEUE_RETRIES = 3`.** With 404 handling in place, requeues
   should be rare (only genuine slow files). The constant stays unchanged.
+- **Tuning `FileProcessor-MaxRetriesExceeded` threshold.** Alarm stays unchanged
+  as a safety net. Revisit one week post-deploy if baseline is effectively zero.
 
 ## Testing
 
@@ -199,16 +318,37 @@ All tests follow TDD: failing test first, then implementation.
 ## Rollout
 
 1. Implement fixes in three commits on `fix/post-deploy-tuning`:
-   - `fix: treat HEAD 404 as vanished + S3DuplicateEvent metric (revert REQUEUE_DELAY)`
+   - `fix: treat HEAD 404 as vanished + S3DuplicateEvent metric + alarm (revert REQUEUE_DELAY)`
    - `refactor: extract Synergy WA parser, remove inline detection from interval.py`
    - `fix: cache-hit log service alignment + DataRecord payload access`
-2. Run full test suite — must remain green (~770 tests passing).
-3. Merge `fix/post-deploy-tuning` → `main`.
-4. Push to `origin/main` — GitHub Actions auto-deploys.
-5. Manual S3 mv of 3 WA files in `newParseErr/`.
-6. Watch CloudWatch for 12h: `MaxRetriesExceeded` should drop to ~0,
+2. Run full test suite — must remain green (~770 tests passing, target +6
+   new tests across the three fixes).
+3. `terraform plan` in `terraform/` — expect 1 add
+   (`FileProcessor-DuplicateEventSpike` alarm), 0 change, 0 destroy. Apply.
+4. Merge `fix/post-deploy-tuning` → `main`.
+5. Push to `origin/main` — GitHub Actions auto-deploys the Lambda code.
+6. Manual S3 mv of 3 WA files in `newParseErr/` to `newIrrevFiles/`.
+7. Watch CloudWatch for 12h: `MaxRetriesExceeded` should drop to ~0,
    `S3DuplicateEvent` should appear at expected rate (~30/day), `idempotent_cache_hit`
-   log should contain `source_bucket`/`source_key`.
+   log should contain `source_bucket`/`source_key`/`idempotency_key` as
+   top-level JSON keys (verifiable via Logs Insights `fields source_bucket,
+   source_key`).
+
+### Rollback
+
+If post-deploy monitoring reveals a regression:
+
+- **Code rollback:** revert the Lambda to the previous code version via
+  `aws lambda update-function-code --function-name sbm-files-ingester
+  --s3-bucket gega-code-deployment-bucket --s3-key <previous-zip-key>`. The
+  GitHub Actions workflow uploads zips with versioned keys; the prior version
+  remains in S3.
+- **Terraform rollback:** `terraform destroy
+  -target=aws_cloudwatch_metric_alarm.file_processor_duplicate_event_spike`
+  (only if the new alarm itself misbehaves; the existing alarms are
+  unaffected).
+- **No DynamoDB cache invalidation needed** — these fixes do not change the
+  idempotency cache key shape or TTL.
 
 ## Risks
 
@@ -219,5 +359,9 @@ All tests follow TDD: failing test first, then implementation.
 - **Synergy WA parser dispatcher order.** If a future producer happens to write
   `Meter_Data_WA (AU)_Electricity_*` files with a different format, they'd match
   the prefix and fall through to `NotRelevantParser` (safe). Risk is low.
-- **Powertools `DataRecord` API.** Public-but-undocumented. Mitigated by TDD —
-  failing test before code change.
+- **Powertools `DataRecord` API.** `DataRecord.get_payload()` and
+  `DataRecord.idempotency_key` are public attributes but lightly documented.
+  `pyproject.toml` currently pins `aws-lambda-powertools>=3.24.0`; if a future
+  major version bump changes these, the cache-hit log test will fail loudly
+  and surface the regression. Mitigated by TDD — red-state test before code
+  change.
