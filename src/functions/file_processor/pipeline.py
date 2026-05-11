@@ -325,12 +325,8 @@ def _process_dataframes(
 
             if neptune_id is None:
                 unmapped_count += len(candidates)
-                if nmi.startswith("p:"):
-                    if len(unmapped_identifiers) < 100:
-                        unmapped_identifiers.add(("p_id", nmi))
-                else:
-                    if len(unmapped_identifiers) < 100:
-                        unmapped_identifiers.add(("nem12_nmi", f"{nmi}-{suffix}"))
+                if len(unmapped_identifiers) < 100:
+                    unmapped_identifiers.add(("nem12_nmi", f"{nmi}-{suffix}"))
                 continue
 
             mapped_monitor_points_count += 1
@@ -360,7 +356,7 @@ def _process_dataframes(
     # the dataclass but Powertools' Encoder cannot serialize them, so we hand
     # Powertools an idempotency-safe shadow via output_serializer (see
     # _IdempotencyOutputSerializer below).
-    final_outcome = replace(final_outcome, dataframes=())
+    final_outcome = replace(final_outcome, dataframes=[])
     accumulators = {
         "candidate_row_count": candidate_row_count,
         "unmapped_count": unmapped_count,
@@ -444,6 +440,45 @@ def _emit_parser_outcome_log(
     )
 
 
+def _finalize_parse_failed(
+    source_file: SourceFile,
+    start_ts: pd.Timestamp,
+    reason: str,
+) -> ParserOutcome:
+    """Build the parse_failed outcome and emit metrics + duration + log.
+
+    Centralizes the per-file finalization sequence shared by all three
+    parse_failed branches in ``ingest_file``. The source-file move stays at
+    each call site since it has its own failure-visibility concern.
+    """
+    outcome = ParserOutcome(
+        status="parse_failed",
+        reason=reason,
+        source_row_count=0,
+    )
+    _emit_per_file_metrics(outcome, {})
+    duration_ms = (pd.Timestamp.now() - start_ts).total_seconds() * 1000.0
+    metrics.add_metric(name="FileProcessingDurationMs", unit=MetricUnit.Milliseconds, value=duration_ms)
+    _emit_parser_outcome_log(source_file, outcome, {}, duration_ms, PARSE_ERR_DIR)
+    return outcome
+
+
+def _move_to_parse_err_or_warn(source_file: SourceFile) -> None:
+    """Move source to PARSE_ERR_DIR; WARN-log if the move fails.
+
+    The parse_failed outcome is cached by Powertools idempotency; if the
+    source-file move silently fails (S3 throttle, perm error, etc.), the
+    file remains in newTBP/ and the cached outcome makes the inconsistency
+    invisible on retry. WARN-log so it surfaces in CloudWatch.
+    """
+    dest = _move_source_file(source_file.key, PARSE_ERR_DIR)
+    if dest is None:
+        logger.warning(
+            "parse_failed outcome cached but source file NOT moved to newParseErr/",
+            extra={"bucket": source_file.bucket, "key": source_file.key},
+        )
+
+
 @tracer.capture_method
 @idempotent_function(
     data_keyword_argument="source_file",
@@ -470,17 +505,8 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
             except (ParserError, ProcessingError):
                 # Deterministic content failure → cache this outcome so retry
                 # does not keep re-attempting the broken file.
-                _move_source_file(source_file.key, PARSE_ERR_DIR)
-                final_outcome = ParserOutcome(
-                    status="parse_failed",
-                    reason="parser_error",
-                    source_row_count=0,
-                )
-                _emit_per_file_metrics(final_outcome, {})
-                duration_ms = (pd.Timestamp.now() - start_ts).total_seconds() * 1000.0
-                metrics.add_metric(name="FileProcessingDurationMs", unit=MetricUnit.Milliseconds, value=duration_ms)
-                _emit_parser_outcome_log(source_file, final_outcome, {}, duration_ms, PARSE_ERR_DIR)
-                return final_outcome
+                _move_to_parse_err_or_warn(source_file)
+                return _finalize_parse_failed(source_file, start_ts, reason="parser_error")
 
             try:
                 if parsed.dataframes:
@@ -491,17 +517,8 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
                 csv_writer.commit()
             except (ParserError, ProcessingError):
                 csv_writer.abort()
-                _move_source_file(source_file.key, PARSE_ERR_DIR)
-                final_outcome = ParserOutcome(
-                    status="parse_failed",
-                    reason="parser_error",
-                    source_row_count=0,
-                )
-                _emit_per_file_metrics(final_outcome, {})
-                duration_ms = (pd.Timestamp.now() - start_ts).total_seconds() * 1000.0
-                metrics.add_metric(name="FileProcessingDurationMs", unit=MetricUnit.Milliseconds, value=duration_ms)
-                _emit_parser_outcome_log(source_file, final_outcome, {}, duration_ms, PARSE_ERR_DIR)
-                return final_outcome
+                _move_to_parse_err_or_warn(source_file)
+                return _finalize_parse_failed(source_file, start_ts, reason="parser_error")
             except Exception:
                 # Transient infrastructure failure — abort writer, do NOT
                 # move source, raise so Powertools deletes in-progress and
@@ -519,17 +536,8 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
             except ValueError:
                 # Unknown status — treat as parse_failed.
                 csv_writer.abort()
-                _move_source_file(source_file.key, PARSE_ERR_DIR)
-                final_outcome = ParserOutcome(
-                    status="parse_failed",
-                    reason="processing_error",
-                    source_row_count=0,
-                )
-                _emit_per_file_metrics(final_outcome, {})
-                duration_ms = (pd.Timestamp.now() - start_ts).total_seconds() * 1000.0
-                metrics.add_metric(name="FileProcessingDurationMs", unit=MetricUnit.Milliseconds, value=duration_ms)
-                _emit_parser_outcome_log(source_file, final_outcome, {}, duration_ms, PARSE_ERR_DIR)
-                return final_outcome
+                _move_to_parse_err_or_warn(source_file)
+                return _finalize_parse_failed(source_file, start_ts, reason="processing_error")
 
             move_dest = _move_source_file(source_file.key, dest_prefix)
             if move_dest is None:

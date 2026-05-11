@@ -158,6 +158,32 @@ class TestIngestFileParseFailedCachable:
         assert any(o["Key"].endswith("broken.csv") for o in listed)
 
 
+class TestIngestFileParseFailedMoveFailureLogged:
+    def test_move_failure_in_parse_failed_path_logs_warning(self, aws_environment, caplog, monkeypatch) -> None:
+        """When _move_source_file returns None in a parse_failed branch, the
+        cached-outcome / file-still-in-newTBP inconsistency must surface as
+        a WARN log (otherwise it is invisible on retry).
+        """
+        import logging
+
+        s3, _ = aws_environment
+        s3.put_object(
+            Bucket=INPUT_BUCKET,
+            Key="newTBP/broken.csv",
+            Body=b"\x00\x01\x02unintelligible binary garbage\xff\xfe\xfd\n",
+        )
+
+        # Stub _move_source_file to simulate an S3 failure (returns None).
+        monkeypatch.setattr(_pipeline_mod, "_move_source_file", lambda *_a, **_kw: None)
+
+        with caplog.at_level(logging.WARNING, logger="file-processor"):
+            outcome = ingest_file(source_file=SourceFile(bucket=INPUT_BUCKET, key="newTBP/broken.csv"))
+
+        assert outcome.status == "parse_failed"
+        warn_records = [r for r in caplog.records if "NOT moved to newParseErr/" in r.getMessage()]
+        assert len(warn_records) == 1
+
+
 class TestIngestFileTransientFailureRaises:
     def test_dynamodb_throttle_propagates_as_processing_error(self, aws_environment) -> None:
         s3, _ = aws_environment
