@@ -123,14 +123,14 @@ class TestFlushBufferToS3:
                 assert "its" in header
 
 
-class TestDirectCSVWriterQuality:
-    """Tests for quality column in DirectCSVWriter."""
+class TestHudiSourceCsvWriterQuality:
+    """Tests for quality column in HudiSourceCsvWriter."""
 
     def test_csv_header_includes_quality(self) -> None:
         """Test that CSV header includes quality column."""
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
-        assert "quality" in DirectCSVWriter.CSV_HEADER
+        assert "quality" in HudiSourceCsvWriter.CSV_HEADER
 
     def test_write_row_with_quality(self) -> None:
         """Test that write_row includes quality value."""
@@ -138,10 +138,10 @@ class TestDirectCSVWriterQuality:
 
         import pandas as pd
 
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
         executor = ThreadPoolExecutor(max_workers=1)
-        writer = DirectCSVWriter("test_batch", executor)
+        writer = HudiSourceCsvWriter("test_batch", executor)
         writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", "A")
 
         content = writer.buffer.getvalue()
@@ -156,10 +156,10 @@ class TestDirectCSVWriterQuality:
 
         import pandas as pd
 
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
         executor = ThreadPoolExecutor(max_workers=1)
-        writer = DirectCSVWriter("test_batch", executor)
+        writer = HudiSourceCsvWriter("test_batch", executor)
         writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh")
 
         content = writer.buffer.getvalue()
@@ -173,10 +173,10 @@ class TestDirectCSVWriterQuality:
 
         import pandas as pd
 
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
         executor = ThreadPoolExecutor(max_workers=1)
-        writer = DirectCSVWriter("test_batch", executor)
+        writer = HudiSourceCsvWriter("test_batch", executor)
         # Caller passes ``None`` directly — the writer must NOT render
         # ``str(None)`` ("None") in the cell.
         writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", None)
@@ -198,10 +198,10 @@ class TestDirectCSVWriterQuality:
 
         import pandas as pd
 
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
         executor = ThreadPoolExecutor(max_workers=1)
-        writer = DirectCSVWriter("test_batch", executor)
+        writer = HudiSourceCsvWriter("test_batch", executor)
         for code in ("A", "E", "S14"):
             writer.write_row("s", pd.Timestamp("2024-01-01"), 1.0, "kwh", code)
 
@@ -219,10 +219,10 @@ class TestDirectCSVWriterQuality:
 
         import pandas as pd
 
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
         executor = ThreadPoolExecutor(max_workers=1)
-        writer = DirectCSVWriter("test_batch", executor)
+        writer = HudiSourceCsvWriter("test_batch", executor)
         writer.write_row("sensor-1", pd.Timestamp("2024-01-01"), 1.5, "kwh", None)
 
         content = writer.buffer.getvalue()
@@ -262,10 +262,10 @@ class TestDirectCSVWriterQuality:
 
         import pandas as pd
 
-        from functions.file_processor.app import DirectCSVWriter
+        from functions.file_processor.csv_writer import HudiSourceCsvWriter
 
         executor = ThreadPoolExecutor(max_workers=1)
-        writer = DirectCSVWriter("test_batch", executor)
+        writer = HudiSourceCsvWriter("test_batch", executor)
 
         # Write rows with different quality values
         writer.write_row("s1", pd.Timestamp("2024-01-01"), 1.0, "kwh", "A")
@@ -315,17 +315,17 @@ class TestNmiDataStreamFiltering:
 
 
 class TestBatchSize:
-    """Tests for BATCH_SIZE constant and batching behavior."""
+    """Tests for CSV_FLUSH_ROW_THRESHOLD constant and batching behavior."""
 
     def test_batch_size_constant_exists(self) -> None:
-        """Test that BATCH_SIZE constant exists and is reasonable."""
+        """Test that CSV_FLUSH_ROW_THRESHOLD constant exists and is reasonable."""
         with patch("aws_lambda_powertools.Logger"):
-            from functions.file_processor.app import BATCH_SIZE
+            from functions.file_processor.app import CSV_FLUSH_ROW_THRESHOLD
 
-            assert isinstance(BATCH_SIZE, int)
-            assert BATCH_SIZE > 0
-            # BATCH_SIZE is now number of rows (50000), not number of DataFrames
-            assert BATCH_SIZE == 50000
+            assert isinstance(CSV_FLUSH_ROW_THRESHOLD, int)
+            assert CSV_FLUSH_ROW_THRESHOLD > 0
+            # CSV_FLUSH_ROW_THRESHOLD is now number of rows (50000), not number of DataFrames
+            assert CSV_FLUSH_ROW_THRESHOLD == 50000
 
 
 class TestTimestampFormat:
@@ -366,14 +366,14 @@ class TestBatchWriteIntegration:
     ) -> None:
         """Test that writes are batched correctly."""
         # This test verifies the batching logic conceptually
-        # The actual implementation buffers dataframes and flushes at BATCH_SIZE
+        # The actual implementation buffers dataframes and flushes at CSV_FLUSH_ROW_THRESHOLD
 
         with patch("aws_lambda_powertools.Logger"):
-            from functions.file_processor.app import BATCH_SIZE
+            from functions.file_processor.app import CSV_FLUSH_ROW_THRESHOLD
 
             # Simulate buffer accumulation
             buffer = []
-            for i in range(BATCH_SIZE - 1):
+            for i in range(CSV_FLUSH_ROW_THRESHOLD - 1):
                 small_df = pd.DataFrame(
                     {
                         "sensorId": [f"id-{i}"],
@@ -385,8 +385,8 @@ class TestBatchWriteIntegration:
                 )
                 buffer.append(small_df)
 
-            # Buffer should have BATCH_SIZE - 1 items
-            assert len(buffer) == BATCH_SIZE - 1
+            # Buffer should have CSV_FLUSH_ROW_THRESHOLD - 1 items
+            assert len(buffer) == CSV_FLUSH_ROW_THRESHOLD - 1
 
     def test_final_flush_clears_remaining(self, mock_s3_resource: S3ServiceResource) -> None:
         """Test that remaining buffer items are flushed at the end."""
@@ -394,7 +394,7 @@ class TestBatchWriteIntegration:
             with patch("functions.file_processor.app.s3_resource", mock_s3_resource):
                 from functions.file_processor.app import _flush_buffer_to_s3
 
-                # Simulate partial batch (less than BATCH_SIZE)
+                # Simulate partial batch (less than CSV_FLUSH_ROW_THRESHOLD)
                 buffer = []
                 for i in range(10):  # Only 10 items
                     df = pd.DataFrame(

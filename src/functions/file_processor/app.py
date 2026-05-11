@@ -1,4 +1,3 @@
-import io
 import json
 import os
 import random
@@ -8,7 +7,7 @@ import time
 import traceback
 import uuid
 from collections import Counter
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
@@ -25,10 +24,10 @@ from aws_lambda_powertools.utilities.idempotency import (
     idempotent_function,
 )
 
+from functions.file_processor.csv_writer import HudiSourceCsvWriter
 from shared import (
     HUDI_BUCKET,
     HUDI_FINAL_PREFIX,
-    HUDI_STAGING_PREFIX,
     INPUT_BUCKET,
     PARSE_ERR_DIR,
     PROCESSED_DIR,
@@ -119,8 +118,8 @@ NMI_DATA_STREAM_CHANNEL = [
 ]
 NMI_DATA_STREAM_COMBINED = frozenset(i + j for i in NMI_DATA_STREAM_SUFFIX for j in NMI_DATA_STREAM_CHANNEL)
 
-# Batch size for S3 writes - number of rows before writing
-BATCH_SIZE = 50000  # ~50K rows per CSV file
+# Maximum rows held in HudiSourceCsvWriter buffer before flushing to staging.
+CSV_FLUSH_ROW_THRESHOLD = 50000
 
 # Parallel S3 write configuration
 S3_WRITE_WORKERS = 4  # Number of concurrent S3 upload threads
@@ -153,13 +152,6 @@ class DataFrameCandidate:
     # non-None string is forwarded verbatim to preserve vendor codes
     # (``A``/``E``/``S14``/etc.). Spec line 570: never write empty string.
     quality: str | None
-
-
-@dataclass(frozen=True)
-class CSVUploadJob:
-    future: Future[None]
-    staging_key: str
-    final_key: str
 
 
 def _processed_destination_for_status(status: str) -> str:
@@ -490,7 +482,7 @@ def move_s3_file(bucket_name: str, source_key: str, dest_prefix: str) -> str | N
 def _move_final_source_or_parse_error(
     local_file_path: str,
     dest_prefix: str,
-    csv_writer: "DirectCSVWriter",
+    csv_writer: "HudiSourceCsvWriter",
     logs_dict: dict[str, str],
     timestamp_now: str,
 ) -> bool:
@@ -517,12 +509,6 @@ def _move_final_source_or_parse_error(
     return False
 
 
-def _upload_csv_to_s3(csv_content: str, output_key: str) -> None:
-    """Upload CSV content to S3. Used by ThreadPoolExecutor."""
-    s3_resource.Object(HUDI_BUCKET, output_key).put(Body=csv_content)
-    logger.debug("Uploaded CSV to S3", extra={"output_key": output_key})
-
-
 @tracer.capture_method
 def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
     """Write buffered DataFrames to S3 as a single merged CSV."""
@@ -533,113 +519,6 @@ def _flush_buffer_to_s3(buffer: list, batch_timestamp: str) -> None:
     output_key = f"{HUDI_FINAL_PREFIX}/batch_{batch_timestamp}_{random.randint(1, 1000000)}.csv"
     s3_resource.Object(HUDI_BUCKET, output_key).put(Body=merged_df.to_csv(index=False))
     logger.debug("Flushed buffer to S3", extra={"output_key": output_key, "rows": len(merged_df)})
-
-
-class DirectCSVWriter:
-    """
-    Memory-efficient CSV writer that bypasses pandas DataFrame.
-
-    Writes rows directly to a string buffer, then uploads to S3 in parallel.
-    Eliminates DataFrame construction, concat, and to_csv overhead.
-    """
-
-    CSV_HEADER = "sensorId,ts,val,unit,its,quality\n"
-    TS_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-    def __init__(self, batch_timestamp: str, executor: ThreadPoolExecutor) -> None:
-        self.batch_timestamp = batch_timestamp
-        self.executor = executor
-        self.writer_token = uuid.uuid4().hex
-        self.buffer = io.StringIO()
-        self.buffer.write(self.CSV_HEADER)
-        self.row_count = 0
-        self.upload_jobs: list[CSVUploadJob] = []
-        self.committed_final_keys: list[str] = []
-
-    def write_row(self, sensor_id: str, ts: Any, val: float, unit: str, quality: str | None = None) -> None:
-        """Write a single row to the buffer.
-
-        ``quality=None`` (vendor did not supply a quality value) is serialised
-        as an empty cell — i.e. zero characters between the trailing commas —
-        so Athena/Presto reads the column as NULL. Vendor-supplied codes
-        (``A``/``E``/``S14``/etc.) pass through verbatim. Per spec line 570,
-        we must never write the literal empty string ``""`` (Athena/Presto
-        does NOT coerce ``""`` to NULL).
-        """
-        ts_str = ts.strftime(self.TS_FORMAT) if hasattr(ts, "strftime") else str(ts)
-        # ``str(None)`` would render as "None"; force empty cell instead.
-        quality_field = "" if quality is None else quality
-        # CSV format: sensorId,ts,val,unit,its,quality (its = ts)
-        self.buffer.write(f"{sensor_id},{ts_str},{val},{unit},{ts_str},{quality_field}\n")
-        self.row_count += 1
-
-    def flush(self) -> None:
-        """Upload current buffer to staging asynchronously."""
-        if self.row_count == 0:
-            return
-
-        csv_content = self.buffer.getvalue()
-        batch_file_name = f"batch_{self.batch_timestamp}_{self.writer_token}_{random.randint(1, 1000000)}.csv"
-        staging_key = f"{HUDI_STAGING_PREFIX}/{self.writer_token}/{batch_file_name}"
-        final_key = f"{HUDI_FINAL_PREFIX}/{batch_file_name}"
-
-        # Submit upload task to thread pool
-        future = self.executor.submit(_upload_csv_to_s3, csv_content, staging_key)
-        self.upload_jobs.append(CSVUploadJob(future=future, staging_key=staging_key, final_key=final_key))
-
-        logger.debug("Submitted CSV upload", extra={"output_key": staging_key, "rows": self.row_count})
-
-        # Reset buffer for next batch
-        self.buffer = io.StringIO()
-        self.buffer.write(self.CSV_HEADER)
-        self.row_count = 0
-
-    def wait_for_uploads(self) -> None:
-        """Wait for uploads and publish staged objects."""
-        self.commit()
-
-    def commit(self) -> None:
-        """Publish staged uploads to final Hudi keys."""
-        jobs = list(self.upload_jobs)
-        for job in jobs:
-            job.future.result()
-
-        for job in jobs:
-            s3_resource.Object(HUDI_BUCKET, job.final_key).copy({"Bucket": HUDI_BUCKET, "Key": job.staging_key})
-            self.committed_final_keys.append(job.final_key)
-            s3_resource.Object(HUDI_BUCKET, job.staging_key).delete()
-            logger.debug(
-                "Committed staged CSV upload",
-                extra={"staging_key": job.staging_key, "final_key": job.final_key},
-            )
-
-        self.upload_jobs.clear()
-
-    def abort(self) -> None:
-        """Observe pending uploads and delete writer-owned staged/final objects."""
-        jobs = list(self.upload_jobs)
-        for job in jobs:
-            try:
-                job.future.result()
-            except Exception as e:
-                logger.warning(
-                    "Staged CSV upload failed during abort",
-                    extra={"staging_key": job.staging_key, "final_key": job.final_key, "error": str(e)},
-                )
-
-        keys_to_delete = [job.staging_key for job in jobs] + self.committed_final_keys
-        seen_keys: set[str] = set()
-        for key in keys_to_delete:
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            try:
-                s3_resource.Object(HUDI_BUCKET, key).delete()
-            except Exception as e:
-                logger.warning("Failed to delete staged CSV object", extra={"key": key, "error": str(e)})
-
-        self.upload_jobs.clear()
-        self.committed_final_keys.clear()
 
 
 @idempotent_function(persistence_store=persistence_layer, config=idempotency_config, data_keyword_argument="tbp_files")
@@ -766,7 +645,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                         continue
 
             # Process each NMI's data - write directly to CSV, bypass DataFrame
-            csv_writer = DirectCSVWriter(batch_timestamp, executor)
+            csv_writer = HudiSourceCsvWriter(batch_timestamp, executor)
             mapped_monitor_points_for_file = 0
             # Per-file accumulators surfaced for audit sidecar + metrics.
             file_candidate_row_count = 0
@@ -882,8 +761,8 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                                 )
                                 rows_written += 1
 
-                                # Flush buffer when it reaches BATCH_SIZE rows
-                                if csv_writer.row_count >= BATCH_SIZE:
+                                # Flush buffer when it reaches CSV_FLUSH_ROW_THRESHOLD rows
+                                if csv_writer.row_count >= CSV_FLUSH_ROW_THRESHOLD:
                                     csv_writer.flush()
 
                     # Flush and publish only after all validation for this source file succeeds.

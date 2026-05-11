@@ -499,7 +499,7 @@ class TestBatchSizeFlush:
 
     @mock_aws
     def test_buffer_flushes_at_batch_size(self, temp_directory: str) -> None:
-        """Test that buffer flushes when reaching BATCH_SIZE."""
+        """Test that buffer flushes when reaching CSV_FLUSH_ROW_THRESHOLD."""
         os.environ["AWS_ACCESS_KEY_ID"] = "testing"
         os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
         os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-2"
@@ -523,7 +523,7 @@ class TestBatchSizeFlush:
         ]:
             logs.create_log_group(logGroupName=log_group)
 
-        # Create mappings for many monitor points (more than BATCH_SIZE=50)
+        # Create mappings for many monitor points (more than CSV_FLUSH_ROW_THRESHOLD=50)
         # Using 60 different suffixes to trigger the batch flush
         mappings = {}
         for i in range(60):
@@ -617,7 +617,7 @@ class TestBatchSizeFlush:
             hudi_bucket = s3_resource.Bucket("hudibucketsrc")
             sensor_files = list(hudi_bucket.objects.filter(Prefix="sensorDataFiles/"))
 
-            # With BATCH_SIZE=50000 rows and 60 channels x 48 readings = 2880 rows,
+            # With CSV_FLUSH_ROW_THRESHOLD=50000 rows and 60 channels x 48 readings = 2880 rows,
             # we expect 1 file (all rows fit in one batch)
             assert len(sensor_files) >= 1
 
@@ -957,7 +957,7 @@ class TestParserOutcomeDisposition:
     def test_partial_flush_upload_error_cleans_hudi_output(self) -> None:
         # Row-level bad values no longer raise (Task 16); the partial-flush
         # cleanup path is now exercised by an upload failure on the second
-        # batch flush. With BATCH_SIZE=1 and two valid rows, the first flush
+        # batch flush. With CSV_FLUSH_ROW_THRESHOLD=1 and two valid rows, the first flush
         # succeeds and the second raises -> writer.abort() must clean both
         # the staging and the previously-committed final keys.
         df = pd.DataFrame(
@@ -968,25 +968,28 @@ class TestParserOutcomeDisposition:
         )
         s3_resource = _create_outcome_test_buckets(mappings={"NMI1-E1": "p:test:e1"})
 
-        call_count = {"n": 0}
-        real_upload = file_processor_app._upload_csv_to_s3
+        from functions.file_processor import csv_writer as csv_writer_module
 
-        def upload_with_second_failure(csv_content: str, output_key: str) -> None:
+        call_count = {"n": 0}
+        real_upload = csv_writer_module._upload_csv_to_s3
+
+        def upload_with_second_failure(csv_content: str, output_key: str, parent_xray_trace_entity: Any = None) -> None:
             call_count["n"] += 1
             if call_count["n"] == 2:
                 raise RuntimeError("simulated upload failure")
-            real_upload(csv_content, output_key)
+            real_upload(csv_content, output_key, parent_xray_trace_entity)
 
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.csv_writer.s3_resource", s3_resource),
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
-            patch("functions.file_processor.app.BATCH_SIZE", 1),
-            patch("functions.file_processor.app._upload_csv_to_s3", side_effect=upload_with_second_failure),
+            patch("functions.file_processor.app.CSV_FLUSH_ROW_THRESHOLD", 1),
+            patch("functions.file_processor.csv_writer._upload_csv_to_s3", side_effect=upload_with_second_failure),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
@@ -1028,23 +1031,26 @@ class TestParserOutcomeDisposition:
 
         # The first file emits one batch (1 upload). The second file emits two
         # batches; the second batch's upload raises -> abort path runs.
-        call_count = {"n": 0}
-        real_upload = file_processor_app._upload_csv_to_s3
+        from functions.file_processor import csv_writer as csv_writer_module
 
-        def upload_third_call_fails(csv_content: str, output_key: str) -> None:
+        call_count = {"n": 0}
+        real_upload = csv_writer_module._upload_csv_to_s3
+
+        def upload_third_call_fails(csv_content: str, output_key: str, parent_xray_trace_entity: Any = None) -> None:
             call_count["n"] += 1
             if call_count["n"] == 3:
                 raise RuntimeError("simulated upload failure")
-            real_upload(csv_content, output_key)
+            real_upload(csv_content, output_key, parent_xray_trace_entity)
 
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.csv_writer.s3_resource", s3_resource),
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.dispatch_non_nem", side_effect=get_outcome),
-            patch("functions.file_processor.app.BATCH_SIZE", 1),
-            patch("functions.file_processor.app.random.randint", return_value=12345),
-            patch("functions.file_processor.app._upload_csv_to_s3", side_effect=upload_third_call_fails),
+            patch("functions.file_processor.app.CSV_FLUSH_ROW_THRESHOLD", 1),
+            patch("functions.file_processor.csv_writer.random.randint", return_value=12345),
+            patch("functions.file_processor.csv_writer._upload_csv_to_s3", side_effect=upload_third_call_fails),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[
@@ -1108,13 +1114,14 @@ class TestParserOutcomeDisposition:
 
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
+            patch("functions.file_processor.csv_writer.s3_resource", s3_resource),
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
                 "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
-            patch("functions.file_processor.app._upload_csv_to_s3", side_effect=RuntimeError("boom")),
+            patch("functions.file_processor.csv_writer._upload_csv_to_s3", side_effect=RuntimeError("boom")),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/outcome.csv"}]
