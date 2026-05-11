@@ -73,6 +73,34 @@ class TestHudiSourceCsvWriter:
         final_objs = hudi_bucket.list_objects_v2(Bucket=HUDI_BUCKET, Prefix=HUDI_FINAL_PREFIX).get("Contents", [])
         assert len(final_objs) == 0
 
+    def test_abort_after_flush_only_deletes_staged_keys(self, hudi_bucket, executor) -> None:
+        """When flush has staged objects but commit was never called, abort cleans staging.
+
+        Production triggers this path when a parser error fires after rows
+        have been buffered/staged but before commit. The abort contract is:
+        no Hudi rows persist after a parse-error rollback.
+        """
+        writer = HudiSourceCsvWriter(batch_timestamp="2026_May_07T00_00_00_000000", executor=executor)
+        writer.write_row("p:bunnings:abc", pd.Timestamp("2026-05-07 00:00:00"), 1.5, "kwh", "A")
+        writer.flush()
+
+        # Wait for staging upload to land before aborting.
+        for job in writer.upload_jobs:
+            job.future.result()
+
+        # Verify staging actually has the object now.
+        staging_before = hudi_bucket.list_objects_v2(Bucket=HUDI_BUCKET, Prefix=HUDI_STAGING_PREFIX).get("Contents", [])
+        assert len(staging_before) == 1
+
+        # Roll back without commit.
+        writer.abort()
+
+        # Both staging and final must be empty.
+        staging_after = hudi_bucket.list_objects_v2(Bucket=HUDI_BUCKET, Prefix=HUDI_STAGING_PREFIX).get("Contents", [])
+        final_after = hudi_bucket.list_objects_v2(Bucket=HUDI_BUCKET, Prefix=HUDI_FINAL_PREFIX).get("Contents", [])
+        assert len(staging_after) == 0
+        assert len(final_after) == 0
+
     def test_quality_none_renders_empty_cell(self, hudi_bucket, executor) -> None:
         writer = HudiSourceCsvWriter(batch_timestamp="2026_May_07T00_00_00_000000", executor=executor)
         writer.write_row("p:bunnings:abc", pd.Timestamp("2026-05-07 00:00:00"), 1.5, "kwh", None)
