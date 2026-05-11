@@ -52,31 +52,24 @@ def noosa_solar_parser(file_name: str) -> ParserOutcome:
     source_row_count = len(df)
     skip_reasons: Counter[SkipReason] = Counter()
 
-    # Strip timezone suffix (AEST/AEDT) and parse timestamps permissively.
-    # Persist all timestamps as naive AEST (local standard time of the site, no
-    # DST): AEDT rows are shifted by -1h so they collapse onto the same clock
-    # axis as AEST rows. This prevents DST-switch-day collisions in the Hudi
-    # (sensorid, ts) composite key.
+    # Noosa Resort is in QLD which never observes daylight saving — all source
+    # timestamps must be in AEST. Empirically verified across multiple seasons:
+    # the export tool faithfully outputs AEST year-round. Any other tz suffix
+    # (AEDT, UTC, etc.) indicates a contract violation (export tool migrated,
+    # site changed, etc.) and should surface as a parse error so ops can
+    # investigate. Strip the AEST suffix and parse the rest as naive AEST.
     timestamp_text = df["timestamp"].astype(str)
     tz_values = timestamp_text.dropna().str.extract(r"\s+([A-Z]{3,4})$")[0].dropna().unique()
-    unexpected_tz = [tz for tz in tz_values if tz not in ("AEST", "AEDT")]
+    unexpected_tz = [tz for tz in tz_values if tz != "AEST"]
     if len(unexpected_tz) > 0:
-        logger.warning(
-            "Unexpected timezone in Noosa Solar file",
-            extra={"timezones": unexpected_tz},
+        raise ParserError(
+            f"Noosa Solar file contains non-AEST timezone(s): {sorted(unexpected_tz)}. "
+            f"Noosa is in QLD (no DST); only AEST is allowed. "
+            f"Investigate the export tool's timezone configuration."
         )
 
-    # Detect AEDT rows BEFORE stripping the suffix so we can shift them later.
-    aedt_mask = timestamp_text.str.contains(r"\s+AEDT$", na=False)
-
-    timestamp_text = timestamp_text.str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
+    timestamp_text = timestamp_text.str.replace(r"\s+AEST$", "", regex=True)
     df["timestamp"] = pd.to_datetime(timestamp_text, format="%d-%b-%y %I:%M %p", errors="coerce")
-
-    # Convert AEDT timestamps to AEST (subtract 1 hour). After this, every
-    # successfully parsed row's `timestamp` is naive AEST. NaT rows are
-    # unaffected (NaT - Timedelta = NaT), so the bad_ts_mask below still
-    # catches unparseable timestamps correctly.
-    df.loc[aedt_mask, "timestamp"] = df.loc[aedt_mask, "timestamp"] - pd.Timedelta(hours=1)
 
     bad_ts_mask = df["timestamp"].isna()
     bad_ts_count = int(bad_ts_mask.sum())
