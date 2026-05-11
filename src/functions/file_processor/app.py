@@ -39,7 +39,13 @@ FILE_STABILITY_CHECK_INTERVAL = 5  # seconds between checks
 FILE_STABILITY_MAX_WAIT = 30  # max seconds to wait for stabilisation
 FILE_STABILITY_REQUIRED_CHECKS = 2  # consecutive stable checks required
 MAX_REQUEUE_RETRIES = 3  # aligned with SQS maxReceiveCount = 3 (per spec)
-REQUEUE_DELAY_SECONDS = 60
+# Delay before requeued message becomes visible.
+# Bumped 60 -> 90 (2026-05-12) because overnight metrics showed slow Optima
+# exports (~5KB files) intermittently failing to stabilise within 3 retries
+# at the old 60s interval; 90s gives 3x90 = 270s total window vs 3x60 = 180s
+# before MaxRetriesExceeded triggers. No retry-count change; aligned with
+# SQS maxReceiveCount = 3.
+REQUEUE_DELAY_SECONDS = 90
 
 logger = Logger(service="file-processor")
 tracer = Tracer(service="file-processor")
