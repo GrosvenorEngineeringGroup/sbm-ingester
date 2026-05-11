@@ -215,3 +215,40 @@ class TestCacheHitEndToEnd:
         assert len(cache_hit_records) == 1
         assert getattr(cache_hit_records[0], "source_bucket", None) == INPUT_BUCKET
         assert getattr(cache_hit_records[0], "source_key", None) == "newTBP/sample.csv"
+
+
+class TestParserOutcomeSerializer:
+    def test_parser_outcome_serializer_roundtrip_preserves_all_fields(self) -> None:
+        """Confirm to_dict / from_dict round-trip preserves all ParserOutcome fields (except dataframes)."""
+        from collections import Counter
+
+        from shared.parsers.outcome import ParserOutcome
+
+        original = ParserOutcome(
+            status="unmapped",
+            reason=None,
+            source_row_count=100,
+            candidate_row_count=80,
+            rows_written=0,
+            unmapped_count=80,
+            rows_skipped=20,
+            unmapped_identifiers=(("nem12_nmi", "ABC-E1"), ("p_id", "p:bunnings:xxx")),
+            unsupported_suffixes=frozenset({"X9", "Y2"}),
+            skip_reasons=Counter({"blank_value": 15, "unparseable_value": 5}),
+        )
+
+        as_dict = _parser_outcome_serializer.to_dict(original)
+        rehydrated = _parser_outcome_serializer.from_dict(as_dict)
+
+        assert rehydrated.status == original.status
+        assert rehydrated.reason == original.reason
+        assert rehydrated.source_row_count == original.source_row_count
+        assert rehydrated.candidate_row_count == original.candidate_row_count
+        assert rehydrated.rows_written == original.rows_written
+        assert rehydrated.unmapped_count == original.unmapped_count
+        assert rehydrated.rows_skipped == original.rows_skipped
+        assert rehydrated.unmapped_identifiers == original.unmapped_identifiers
+        assert rehydrated.unsupported_suffixes == original.unsupported_suffixes
+        assert isinstance(rehydrated.unsupported_suffixes, frozenset)
+        assert rehydrated.skip_reasons == original.skip_reasons
+        assert isinstance(rehydrated.skip_reasons, Counter)

@@ -139,6 +139,12 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         try:
             message_body = json.loads(record["body"])
             retry_count = message_body.get("_retry_count", 0)
+            # Bind retry_count to every log line emitted inside ingest_file
+            # (including the parser_outcome structured log emitted by
+            # pipeline._emit_parser_outcome_log). SQS batch_size=1 in
+            # production so loop runs at most once per invocation —
+            # remove_keys cleanup is omitted as moot.
+            logger.append_keys(retry_count=retry_count)
 
             s3_event = message_body["Records"][0]
             bucket_name = s3_event["s3"]["bucket"]["name"]

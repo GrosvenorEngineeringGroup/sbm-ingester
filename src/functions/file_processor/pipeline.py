@@ -214,17 +214,21 @@ def _processed_destination_for_status(status: str) -> str:
 
 
 def _move_source_file(source_key: str, dest_prefix: str) -> str | None:
-    """Copy source under newTBP/<file> to <dest_prefix>/<file>, then delete original."""
+    """Copy ``source_key`` to ``<dest_prefix>/<file>``, then delete the original.
+
+    Caller passes the full source key (e.g. ``newTBP/<file>``); no prefix
+    repair is performed. ``SourceFile.key`` invariant guarantees the key is
+    already prefixed.
+    """
     file_name = source_key.split("/")[-1]
-    full_source_key = source_key if source_key.startswith("newTBP/") else f"newTBP/{file_name}"
     dest_key = f"{dest_prefix.rstrip('/')}/{file_name}"
     copied_dest = False
 
     try:
         bucket = s3_resource.Bucket(INPUT_BUCKET)
-        bucket.Object(dest_key).copy({"Bucket": INPUT_BUCKET, "Key": full_source_key})
+        bucket.Object(dest_key).copy({"Bucket": INPUT_BUCKET, "Key": source_key})
         copied_dest = True
-        bucket.Object(full_source_key).delete()
+        bucket.Object(source_key).delete()
         return dest_key
     except Exception as e:
         if copied_dest:
@@ -233,12 +237,12 @@ def _move_source_file(source_key: str, dest_prefix: str) -> str | None:
             except Exception as cleanup_error:
                 logger.warning(
                     "Failed to clean up destination after source move failure",
-                    extra={"source": full_source_key, "dest": dest_key, "error": str(cleanup_error)},
+                    extra={"source": source_key, "dest": dest_key, "error": str(cleanup_error)},
                 )
         logger.error(
             "File move failed",
             exc_info=True,
-            extra={"source": full_source_key, "dest": dest_key, "error": str(e)},
+            extra={"source": source_key, "dest": dest_key, "error": str(e)},
         )
         return None
 
@@ -370,7 +374,7 @@ def _process_dataframes(
 
 
 def _emit_per_file_metrics(outcome: ParserOutcome, accumulators: dict[str, Any]) -> None:
-    if outcome.status == "processed":
+    if outcome.status in {"processed", "processed_external"}:
         metrics.add_metric(name="ValidProcessedFiles", unit=MetricUnit.Count, value=1)
     elif outcome.status == "unmapped":
         metrics.add_metric(name="IrrelevantFiles", unit=MetricUnit.Count, value=1)
@@ -502,11 +506,16 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
             local_path = _download_to_tmp(source_file, Path(tmp_dir))
             try:
                 parsed = _parse_one_file(local_path)
-            except (ParserError, ProcessingError):
+            except ParserError:
                 # Deterministic content failure → cache this outcome so retry
                 # does not keep re-attempting the broken file.
                 _move_to_parse_err_or_warn(source_file)
                 return _finalize_parse_failed(source_file, start_ts, reason="parser_error")
+            except ProcessingError:
+                # Parsed-shape issue surfaced as ProcessingError → still
+                # deterministic content failure but distinct taxonomy reason.
+                _move_to_parse_err_or_warn(source_file)
+                return _finalize_parse_failed(source_file, start_ts, reason="processing_error")
 
             try:
                 if parsed.dataframes:
@@ -515,10 +524,14 @@ def ingest_file(source_file: SourceFile) -> ParserOutcome:
                     final_outcome = parsed
 
                 csv_writer.commit()
-            except (ParserError, ProcessingError):
+            except ParserError:
                 csv_writer.abort()
                 _move_to_parse_err_or_warn(source_file)
                 return _finalize_parse_failed(source_file, start_ts, reason="parser_error")
+            except ProcessingError:
+                csv_writer.abort()
+                _move_to_parse_err_or_warn(source_file)
+                return _finalize_parse_failed(source_file, start_ts, reason="processing_error")
             except Exception:
                 # Transient infrastructure failure — abort writer, do NOT
                 # move source, raise so Powertools deletes in-progress and
