@@ -196,3 +196,22 @@ class TestIngestFileTransientFailureRaises:
         with patch.object(HudiSourceCsvWriter, "commit", side_effect=RuntimeError("simulated S3 5xx")):
             with pytest.raises(RuntimeError):
                 ingest_file(source_file=SourceFile(bucket=INPUT_BUCKET, key="newTBP/sample.csv"))
+
+
+class TestCacheHitEndToEnd:
+    def test_duplicate_ingest_emits_idempotent_cache_hit_log(self, aws_environment, caplog) -> None:
+        import logging
+
+        s3, _ = aws_environment
+        s3.put_object(Bucket=INPUT_BUCKET, Key="newTBP/sample.csv", Body=NEM12_BODY)
+
+        src = SourceFile(bucket=INPUT_BUCKET, key="newTBP/sample.csv")
+        ingest_file(source_file=src)
+
+        with caplog.at_level(logging.INFO):
+            ingest_file(source_file=src)
+
+        cache_hit_records = [r for r in caplog.records if r.message == "idempotent_cache_hit"]
+        assert len(cache_hit_records) == 1
+        assert getattr(cache_hit_records[0], "source_bucket", None) == INPUT_BUCKET
+        assert getattr(cache_hit_records[0], "source_key", None) == "newTBP/sample.csv"
