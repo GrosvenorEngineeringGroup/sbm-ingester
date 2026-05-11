@@ -27,6 +27,12 @@ resource "aws_lambda_function" "sbm_files_ingester" {
   tracing_config {
     mode = "Active"
   }
+
+  environment {
+    variables = {
+      SQS_QUEUE_URL = aws_sqs_queue.sbm_files_ingester_queue.url
+    }
+  }
 }
 
 # -----------------------------
@@ -51,9 +57,10 @@ resource "aws_lambda_function" "sbm_files_ingester_redrive" {
 # DynamoDB: Idempotency Table
 # -----------------------------
 resource "aws_dynamodb_table" "sbm_ingester_idempotency" {
-  name         = "sbm-ingester-idempotency"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "file_key"
+  name                        = "sbm-ingester-idempotency"
+  billing_mode                = "PAY_PER_REQUEST"
+  hash_key                    = "file_key"
+  deletion_protection_enabled = true
 
   attribute {
     name = "file_key"
@@ -97,7 +104,7 @@ resource "aws_iam_role_policy" "idempotency_access" {
 resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
   name                       = "sbm-files-ingester-dlq"
   message_retention_seconds  = 1209600 # 14 days
-  visibility_timeout_seconds = 900     # Match Lambda timeout
+  visibility_timeout_seconds = 900     # DLQ is not Lambda-triggered; main queue uses 1080.
 
   tags = {
     Name = "sbm-files-ingester-dlq"
@@ -106,7 +113,7 @@ resource "aws_sqs_queue" "sbm_files_ingester_dlq" {
 
 resource "aws_sqs_queue" "sbm_files_ingester_queue" {
   name                       = "sbm-files-ingester-queue"
-  visibility_timeout_seconds = 900 # Match Lambda timeout (15 min)
+  visibility_timeout_seconds = 1080 # Lambda timeout (900) + 180s buffer
 
   tags = {
     Name = "sbm-files-ingester-queue"
