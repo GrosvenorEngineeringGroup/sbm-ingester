@@ -172,12 +172,13 @@ class TestRequeueMessage:
         assert result is False
 
 
-@pytest.mark.skip(
-    reason="Mocks parse_and_write_data which was removed from app.py during Task 11. "
-    "New lambda_handler integration tests live in test_lambda_handler.py."
-)
 class TestLambdaHandlerWithStabilityCheck:
-    """Tests for lambda_handler with file stability check integration."""
+    """Integration tests: lambda_handler + check_file_stability (no check mocking).
+
+    Unlike tests in test_lambda_handler.py (which mock `check_file_stability`
+    directly), these exercise the real stability-check path by mocking
+    `s3_client.head_object` so we cover the end-to-end handler behaviour.
+    """
 
     @pytest.fixture
     def mock_s3_client(self) -> Generator[Any]:
@@ -192,10 +193,9 @@ class TestLambdaHandlerWithStabilityCheck:
             yield mock
 
     @pytest.fixture
-    def mock_parse_and_write(self) -> Generator[Any]:
-        """Mock parse_and_write_data function."""
-        with patch("functions.file_processor.app.parse_and_write_data") as mock:
-            mock.return_value = 1
+    def mock_ingest_file(self) -> Generator[Any]:
+        """Mock ingest_file as imported in app.py."""
+        with patch("functions.file_processor.app.ingest_file") as mock:
             yield mock
 
     @pytest.fixture
@@ -229,55 +229,63 @@ class TestLambdaHandlerWithStabilityCheck:
         self,
         mock_s3_client: Any,
         mock_sqs_client: Any,
-        mock_parse_and_write: Any,
+        mock_ingest_file: Any,
         mock_context: MockLambdaContext,
         sample_sqs_event: dict[str, Any],
     ) -> None:
-        """Test that stable files are processed normally."""
+        """Stable file → check_file_stability returns True → ingest_file is invoked."""
         from functions.file_processor.app import lambda_handler
 
         mock_s3_client.head_object.return_value = {"ContentLength": 1000}
 
-        with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
-            with patch("functions.file_processor.app.FILE_STABILITY_REQUIRED_CHECKS", 2):
-                result = lambda_handler(sample_sqs_event, mock_context)
+        with (
+            patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01),
+            patch("functions.file_processor.app.FILE_STABILITY_REQUIRED_CHECKS", 2),
+        ):
+            result = lambda_handler(sample_sqs_event, mock_context)
 
         assert result["statusCode"] == 200
         assert result["processed"] == 1
         assert result["requeued"] == 0
-        mock_parse_and_write.assert_called_once()
+        mock_ingest_file.assert_called_once()
+        # SourceFile carries bucket/key from the SQS event
+        kwargs = mock_ingest_file.call_args.kwargs
+        assert kwargs["source_file"].bucket == "test-bucket"
+        assert kwargs["source_file"].key == "newTBP/test-file.csv"
 
     def test_unstable_file_requeued(
         self,
         mock_s3_client: Any,
         mock_sqs_client: Any,
-        mock_parse_and_write: Any,
+        mock_ingest_file: Any,
         mock_context: MockLambdaContext,
         sample_sqs_event: dict[str, Any],
     ) -> None:
-        """Test that unstable files are requeued."""
+        """Empty/unstable file → requeued via SQS; ingest_file NOT called."""
         from functions.file_processor.app import lambda_handler
 
         mock_s3_client.head_object.return_value = {"ContentLength": 0}
 
-        with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
-            with patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.02):
-                result = lambda_handler(sample_sqs_event, mock_context)
+        with (
+            patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01),
+            patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.02),
+        ):
+            result = lambda_handler(sample_sqs_event, mock_context)
 
         assert result["statusCode"] == 200
         assert result["processed"] == 0
         assert result["requeued"] == 1
         mock_sqs_client.send_message.assert_called_once()
-        mock_parse_and_write.assert_not_called()
+        mock_ingest_file.assert_not_called()
 
     def test_max_retries_exceeded_skipped(
         self,
         mock_s3_client: Any,
         mock_sqs_client: Any,
-        mock_parse_and_write: Any,
+        mock_ingest_file: Any,
         mock_context: MockLambdaContext,
     ) -> None:
-        """Test that files exceeding max retries are skipped."""
+        """Unstable + retry_count at MAX → skipped (no requeue, no ingest)."""
         from functions.file_processor.app import MAX_REQUEUE_RETRIES, lambda_handler
 
         event = {
@@ -302,25 +310,27 @@ class TestLambdaHandlerWithStabilityCheck:
 
         mock_s3_client.head_object.return_value = {"ContentLength": 0}
 
-        with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
-            with patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.02):
-                result = lambda_handler(event, mock_context)
+        with (
+            patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01),
+            patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.02),
+        ):
+            result = lambda_handler(event, mock_context)
 
         assert result["statusCode"] == 200
         assert result["processed"] == 0
         assert result["requeued"] == 0
         assert result["skipped"] == 1
         mock_sqs_client.send_message.assert_not_called()
-        mock_parse_and_write.assert_not_called()
+        mock_ingest_file.assert_not_called()
 
     def test_retry_count_incremented_on_requeue(
         self,
         mock_s3_client: Any,
         mock_sqs_client: Any,
-        mock_parse_and_write: Any,
+        mock_ingest_file: Any,
         mock_context: MockLambdaContext,
     ) -> None:
-        """Test that retry count is incremented when requeuing."""
+        """When SQS requeues the unstable file, _retry_count is bumped by 1."""
         from functions.file_processor.app import lambda_handler
 
         event = {
@@ -345,9 +355,11 @@ class TestLambdaHandlerWithStabilityCheck:
 
         mock_s3_client.head_object.return_value = {"ContentLength": 0}
 
-        with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
-            with patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.02):
-                lambda_handler(event, mock_context)
+        with (
+            patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01),
+            patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.02),
+        ):
+            lambda_handler(event, mock_context)
 
         # Verify retry count was incremented to 3
         call_args = mock_sqs_client.send_message.call_args

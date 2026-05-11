@@ -1,15 +1,11 @@
 """Comprehensive tests for the Noosa Solar parser."""
 
-import json
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import boto3
 import pandas as pd
 import pytest
-from moto import mock_aws
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
@@ -669,73 +665,3 @@ class TestDispatcherIntegration:
         sensor_id, df = result[0]
         assert sensor_id == "p:racv:r:s1"
         assert "E1_kWh" in df.columns
-
-
-@pytest.mark.skip(
-    reason="References parse_and_write_data / s3_resource removed from app.py during Task 11. "
-    "Will be rewritten against pipeline.ingest_file in a follow-up task."
-)
-class TestPPrefixBypassInFileProcessor:
-    """Integration test: sensors with 'p:' prefix bypass Neptune mapping."""
-
-    @mock_aws
-    def test_p_prefix_bypass_in_file_processor(self, tmp_path: Path) -> None:
-        """Integration: p: prefix sensors bypass Neptune mapping."""
-        os.environ["AWS_ACCESS_KEY_ID"] = "testing"
-        os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
-        os.environ["AWS_DEFAULT_REGION"] = "ap-southeast-2"
-
-        s3_resource = boto3.resource("s3", region_name="ap-southeast-2")
-        s3_resource.create_bucket(
-            Bucket="sbm-file-ingester",
-            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
-        )
-        s3_resource.create_bucket(
-            Bucket="hudibucketsrc",
-            CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
-        )
-
-        # Setup CloudWatch logs
-        logs = boto3.client("logs", region_name="ap-southeast-2")
-        for log_group in [
-            "sbm-ingester-error-log",
-            "sbm-ingester-execution-log",
-            "sbm-ingester-metrics-log",
-            "sbm-ingester-parse-error-log",
-            "sbm-ingester-runtime-error-log",
-        ]:
-            logs.create_log_group(logGroupName=log_group)
-
-        # Upload empty mappings -- the p: sensor should still be processed
-        s3_resource.Object("sbm-file-ingester", "nem12_mappings.json").put(Body=json.dumps({}))
-
-        # Create a Noosa Solar CSV and upload to S3
-        local_csv = str(tmp_path / "RACV_Noosa_Solar_20260331.csv")
-        _create_noosa_csv(
-            local_csv,
-            columns={"p:racv:r:abc123-energy": ["1.0", "2.0", "3.0"]},
-        )
-        csv_content = Path(local_csv).read_bytes()
-        s3_resource.Object("sbm-file-ingester", "newTBP/RACV_Noosa_Solar_20260331.csv").put(Body=csv_content)
-
-        with patch("functions.file_processor.app.s3_resource", s3_resource):
-            from functions.file_processor.app import parse_and_write_data
-
-            files = [{"bucket": "sbm-file-ingester", "file_name": "newTBP/RACV_Noosa_Solar_20260331.csv"}]
-            result = parse_and_write_data(tbp_files=files)
-
-        assert result == 1
-
-        # Verify data was written to hudibucketsrc (bypassed Neptune lookup)
-        hudi_bucket = s3_resource.Bucket("hudibucketsrc")
-        sensor_files = list(hudi_bucket.objects.filter(Prefix="sensorDataFiles/"))
-        assert len(sensor_files) >= 1
-
-        # Verify the CSV content uses the raw p: sensor ID
-        csv_output = sensor_files[0].get()["Body"].read().decode("utf-8")
-        assert "p:racv:r:abc123-energy" in csv_output
-
-        # File should be moved to processed (not irrelevant)
-        ingester_bucket = s3_resource.Bucket("sbm-file-ingester")
-        processed_files = list(ingester_bucket.objects.filter(Prefix="newP/"))
-        assert len(processed_files) == 1
