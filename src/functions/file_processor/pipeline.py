@@ -25,7 +25,6 @@ from dataclasses import dataclass, replace
 from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote
 
 import boto3
 import pandas as pd
@@ -245,10 +244,9 @@ def _move_source_file(source_key: str, dest_prefix: str) -> str | None:
 
 
 def _download_to_tmp(source_file: SourceFile, tmp_dir: Path) -> Path:
-    decoded_key = unquote(source_file.key.replace("+", "%20"))
-    file_name = Path(decoded_key).name
+    file_name = Path(source_file.key).name
     local_path = tmp_dir / file_name
-    s3_resource.Bucket(source_file.bucket).download_file(decoded_key, str(local_path))
+    s3_resource.Bucket(source_file.bucket).download_file(source_file.key, str(local_path))
     return local_path
 
 
@@ -378,6 +376,8 @@ def _emit_per_file_metrics(outcome: ParserOutcome, accumulators: dict[str, Any])
         metrics.add_metric(name="IrrelevantFiles", unit=MetricUnit.Count, value=1)
     elif outcome.status == "parse_failed":
         metrics.add_metric(name="ParseErrorFiles", unit=MetricUnit.Count, value=1)
+    elif outcome.status == "processed_empty":
+        metrics.add_metric(name="ProcessedEmptyFiles", unit=MetricUnit.Count, value=1)
 
     metrics.add_metric(
         name="ProcessedMonitorPoints",

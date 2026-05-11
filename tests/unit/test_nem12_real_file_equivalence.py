@@ -98,7 +98,7 @@ def simulate_file_processing(dfs_iterable, nem12_mappings: dict[str, str]) -> li
     """
     Simulate the file processing logic from app.py.
 
-    This replicates the exact transformation done in parse_and_write_data():
+    This replicates the exact transformation done in ingest_file():
     - For each NMI/suffix, create output DataFrame with sensorId, ts, val, unit, its
     - Only process columns that match NMI_DATA_STREAM_COMBINED
     - Only include data with valid Neptune ID mappings
