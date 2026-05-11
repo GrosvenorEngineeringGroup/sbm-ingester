@@ -23,7 +23,7 @@ class TestGreenSquarePrivateWireSchneiderComXParser:
 
     def test_validates_comx_header(self, temp_directory: str) -> None:
         """Test that ComX header is validated."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             # Create file without ComX header - match expected CSV structure
@@ -39,7 +39,7 @@ NotComX510_Green_Square,data,data,data,SiteName
 
     def test_converts_wh_to_kwh(self, temp_directory: str) -> None:
         """Test that Wh values are converted to kWh."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             # Create valid ComX file with Wh column - must have consistent columns
@@ -74,7 +74,7 @@ class TestGreenSquareComXParserEdgeCases:
 
     def test_handles_kwh_column_directly(self, temp_directory: str) -> None:
         """Test that ComX parser handles Active energy (kWh) column without conversion."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_kwh.csv")
@@ -104,7 +104,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
     def test_raises_exception_missing_energy_column(self, temp_directory: str) -> None:
         """Test that ComX parser raises exception when energy column is missing."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_no_energy.csv")
@@ -128,7 +128,7 @@ Local Time Stamp,Other Column,col3,col4,col5
         self, temp_directory: str, header_site_name: str
     ) -> None:
         """ComX files with a matching marker still need a usable site name."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_missing_site.csv")
@@ -149,7 +149,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
     def test_returns_processed_empty_when_no_valid_energy_rows(self, temp_directory: str) -> None:
         """Test that ComX parser returns processed_empty when energy rows are blank."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_blank_energy.csv")
@@ -176,7 +176,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
         """ComX parser skip-counts non-blank malformed energy values
         instead of raising. With every value bad, file becomes processed_empty
         with rows_skipped reflecting unparseable_value."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_bad_energy.csv")
@@ -200,7 +200,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
     def test_partial_malformed_energy_with_valid_rows_skip_counts(self, temp_directory: str) -> None:
         """N valid rows + 1 malformed energy → N rows in output, rows_skipped=1."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_partial_bad.csv")
@@ -226,7 +226,7 @@ Local Time Stamp,Active energy (kWh),Other,col4,col5
 
     def test_partial_malformed_timestamp_skip_counts(self, temp_directory: str) -> None:
         """N valid rows + 1 malformed timestamp → N rows in output, rows_skipped=1."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_partial_bad_ts.csv")
@@ -252,7 +252,7 @@ not-a-date,3.0,data,col4,col5
 
     def test_extracts_site_name_correctly(self, temp_directory: str) -> None:
         """Test that ComX parser extracts site name correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx_site.csv")
@@ -281,7 +281,7 @@ class TestParserOutputConsistency:
 
     def test_comx_parser_returns_dataframe_with_t_start_index(self, temp_directory: str) -> None:
         """Test that ComX parser returns DataFrame with t_start as index."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.green_square.comx import green_square_private_wire_schneider_comx_parser
 
             filepath = str(Path(temp_directory) / "comx.csv")

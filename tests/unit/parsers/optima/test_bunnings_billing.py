@@ -750,14 +750,14 @@ def test_partial_failure_extra_trailing_cells_row_skipped(_reset_mappings_cache,
 
 @mock_aws
 def test_dispatcher_routes_bunnings_file(_reset_mappings_cache, tmp_path) -> None:
-    """End-to-end: get_non_nem_outcome should route a Bunnings billing file."""
-    from shared.non_nem_parsers import get_non_nem_outcome
+    """End-to-end: dispatch_non_nem should route a Bunnings billing file."""
+    from shared.parsers.dispatcher import dispatch_non_nem
 
     mappings = {"VCCCLG0019-billing-peak-usage": "p:bunnings:peak"}
     s3 = _setup_s3_with_mappings(mappings)
     src = _make_fixture(tmp_path, "VCCCLG0019", "Mar 2026", {"Peak": "100.00"})
 
-    result = get_non_nem_outcome(str(src))
+    result = dispatch_non_nem(str(src))
 
     assert result.status == "processed"
     assert result.source_row_count == 1
@@ -773,7 +773,7 @@ def test_dispatcher_routes_bunnings_file(_reset_mappings_cache, tmp_path) -> Non
 def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache, tmp_path) -> None:
     """Regression guard: RACV files must still hit optima_usage_and_spend_to_s3,
     not the new Bunnings parser."""
-    from shared.non_nem_parsers import get_non_nem_outcome
+    from shared.parsers.dispatcher import dispatch_non_nem
 
     s3 = boto3.client("s3", region_name="ap-southeast-2")
     s3.create_bucket(
@@ -783,7 +783,7 @@ def test_dispatcher_still_routes_racv_file_to_racv_parser(_reset_mappings_cache,
     dst = tmp_path / "20260414.024550-RACV-Usage and Spend Report.csv"
     dst.write_bytes(b"dummy content")
 
-    result = get_non_nem_outcome(str(dst))
+    result = dispatch_non_nem(str(dst))
     assert result.status == "processed_external"
     assert result.reason == "external_gegoptimareports"
 

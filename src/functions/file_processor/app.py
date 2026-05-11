@@ -38,8 +38,8 @@ from shared import (
 )
 from shared.audit import SAMPLE_CAP as AUDIT_SAMPLE_CAP
 from shared.audit import write_audit_sidecar
-from shared.non_nem_parsers import get_non_nem_outcome
 from shared.parsers import ParserError, ParserOutcome, ParserReason, ParserStatus, ProcessingError
+from shared.parsers.dispatcher import dispatch_non_nem
 from shared.parsers.outcome import SkipReason
 
 # File stability check configuration
@@ -758,7 +758,7 @@ def parse_and_write_data(tbp_files: list[dict[str, str]] | None = None) -> int |
                 except _NEM_FALLTHROUGH_ERRORS:
                     # Try non-NEM parsers as last resort
                     try:
-                        outcome = get_non_nem_outcome(local_file_path)
+                        outcome = dispatch_non_nem(local_file_path)
                     except (ParserError, ProcessingError) as e:
                         logs_dict[f"Bad File: {local_file_path}"] = f"[{timestamp_now}] {e}"
                         move_s3_file(INPUT_BUCKET, local_file_path, PARSE_ERR_DIR)

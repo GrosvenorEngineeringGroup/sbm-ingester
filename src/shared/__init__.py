@@ -20,7 +20,7 @@ from shared.common import (
     UNMAPPED_DIR,
 )
 from shared.nem_adapter import output_as_data_frames, stream_as_data_frames
-from shared.non_nem_parsers import get_non_nem_df
+from shared.parsers.dispatcher import dispatch_non_nem, get_non_nem_df
 from shared.source_file import SourceFile
 
 __all__ = [
@@ -37,6 +37,7 @@ __all__ = [
     "RUNTIME_ERROR_LOG_GROUP",
     "UNMAPPED_DIR",
     "SourceFile",
+    "dispatch_non_nem",
     "get_non_nem_df",
     "output_as_data_frames",
     "stream_as_data_frames",

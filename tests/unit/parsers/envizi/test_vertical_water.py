@@ -22,7 +22,7 @@ class TestEnviziVerticalParserWater:
 
     def test_parses_water_data_correctly(self, temp_directory: str) -> None:
         """Test that water data is parsed correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"], rows_per_meter=5)
 
@@ -38,7 +38,7 @@ class TestEnviziVerticalParserWater:
 
     def test_handles_multiple_meters(self, temp_directory: str) -> None:
         """Test that multiple meters are handled correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             filepath = str(Path(temp_directory) / "water_data.csv")
             create_envizi_water_csv(filepath, serial_numbers=["111", "222", "333"], rows_per_meter=3)
 
@@ -53,7 +53,7 @@ class TestEnviziVerticalParserWater:
 
     def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_envizi_water_csv(filepath, serial_numbers=["12345"])
 

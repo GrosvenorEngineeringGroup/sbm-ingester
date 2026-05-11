@@ -242,7 +242,7 @@ class TestIntervalParser:
 
     def test_parses_generation_data_correctly(self, temp_directory: str) -> None:
         """Test that generation data is parsed correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.optima.interval import interval_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
@@ -260,7 +260,7 @@ class TestIntervalParser:
 
     def test_handles_multiple_identifiers(self, temp_directory: str) -> None:
         """Test that multiple identifiers are handled correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.optima.interval import interval_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
@@ -276,7 +276,7 @@ class TestIntervalParser:
 
     def test_parses_usage_column_as_e1_kwh(self, temp_directory: str) -> None:
         """Test that Usage column is correctly extracted as E1_kWh."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.optima.interval import interval_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
@@ -294,7 +294,7 @@ class TestIntervalParser:
 
     def test_parses_generation_only_file(self, temp_directory: str) -> None:
         """Test that files with only Generation column work correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.optima.interval import interval_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
@@ -312,7 +312,7 @@ class TestIntervalParser:
 
     def test_parses_usage_only_file(self, temp_directory: str) -> None:
         """Test that files with only Usage column work correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.optima.interval import interval_parser
 
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
@@ -334,7 +334,7 @@ class TestIntervalParser:
         Regression guard: if a future change to interval_parser drops one of the
         Usage or Generation channels, this test breaks.
         """
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.optima.interval import interval_parser
 
             csv_path = tmp_path / "Bunnings-AU-Electricity-TEST-NMI-ENERGYAP.csv"

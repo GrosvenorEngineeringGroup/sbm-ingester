@@ -21,7 +21,7 @@ class TestEnviziVerticalParserElectricity:
 
     def test_parses_electricity_data_correctly(self, temp_directory: str) -> None:
         """Test that electricity data is parsed correctly."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             filepath = str(Path(temp_directory) / "elec_data.csv")
             create_envizi_electricity_csv(filepath, serial_numbers=["E001"], rows_per_meter=5)
 
@@ -36,7 +36,7 @@ class TestEnviziVerticalParserElectricity:
 
     def test_rejects_optima_generation_file(self, temp_directory: str) -> None:
         """Test that OptimaGenerationData files are rejected."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
             create_envizi_electricity_csv(filepath, serial_numbers=["E001"])
 

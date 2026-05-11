@@ -724,9 +724,9 @@ def _run_with_non_nem_outcome(
     s3_resource = _create_outcome_test_buckets(mappings=mappings, file_name=file_name)
 
     outcome_patch = (
-        patch("functions.file_processor.app.get_non_nem_outcome", side_effect=outcome_or_error)
+        patch("functions.file_processor.app.dispatch_non_nem", side_effect=outcome_or_error)
         if isinstance(outcome_or_error, Exception)
-        else patch("functions.file_processor.app.get_non_nem_outcome", return_value=outcome_or_error)
+        else patch("functions.file_processor.app.dispatch_non_nem", return_value=outcome_or_error)
     )
 
     with (
@@ -982,7 +982,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.BATCH_SIZE", 1),
@@ -1041,7 +1041,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.s3_resource", s3_resource),
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
-            patch("functions.file_processor.app.get_non_nem_outcome", side_effect=get_outcome),
+            patch("functions.file_processor.app.dispatch_non_nem", side_effect=get_outcome),
             patch("functions.file_processor.app.BATCH_SIZE", 1),
             patch("functions.file_processor.app.random.randint", return_value=12345),
             patch("functions.file_processor.app._upload_csv_to_s3", side_effect=upload_third_call_fails),
@@ -1086,7 +1086,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.move_s3_file", side_effect=move_s3_file_with_final_failure),
@@ -1111,7 +1111,7 @@ class TestParserOutcomeDisposition:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app._upload_csv_to_s3", side_effect=RuntimeError("boom")),
@@ -1435,11 +1435,11 @@ class TestNemEmptyEnvelopeShortCircuit:
         # If the short-circuit works, the non-NEM dispatcher must NEVER be
         # consulted for this file. Patching it with a side_effect that fails
         # the test guarantees that.
-        sentinel_called = AssertionError("get_non_nem_outcome must not be called for empty NEM envelopes")
+        sentinel_called = AssertionError("dispatch_non_nem must not be called for empty NEM envelopes")
 
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
-            patch("functions.file_processor.app.get_non_nem_outcome", side_effect=sentinel_called),
+            patch("functions.file_processor.app.dispatch_non_nem", side_effect=sentinel_called),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/empty_nem12.csv"}]
@@ -1457,11 +1457,11 @@ class TestNemEmptyEnvelopeShortCircuit:
         body = (Path(fixtures_dir) / "nem13_empty.csv").read_bytes()
         s3_resource = _create_outcome_test_buckets(file_name="empty_nem13.csv", body=body)
 
-        sentinel_called = AssertionError("get_non_nem_outcome must not be called for empty NEM envelopes")
+        sentinel_called = AssertionError("dispatch_non_nem must not be called for empty NEM envelopes")
 
         with (
             patch("functions.file_processor.app.s3_resource", s3_resource),
-            patch("functions.file_processor.app.get_non_nem_outcome", side_effect=sentinel_called),
+            patch("functions.file_processor.app.dispatch_non_nem", side_effect=sentinel_called),
         ):
             result = file_processor_app.parse_and_write_data(
                 tbp_files=[{"bucket": "sbm-file-ingester", "file_name": "newTBP/empty_nem13.csv"}]
@@ -1490,7 +1490,7 @@ class TestNemEmptyEnvelopeShortCircuit:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("malformed 200")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("malformed 200")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 side_effect=ParserError("non-NEM cannot parse NEM12-shaped file"),
             ),
         ):
@@ -1527,7 +1527,7 @@ class TestNemEmptyEnvelopeShortCircuit:
                 side_effect=RuntimeError("simulated nemreader internal bug"),
             ),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 side_effect=AssertionError("non-NEM dispatcher must NOT be consulted on RuntimeError"),
             ),
         ):
@@ -1563,7 +1563,7 @@ class TestNemEmptyEnvelopeShortCircuit:
             patch("functions.file_processor.app.stream_as_data_frames", return_value=iter([])),
             patch("functions.file_processor.app.output_as_data_frames", return_value=[]),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=sentinel,
             ) as mock_dispatch,
         ):
@@ -1719,7 +1719,7 @@ class TestAuditSidecarIntegration:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch(
@@ -1760,7 +1760,7 @@ class TestPartialRecognitionMetrics:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
@@ -1792,7 +1792,7 @@ class TestPartialRecognitionMetrics:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
@@ -1880,7 +1880,7 @@ class TestIdentifierObservability:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),
@@ -1909,7 +1909,7 @@ class TestIdentifierObservability:
             patch("functions.file_processor.app.stream_as_data_frames", side_effect=ValueError("not nem")),
             patch("functions.file_processor.app.output_as_data_frames", side_effect=ValueError("not nem")),
             patch(
-                "functions.file_processor.app.get_non_nem_outcome",
+                "functions.file_processor.app.dispatch_non_nem",
                 return_value=ParserOutcome(status="processed", dataframes=[("NMI1", df)]),
             ),
             patch("functions.file_processor.app.metrics", mock_metrics),

@@ -1,4 +1,4 @@
-"""Tests for the get_non_nem_df dispatcher in shared.non_nem_parsers."""
+"""Tests for the get_non_nem_df dispatcher in shared.parsers.dispatcher."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,8 +17,8 @@ class TestGetNonNemDf:
 
     def test_tries_parsers_in_order(self, temp_directory: str) -> None:
         """Test that parsers are tried in order until one succeeds."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import get_non_nem_df
+        with patch("shared.parsers.dispatcher.logger"):
+            from shared.parsers.dispatcher import get_non_nem_df
 
             # Create valid Envizi water file
             filepath = str(Path(temp_directory) / "water_data.csv")
@@ -31,8 +31,8 @@ class TestGetNonNemDf:
 
     def test_raises_exception_when_all_parsers_fail(self, temp_directory: str) -> None:
         """Test that exception is raised when no parser succeeds."""
-        with patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import get_non_nem_df
+        with patch("shared.parsers.dispatcher.logger"):
+            from shared.parsers.dispatcher import get_non_nem_df
 
             # Create invalid file that no parser can handle
             filepath = str(Path(temp_directory) / "invalid.csv")
@@ -45,8 +45,8 @@ class TestGetNonNemDf:
     def test_logs_errors_for_failed_parsers(self, temp_directory: str) -> None:
         """Test that errors are logged for each failed parser."""
         mock_log = MagicMock()
-        with patch("shared.non_nem_parsers.logger", mock_log):
-            from shared.non_nem_parsers import get_non_nem_df
+        with patch("shared.parsers.dispatcher.logger", mock_log):
+            from shared.parsers.dispatcher import get_non_nem_df
 
             # Create valid file for later parser
             filepath = str(Path(temp_directory) / "OptimaGenerationData.csv")
@@ -64,8 +64,8 @@ class TestGetNonNemDfEdgeCases:
     def test_stops_at_first_successful_parser(self, temp_directory: str) -> None:
         """Test that dispatcher stops after first successful parser."""
         mock_log = MagicMock()
-        with patch("shared.non_nem_parsers.logger", mock_log):
-            from shared.non_nem_parsers import get_non_nem_df
+        with patch("shared.parsers.dispatcher.logger", mock_log):
+            from shared.parsers.dispatcher import get_non_nem_df
 
             # Create valid Envizi water file
             filepath = str(Path(temp_directory) / "water.csv")
@@ -89,8 +89,8 @@ class TestGetNonNemDfEdgeCases:
     def test_bulk_water_parser_is_tried(self, temp_directory: str) -> None:
         """Test that bulk water parser is tried in the dispatcher."""
         mock_log = MagicMock()
-        with patch("shared.non_nem_parsers.logger", mock_log):
-            from shared.non_nem_parsers import get_non_nem_df
+        with patch("shared.parsers.dispatcher.logger", mock_log):
+            from shared.parsers.dispatcher import get_non_nem_df
 
             # Create valid bulk water file
             filepath = str(Path(temp_directory) / "bulk_water.csv")
@@ -115,7 +115,7 @@ class TestDataFrameOutputFormat:
 
     def test_all_parsers_return_t_start_column(self, temp_directory: str) -> None:
         """Test that all parsers return DataFrames with t_start."""
-        with patch("shared.non_nem_parsers.logger"):
+        with patch("shared.parsers.dispatcher.logger"):
             from shared.parsers.envizi.vertical_electricity import envizi_vertical_parser_electricity
             from shared.parsers.envizi.vertical_water import envizi_vertical_parser_water
             from shared.parsers.optima.interval import interval_parser
@@ -147,27 +147,27 @@ class TestDataFrameOutputFormat:
 
 class TestOutcomeDispatcher:
     def test_wraps_legacy_parser_result_as_processed_outcome(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         def parser(file_name: str):
             df = pd.DataFrame({"t_start": ["2026-01-01 00:00:00"], "E1_kWh": [1.0]})
             return [("NMI1", df)]
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [parser])
 
-        result = get_non_nem_outcome(str(tmp_path / "file.csv"))
+        result = dispatch_non_nem(str(tmp_path / "file.csv"))
 
         assert result.status == "processed"
         assert len(result.dataframes) == 1
 
     def test_legacy_get_non_nem_df_still_returns_raw_dfs(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_df
+        from shared.parsers.dispatcher import get_non_nem_df
 
         def parser(file_name: str):
             df = pd.DataFrame({"t_start": ["2026-01-01 00:00:00"], "E1_kWh": [1.0]})
             return [("NMI1", df)]
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [parser])
 
         result = get_non_nem_df(str(tmp_path / "file.csv"))
 
@@ -175,8 +175,8 @@ class TestOutcomeDispatcher:
         assert result[0][0] == "NMI1"
 
     def test_not_relevant_parser_continues_to_next_parser(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
         from shared.parsers import NotRelevantParser, ParserOutcome
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         def first_parser(file_name: str):
             raise NotRelevantParser("not mine")
@@ -184,16 +184,16 @@ class TestOutcomeDispatcher:
         def second_parser(file_name: str):
             return ParserOutcome(status="processed_empty", reason="matched")
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [first_parser, second_parser])
 
-        result = get_non_nem_outcome(str(tmp_path / "file.csv"))
+        result = dispatch_non_nem(str(tmp_path / "file.csv"))
 
         assert result.status == "processed_empty"
         assert result.reason == "matched"
 
     def test_parser_error_stops_dispatch(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
         from shared.parsers import NotRelevantParser, ParserError
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         def first_parser(file_name: str):
             raise ParserError("matched but malformed")
@@ -201,14 +201,14 @@ class TestOutcomeDispatcher:
         def second_parser(file_name: str):
             raise NotRelevantParser("should not run")
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [first_parser, second_parser])
 
         with pytest.raises(ParserError, match="matched but malformed"):
-            get_non_nem_outcome(str(tmp_path / "file.csv"))
+            dispatch_non_nem(str(tmp_path / "file.csv"))
 
     def test_processing_error_stops_dispatch(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
         from shared.parsers import NotRelevantParser, ProcessingError
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         def first_parser(file_name: str):
             raise ProcessingError("s3 write failed")
@@ -216,26 +216,26 @@ class TestOutcomeDispatcher:
         def second_parser(file_name: str):
             raise NotRelevantParser("should not run")
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [first_parser, second_parser])
 
         with pytest.raises(ProcessingError, match="s3 write failed"):
-            get_non_nem_outcome(str(tmp_path / "file.csv"))
+            dispatch_non_nem(str(tmp_path / "file.csv"))
 
     def test_unexpected_parser_exception_becomes_parser_error(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
         from shared.parsers import ParserError
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         def parser(file_name: str):
             raise RuntimeError("unexpected")
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [parser])
 
         with pytest.raises(ParserError, match="Unexpected parser failure"):
-            get_non_nem_outcome(str(tmp_path / "file.csv"))
+            dispatch_non_nem(str(tmp_path / "file.csv"))
 
     def test_envizi_schema_miss_does_not_block_later_parser(self, tmp_path, monkeypatch) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
         from shared.parsers import NotRelevantParser, ParserOutcome
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         def first_parser(file_name: str) -> ParserOutcome:
             raise NotRelevantParser("schema miss")
@@ -243,20 +243,20 @@ class TestOutcomeDispatcher:
         def second_parser(file_name: str) -> ParserOutcome:
             return ParserOutcome(status="processed_empty", reason="later_parser_matched")
 
-        monkeypatch.setattr("shared.non_nem_parsers.PARSERS", [first_parser, second_parser])
+        monkeypatch.setattr("shared.parsers.dispatcher.PARSERS", [first_parser, second_parser])
 
-        result = get_non_nem_outcome(str(tmp_path / "file.csv"))
+        result = dispatch_non_nem(str(tmp_path / "file.csv"))
 
         assert result.status == "processed_empty"
         assert result.reason == "later_parser_matched"
 
     def test_real_dispatcher_routes_optima_interval_after_early_schema_misses(self, tmp_path) -> None:
-        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         filepath = tmp_path / "OptimaIntervalData.csv"
         create_optima_csv(str(filepath), identifiers=["4001260599"], rows_per_id=1)
 
-        result = get_non_nem_outcome(str(filepath))
+        result = dispatch_non_nem(str(filepath))
 
         assert result.status == "processed"
         assert len(result.dataframes) == 1

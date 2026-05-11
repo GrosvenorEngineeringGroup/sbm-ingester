@@ -573,8 +573,8 @@ class TestDispatcherIntegration:
             columns={"p:racv:r:s1": ["10.0", "20.0", "30.0"]},
         )
 
-        with patch("shared.parsers.racv.noosa_solar.logger"), patch("shared.non_nem_parsers.logger"):
-            from shared.non_nem_parsers import get_non_nem_df
+        with patch("shared.parsers.racv.noosa_solar.logger"), patch("shared.parsers.dispatcher.logger"):
+            from shared.parsers.dispatcher import get_non_nem_df
 
             result = get_non_nem_df(filepath)
 

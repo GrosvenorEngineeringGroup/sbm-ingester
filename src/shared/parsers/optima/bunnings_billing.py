@@ -2,8 +2,8 @@
 
 Reads UTF-16 LE encoded monthly billing CSVs, looks up Neptune point IDs from
 the shared nem12_mappings.json, and writes Hudi-format sensor rows directly
-to the Hudi source bucket. Designed to slot into the existing non_nem_parsers
-dispatch chain: matches by filename, side-effects the Hudi CSV, and returns an
+to the Hudi source bucket. Designed to slot into the existing dispatcher
+parser chain: matches by filename, side-effects the Hudi CSV, and returns an
 explicit parser outcome.
 """
 

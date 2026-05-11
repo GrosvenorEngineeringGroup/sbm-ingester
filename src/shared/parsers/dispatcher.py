@@ -42,7 +42,7 @@ def _as_outcome(result: ParserOutcome | ParserResult) -> ParserOutcome:
     return ParserOutcome(status="processed", dataframes=result)
 
 
-def get_non_nem_outcome(file_name: str) -> ParserOutcome:
+def dispatch_non_nem(file_name: str) -> ParserOutcome:
     for parser in PARSERS:
         try:
             return _as_outcome(parser(file_name))
@@ -61,8 +61,8 @@ def get_non_nem_outcome(file_name: str) -> ParserOutcome:
             raise ParserError(f"Unexpected parser failure in {parser.__name__}: {e}") from e
 
     logger.error("No valid parser found", extra={"file": file_name})
-    raise ParserError(f"get_non_nem_outcome: {file_name}: No Valid Parser Found")
+    raise ParserError(f"dispatch_non_nem: {file_name}: No Valid Parser Found")
 
 
 def get_non_nem_df(file_name: str) -> ParserResult:
-    return get_non_nem_outcome(file_name).dataframes
+    return dispatch_non_nem(file_name).dataframes

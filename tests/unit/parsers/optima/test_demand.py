@@ -604,7 +604,7 @@ class TestPartialRowFailures:
 
 class TestDispatcherIntegration:
     def test_dispatcher_routes_demand_file(self, write_demand_csv, monkeypatch, _reset_mappings_cache):
-        from shared.non_nem_parsers import get_non_nem_outcome
+        from shared.parsers.dispatcher import dispatch_non_nem
 
         fake_mappings = {
             "Optima_4001260599-demand-kw": "p:bunnings:kw",
@@ -616,7 +616,7 @@ class TestDispatcherIntegration:
         with patch("shared.parsers.optima.demand.boto3.client") as mock_client:
             mock_client.return_value.put_object.return_value = {"ETag": "fake"}
             path = write_demand_csv()
-            result = get_non_nem_outcome(str(path))
+            result = dispatch_non_nem(str(path))
 
         assert result.status == "processed"
         assert result.source_row_count == 3
