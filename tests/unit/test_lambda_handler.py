@@ -48,6 +48,22 @@ class TestLambdaHandler:
         assert kwargs["source_file"].key == "newTBP/foo.csv"
         assert result["statusCode"] == 200
 
+    def test_url_encoded_key_decoded_before_passing_to_ingest_file(self) -> None:
+        """S3 event notifications URL-encode spaces as '+'; SourceFile must receive decoded key."""
+        event = _sqs_event("sbm-file-ingester", "newTBP/Envizi+Water.csv")
+
+        with (
+            patch("functions.file_processor.app.check_file_stability", return_value=(True, 100)),
+            patch("functions.file_processor.app.ingest_file") as mock_ingest,
+        ):
+            mock_ingest.return_value = ParserOutcome(status="processed", rows_written=1)
+            lambda_handler(event, _MockLambdaContext())
+
+        kwargs = mock_ingest.call_args.kwargs
+        # Critical: key must be decoded — boto3 needs the literal name "Envizi Water.csv",
+        # not the URL-encoded "Envizi+Water.csv".
+        assert kwargs["source_file"].key == "newTBP/Envizi Water.csv"
+
     def test_unstable_file_requeues(self) -> None:
         event = _sqs_event("sbm-file-ingester", "newTBP/in_flight.csv", retry_count=0)
 
@@ -76,6 +92,14 @@ class TestLambdaHandler:
         mock_requeue.assert_not_called()
         mock_ingest.assert_not_called()
         assert result["statusCode"] == 200
+
+
+class TestRetryBudget:
+    def test_max_requeue_retries_aligned_with_sqs_max_receive_count(self) -> None:
+        """MAX_REQUEUE_RETRIES must match SQS maxReceiveCount in terraform/ingester.tf (= 3)."""
+        from functions.file_processor.app import MAX_REQUEUE_RETRIES
+
+        assert MAX_REQUEUE_RETRIES == 3
 
 
 class TestSqsQueueUrlRequired:

@@ -103,6 +103,12 @@ def check_file_stability(bucket: str, key: str) -> tuple[bool, int]:
 
 
 def requeue_message(original_body: dict, retry_count: int) -> bool:
+    """Re-publish an SQS message with `_retry_count` incremented.
+
+    Returns True if SQS accepted the message; False on send error (caller
+    continues — the in-flight message has been received and will be deleted
+    by the Lambda runtime).
+    """
     try:
         new_body = original_body.copy()
         new_body["_retry_count"] = retry_count + 1
@@ -159,7 +165,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     metrics.add_metric(name="MessagesRequeued", unit=MetricUnit.Count, value=1)
                 continue
 
-            ingest_file(source_file=SourceFile(bucket=bucket_name, key=file_key))
+            ingest_file(source_file=SourceFile(bucket=bucket_name, key=decoded_key))
             processed_count += 1
         except Exception:
             logger.error("Error processing SQS record", exc_info=True)
