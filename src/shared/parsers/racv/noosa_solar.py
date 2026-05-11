@@ -53,17 +53,31 @@ def noosa_solar_parser(file_name: str) -> ParserOutcome:
     skip_reasons: Counter[SkipReason] = Counter()
 
     # Strip timezone suffix (AEST/AEDT) and parse timestamps permissively.
+    # Persist all timestamps as naive AEST (local standard time of the site, no
+    # DST): AEDT rows are shifted by -1h so they collapse onto the same clock
+    # axis as AEST rows. This prevents DST-switch-day collisions in the Hudi
+    # (sensorid, ts) composite key.
     timestamp_text = df["timestamp"].astype(str)
     tz_values = timestamp_text.dropna().str.extract(r"\s+([A-Z]{3,4})$")[0].dropna().unique()
-    unexpected_tz = [tz for tz in tz_values if tz != "AEST"]
+    unexpected_tz = [tz for tz in tz_values if tz not in ("AEST", "AEDT")]
     if len(unexpected_tz) > 0:
         logger.warning(
             "Unexpected timezone in Noosa Solar file",
             extra={"timezones": unexpected_tz},
         )
 
+    # Detect AEDT rows BEFORE stripping the suffix so we can shift them later.
+    aedt_mask = timestamp_text.str.contains(r"\s+AEDT$", na=False)
+
     timestamp_text = timestamp_text.str.replace(r"\s+[A-Z]{3,4}$", "", regex=True)
     df["timestamp"] = pd.to_datetime(timestamp_text, format="%d-%b-%y %I:%M %p", errors="coerce")
+
+    # Convert AEDT timestamps to AEST (subtract 1 hour). After this, every
+    # successfully parsed row's `timestamp` is naive AEST. NaT rows are
+    # unaffected (NaT - Timedelta = NaT), so the bad_ts_mask below still
+    # catches unparseable timestamps correctly.
+    df.loc[aedt_mask, "timestamp"] = df.loc[aedt_mask, "timestamp"] - pd.Timedelta(hours=1)
+
     bad_ts_mask = df["timestamp"].isna()
     bad_ts_count = int(bad_ts_mask.sum())
     if bad_ts_count:

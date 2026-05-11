@@ -198,17 +198,17 @@ class TestTimestampParsing:
 
 
 class TestTimezoneWarning:
-    """Tests for non-AEST timezone handling."""
+    """Tests for non-AEST/AEDT timezone handling."""
 
     def test_timezone_warning(self, tmp_path: Path) -> None:
-        """Non-AEST timezone logs warning but still parses."""
+        """Timezones other than AEST/AEDT log a warning but still parse."""
         filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
         _create_noosa_csv(
             filepath,
             timestamps=[
-                "31-Mar-26 8:00 AM AEDT",
-                "31-Mar-26 8:30 AM AEDT",
-                "31-Mar-26 9:00 AM AEDT",
+                "31-Mar-26 8:00 AM UTC",
+                "31-Mar-26 8:30 AM UTC",
+                "31-Mar-26 9:00 AM UTC",
             ],
             columns={"p:racv:r:s1": ["1.0", "2.0", "3.0"]},
         )
@@ -225,6 +225,93 @@ class TestTimezoneWarning:
         mock_log.warning.assert_called_once()
         call_kwargs = mock_log.warning.call_args
         assert "Unexpected timezone" in call_kwargs[0][0]
+
+    def test_aedt_does_not_warn(self, tmp_path: Path) -> None:
+        """AEDT is an expected timezone and must not trigger the warning."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            timestamps=[
+                "06-Apr-26 2:30 AM AEDT",
+                "06-Apr-26 3:00 AM AEDT",
+            ],
+            columns={"p:racv:r:s1": ["1.0", "2.0"]},
+        )
+
+        mock_log = MagicMock()
+        with patch("shared.parsers.racv.noosa_solar.logger", mock_log):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
+
+            _processed_dfs(noosa_solar_parser(filepath))
+
+        # AEDT is expected — no warning emitted.
+        mock_log.warning.assert_not_called()
+
+
+class TestAedtToAestConversion:
+    """Tests for AEDT → AEST (local standard time) conversion."""
+
+    def test_aedt_row_shifted_minus_one_hour(self, tmp_path: Path) -> None:
+        """AEDT rows are shifted by -1 hour to become naive AEST."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            timestamps=["06-Apr-26 2:30 AM AEDT"],
+            columns={"p:racv:r:s1": ["5.0"]},
+        )
+
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
+
+            result = _processed_dfs(noosa_solar_parser(filepath))
+
+        _, df = result[0]
+        ts = df.index[0]
+        # AEDT 02:30 → AEST 01:30 (subtract 1 hour, stored as naive AEST).
+        assert ts == pd.Timestamp("2026-04-06 01:30:00")
+
+    def test_aest_row_unchanged(self, tmp_path: Path) -> None:
+        """AEST rows pass through unchanged (no shift)."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            timestamps=["06-Apr-26 2:30 AM AEST"],
+            columns={"p:racv:r:s1": ["5.0"]},
+        )
+
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
+
+            result = _processed_dfs(noosa_solar_parser(filepath))
+
+        _, df = result[0]
+        ts = df.index[0]
+        assert ts == pd.Timestamp("2026-04-06 02:30:00")
+
+    def test_mixed_aest_and_aedt_dst_switch_day(self, tmp_path: Path) -> None:
+        """On a DST switch day, AEDT and AEST rows with the same clock face
+        produce distinct timestamps (AEDT shifted -1h), preventing the Hudi
+        (sensorid, ts) collision that motivated this fix."""
+        filepath = str(tmp_path / "RACV_Noosa_Solar.csv")
+        _create_noosa_csv(
+            filepath,
+            timestamps=[
+                "06-Apr-26 2:30 AM AEDT",  # → 01:30 AEST after shift
+                "06-Apr-26 2:30 AM AEST",  # → 02:30 AEST (unchanged)
+            ],
+            columns={"p:racv:r:s1": ["1.0", "2.0"]},
+        )
+
+        with patch("shared.parsers.racv.noosa_solar.logger"):
+            from shared.parsers.racv.noosa_solar import noosa_solar_parser
+
+            result = _processed_dfs(noosa_solar_parser(filepath))
+
+        _, df = result[0]
+        assert list(df.index) == [
+            pd.Timestamp("2026-04-06 01:30:00"),
+            pd.Timestamp("2026-04-06 02:30:00"),
+        ]
 
 
 class TestNanValuesDropped:
