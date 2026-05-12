@@ -1,9 +1,20 @@
 """Persistence layer subclass that logs idempotency cache hits.
 
-Powertools does not expose a native cache-hit hook. The cache-hit code path
-is the IdempotencyItemAlreadyExistsError raised by save_inprogress when a
-record already exists. We intercept that exception here, emit a structured
-log line, and re-raise so Powertools handles the cached response normally.
+Powertools 3.24 does not expose a native cache-hit hook usable for our
+needs: ``IdempotencyConfig.response_hook`` only fires when a *completed*
+prior record exists, and its ``DataRecord`` does not carry the original
+input payload (only its hash). We therefore use a Powertools-internal-error-
+as-signal pattern: a cache hit surfaces as an ``IdempotencyItemAlreadyExists``
+raised by the base class's ``save_inprogress``. We intercept it, emit a
+structured log line carrying the source ``bucket``/``key``, and re-raise so
+Powertools handles the cached response normally.
+
+The module-level Logger uses ``service="file-processor"`` with
+``child=True`` so it inherits the parent Logger's Powertools JSON formatter
+(parent is instantiated in ``pipeline.py``/``app.py``). A mismatched service
+name would cause Powertools to fall back to a plain stdlib logger, which
+silently drops ``extra=`` kwargs from the JSON output that reaches
+CloudWatch.
 
 The CloudWatch alarm for cache-hit rate uses DynamoDB's native
 ConditionalCheckFailedRequests metric on the idempotency table — no custom
@@ -20,7 +31,7 @@ from aws_lambda_powertools.utilities.idempotency.exceptions import (
     IdempotencyItemAlreadyExistsError,
 )
 
-logger = Logger(service="instrumented-persistence", child=True)
+logger = Logger(service="file-processor", child=True)
 
 
 class InstrumentedDynamoDBPersistenceLayer(DynamoDBPersistenceLayer):
