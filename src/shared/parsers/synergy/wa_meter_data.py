@@ -47,6 +47,6 @@ def synergy_wa_meter_data_parser(file_name: str) -> ParserOutcome:
 
     logger.info(
         "synergy_wa_no_data_sentinel",
-        extra={"file": str(path)},
+        extra={"file": file_name},
     )
-    return ParserOutcome(status="processed_empty", reason="no_data_available")
+    return ParserOutcome(status="processed_empty", reason="no_data_sentinel")

@@ -23,7 +23,7 @@ class TestSynergyWaMeterDataParser:
 
         assert isinstance(outcome, ParserOutcome)
         assert outcome.status == "processed_empty"
-        assert outcome.reason == "no_data_available"
+        assert outcome.reason == "no_data_sentinel"
 
     def test_rejects_files_without_synergy_wa_prefix(self, tmp_path: Path) -> None:
         """Any filename not starting with the Synergy WA prefix is NotRelevantParser."""
