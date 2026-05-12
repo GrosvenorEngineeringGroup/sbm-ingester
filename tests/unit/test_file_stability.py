@@ -47,6 +47,7 @@ class TestCheckFileStability:
 
         assert is_stable is True
         assert size == 1000
+        assert result.vanished is False
 
     def test_file_starts_empty_then_stabilizes(self, mock_s3_client: Any, mock_logger: Any) -> None:
         """Test file that starts empty but eventually stabilizes."""
@@ -69,6 +70,7 @@ class TestCheckFileStability:
 
         assert is_stable is True
         assert size == 1000
+        assert result.vanished is False
 
     def test_file_remains_empty_timeout(self, mock_s3_client: Any, mock_logger: Any) -> None:
         """Test file that remains empty and times out."""
@@ -83,6 +85,7 @@ class TestCheckFileStability:
 
         assert is_stable is False
         assert size == 0
+        assert result.vanished is False
 
     def test_file_keeps_changing_timeout(self, mock_s3_client: Any, mock_logger: Any) -> None:
         """Test file that keeps changing size and times out."""
@@ -104,15 +107,21 @@ class TestCheckFileStability:
 
         assert is_stable is False
         assert size == 0
+        assert result.vanished is False
 
     def test_file_not_found(self, mock_s3_client: Any, mock_logger: Any) -> None:
-        """Test handling when file doesn't exist."""
+        """HEAD raises a real ClientError with NoSuchKey → vanished=True path."""
+        from botocore.exceptions import ClientError
+
         from functions.file_processor.app import check_file_stability
 
-        # Create a mock NoSuchKey error response
-        error = Exception("NoSuchKey")
-        error.response = {"Error": {"Code": "NoSuchKey", "Message": "Not found"}}  # type: ignore[attr-defined]
-        mock_s3_client.head_object.side_effect = error
+        mock_s3_client.head_object.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            operation_name="HeadObject",
+        )
 
         with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
             result = check_file_stability("test-bucket", "test-key")
@@ -120,19 +129,21 @@ class TestCheckFileStability:
 
         assert is_stable is False
         assert size == 0
+        assert result.vanished is True
 
-    def test_s3_error_returns_false(self, mock_s3_client: Any, mock_logger: Any) -> None:
-        """Test handling of S3 errors (non-NoSuchKey)."""
+    def test_generic_exception_returns_false(self, mock_s3_client: Any, mock_logger: Any) -> None:
+        """Non-ClientError exceptions hit the generic fallback (stable=False, vanished=False)."""
         from functions.file_processor.app import check_file_stability
 
-        # Generic exception without NoSuchKey code
-        mock_s3_client.head_object.side_effect = Exception("S3 error")
+        # Generic exception (e.g. unexpected library bug) — not a ClientError.
+        mock_s3_client.head_object.side_effect = RuntimeError("unexpected boom")
 
         result = check_file_stability("test-bucket", "test-key")
         is_stable, size = result.stable, result.size
 
         assert is_stable is False
         assert size == 0
+        assert result.vanished is False
 
     def test_head_returns_404_marks_vanished(self, mock_s3_client: Any, mock_logger: Any) -> None:
         """HEAD returns 404 (not 'NoSuchKey') when a prior delivery already moved the file."""
@@ -174,10 +185,8 @@ class TestCheckFileStability:
         assert result.size == 0
         assert result.vanished is True
 
-    def test_head_returns_other_client_error_does_not_mark_vanished(
-        self, mock_s3_client: Any, mock_logger: Any
-    ) -> None:
-        """Errors other than 404/NoSuchKey return vanished=False; caller may requeue."""
+    def test_head_returns_other_client_error_propagates(self, mock_s3_client: Any, mock_logger: Any) -> None:
+        """Non-404 ClientError (e.g. AccessDenied) propagates per spec, so SQS retry / DLQ handles it."""
         from botocore.exceptions import ClientError
 
         from functions.file_processor.app import check_file_stability
@@ -190,11 +199,10 @@ class TestCheckFileStability:
             operation_name="HeadObject",
         )
 
-        result = check_file_stability("test-bucket", "test-key")
+        with pytest.raises(ClientError) as exc_info:
+            check_file_stability("test-bucket", "test-key")
 
-        assert result.stable is False
-        assert result.size == 0
-        assert result.vanished is False
+        assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
 
 class TestRequeueMessage:
@@ -388,6 +396,114 @@ class TestLambdaHandlerWithStabilityCheck:
         assert result["processed"] == 0
         assert result["requeued"] == 0
         assert result["skipped"] == 1
+        mock_sqs_client.send_message.assert_not_called()
+        mock_ingest_file.assert_not_called()
+
+    def test_vanished_emits_single_duplicate_event_log(
+        self,
+        mock_s3_client: Any,
+        mock_sqs_client: Any,
+        mock_ingest_file: Any,
+        mock_context: MockLambdaContext,
+        sample_sqs_event: dict[str, Any],
+    ) -> None:
+        """Invariant: 1 `s3_duplicate_event` log == 1 `S3DuplicateEvent` metric.
+
+        Stability check raises 404 → vanished=True path. Only the caller
+        (lambda_handler) is allowed to emit the structured duplicate-event
+        log; the inner `check_file_stability` must NOT log it (else Logs
+        Insights `grep s3_duplicate_event` over-counts vs the metric).
+        """
+        from botocore.exceptions import ClientError
+
+        from functions.file_processor.app import lambda_handler
+
+        mock_s3_client.head_object.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "404", "Message": "Not Found"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            operation_name="HeadObject",
+        )
+
+        with (
+            patch("functions.file_processor.app.logger") as mock_logger,
+            patch("functions.file_processor.app.metrics") as mock_metrics,
+        ):
+            response = lambda_handler(sample_sqs_event, mock_context)
+
+        assert response["statusCode"] == 200
+        assert response.get("duplicate") == 1
+        assert response["requeued"] == 0
+
+        # Exactly ONE info-level `s3_duplicate_event` log call.
+        duplicate_log_calls = [
+            c for c in mock_logger.info.call_args_list if c.args and c.args[0] == "s3_duplicate_event"
+        ]
+        assert len(duplicate_log_calls) == 1, (
+            f"Expected exactly 1 s3_duplicate_event log, got {len(duplicate_log_calls)}: {duplicate_log_calls!r}"
+        )
+
+        # The log is the caller's log — carries `source_bucket` / `source_key` /
+        # `retry_count` (richer than the removed inner log's `bucket`/`key`/`reason`).
+        log_extra = duplicate_log_calls[0].kwargs.get("extra", {})
+        assert log_extra.get("source_bucket") == "test-bucket"
+        assert log_extra.get("source_key") == "newTBP/test-file.csv"
+        assert "retry_count" in log_extra
+
+        # Exactly ONE S3DuplicateEvent metric — invariant 1 log = 1 metric.
+        metric_names = [c.kwargs.get("name") for c in mock_metrics.add_metric.call_args_list]
+        assert metric_names.count("S3DuplicateEvent") == 1
+
+        # No requeue / ingest.
+        mock_sqs_client.send_message.assert_not_called()
+        mock_ingest_file.assert_not_called()
+
+        # Sanity — the inner log was previously fired with extras={"bucket": ..., "reason": "head_404"}.
+        # Make sure that exact shape is gone.
+        for info_call in mock_logger.info.call_args_list:
+            extras = info_call.kwargs.get("extra") or {}
+            assert extras.get("reason") != "head_404", (
+                "Inner check_file_stability log re-introduced — violates 1 log = 1 metric invariant"
+            )
+
+    def test_access_denied_propagates_to_record_error_path(
+        self,
+        mock_s3_client: Any,
+        mock_sqs_client: Any,
+        mock_ingest_file: Any,
+        mock_context: MockLambdaContext,
+        sample_sqs_event: dict[str, Any],
+    ) -> None:
+        """Non-404 ClientError (AccessDenied) propagates out of check_file_stability.
+
+        The handler's per-record `except Exception` catches it, logs an
+        error, and continues. The SQS message is NOT explicitly requeued
+        (the in-flight message will be redelivered via SQS visibility
+        timeout / maxReceiveCount → DLQ on persistent failure), and
+        ingest_file is never called.
+        """
+        from botocore.exceptions import ClientError
+
+        from functions.file_processor.app import lambda_handler
+
+        mock_s3_client.head_object.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "AccessDenied", "Message": "Denied"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            operation_name="HeadObject",
+        )
+
+        response = lambda_handler(sample_sqs_event, mock_context)
+
+        # Handler still returns 200 (per-record exceptions don't kill the batch),
+        # but nothing was processed/requeued/skipped/duplicated.
+        assert response["statusCode"] == 200
+        assert response["processed"] == 0
+        assert response["requeued"] == 0
+        assert response["skipped"] == 0
+        assert response.get("duplicate", 0) == 0
         mock_sqs_client.send_message.assert_not_called()
         mock_ingest_file.assert_not_called()
 

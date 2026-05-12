@@ -125,17 +125,16 @@ def check_file_stability(bucket: str, key: str) -> StabilityResult:
             total_wait += FILE_STABILITY_CHECK_INTERVAL
         except ClientError as e:
             if _is_object_missing(e):
-                logger.info(
-                    "s3_duplicate_event",
-                    extra={"bucket": bucket, "key": key, "reason": "head_404"},
-                )
+                # Vanished key — caller (lambda_handler) owns the
+                # `s3_duplicate_event` log + `S3DuplicateEvent` metric so the
+                # "1 log = 1 metric" invariant is preserved (Logs Insights
+                # `grep s3_duplicate_event` matches the metric count exactly).
                 return StabilityResult(stable=False, size=0, vanished=True)
-            logger.error(
-                "Error checking file stability",
-                exc_info=True,
-                extra={"bucket": bucket, "key": key, "error": str(e)},
-            )
-            return StabilityResult(stable=False, size=0)
+            # Non-404 ClientError (AccessDenied, ServiceUnavailable, etc.) —
+            # propagate per spec so the SQS retry / DLQ pipeline handles it as
+            # a real Lambda error rather than silently draining the requeue
+            # budget.
+            raise
         except Exception as e:
             logger.error(
                 "Error checking file stability",
