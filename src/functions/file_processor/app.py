@@ -10,10 +10,13 @@ Pre-conditions (enforced at import time):
 Per-record flow:
   1. Decode the SQS record → bucket, key.
   2. Check file stability (S3 size stable for 2 consecutive checks).
-  3. If unstable: requeue with backoff (up to MAX_REQUEUE_RETRIES); skip otherwise.
-  4. If stable: build SourceFile, call ingest_file (which is idempotent +
+  3. If vanished (HEAD 404): emit S3DuplicateEvent metric, log, skip silently
+     (a duplicate S3 event arrived after a prior delivery already moved the
+     file). No requeue, no MaxRetriesExceeded.
+  4. If unstable but present: requeue with backoff (up to MAX_REQUEUE_RETRIES).
+  5. If stable: build SourceFile, call ingest_file (which is idempotent +
      traced + emits per-file structured log + metrics).
-  5. Return statusCode 200.
+  6. Return statusCode 200.
 """
 
 from __future__ import annotations
@@ -21,12 +24,14 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote
 
 import boto3
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
+from botocore.exceptions import ClientError
 
 from functions.file_processor.pipeline import ingest_file
 from shared.source_file import SourceFile
@@ -39,13 +44,12 @@ FILE_STABILITY_CHECK_INTERVAL = 5  # seconds between checks
 FILE_STABILITY_MAX_WAIT = 30  # max seconds to wait for stabilisation
 FILE_STABILITY_REQUIRED_CHECKS = 2  # consecutive stable checks required
 MAX_REQUEUE_RETRIES = 3  # aligned with SQS maxReceiveCount = 3 (per spec)
-# Delay before requeued message becomes visible.
-# Bumped 60 -> 90 (2026-05-12) because overnight metrics showed slow Optima
-# exports (~5KB files) intermittently failing to stabilise within 3 retries
-# at the old 60s interval; 90s gives 3x90 = 270s total window vs 3x60 = 180s
-# before MaxRetriesExceeded triggers. No retry-count change; aligned with
-# SQS maxReceiveCount = 3.
-REQUEUE_DELAY_SECONDS = 90
+# Delay before a requeued message becomes visible. Reverted 90 -> 60
+# (2026-05-12): the 90s bump in f8282f4 was based on the wrong root cause.
+# The MaxRetriesExceeded alarms it tried to suppress were actually caused by
+# HEAD 404 on duplicate S3 events (now handled via StabilityResult.vanished),
+# not by slow stability convergence. Real slow uploads stabilise in <12s.
+REQUEUE_DELAY_SECONDS = 60
 
 logger = Logger(service="file-processor")
 tracer = Tracer(service="file-processor")
@@ -55,8 +59,37 @@ s3_client = boto3.client("s3")
 sqs_client = boto3.client("sqs")
 
 
+@dataclass(frozen=True, slots=True)
+class StabilityResult:
+    """Result of a file-stability probe.
+
+    ``vanished`` distinguishes "S3 HEAD returned 404 — the key no longer
+    exists" from "we tried but the file is not yet stable / unreadable for
+    another reason". Vanished keys are the expected outcome for a duplicate
+    S3 event that arrived after a prior delivery already moved the file out
+    of newTBP/; callers should skip them silently (no requeue, no error).
+    """
+
+    stable: bool
+    size: int
+    vanished: bool = False
+
+
+def _is_object_missing(err: ClientError) -> bool:
+    """Return True iff a ClientError represents a missing S3 object.
+
+    HeadObject returns ``Code="404"`` / ``Message="Not Found"`` (and
+    ``HTTPStatusCode == 404``) when the key does not exist; older code paths
+    and tests may surface ``NoSuchKey`` (which is GetObject semantics, but
+    some moto / boto3 combinations still raise it on HEAD).
+    """
+    code = err.response.get("Error", {}).get("Code")
+    status = err.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in {"NoSuchKey", "404"} or status == 404
+
+
 @tracer.capture_method
-def check_file_stability(bucket: str, key: str) -> tuple[bool, int]:
+def check_file_stability(bucket: str, key: str) -> StabilityResult:
     """Wait for an S3 object's size to stabilise across 2 consecutive HEADs."""
     last_size = -1
     stable_count = 0
@@ -83,29 +116,39 @@ def check_file_stability(bucket: str, key: str) -> tuple[bool, int]:
                         "File is stable",
                         extra={"bucket": bucket, "key": key, "size": current_size},
                     )
-                    return True, current_size
+                    return StabilityResult(stable=True, size=current_size)
             else:
                 stable_count = 0
 
             last_size = current_size
             time.sleep(FILE_STABILITY_CHECK_INTERVAL)
             total_wait += FILE_STABILITY_CHECK_INTERVAL
-        except Exception as e:
-            if hasattr(e, "response") and e.response.get("Error", {}).get("Code") == "NoSuchKey":
-                logger.warning("File not found", extra={"bucket": bucket, "key": key})
-                return False, 0
+        except ClientError as e:
+            if _is_object_missing(e):
+                logger.info(
+                    "s3_duplicate_event",
+                    extra={"bucket": bucket, "key": key, "reason": "head_404"},
+                )
+                return StabilityResult(stable=False, size=0, vanished=True)
             logger.error(
                 "Error checking file stability",
                 exc_info=True,
                 extra={"bucket": bucket, "key": key, "error": str(e)},
             )
-            return False, 0
+            return StabilityResult(stable=False, size=0)
+        except Exception as e:
+            logger.error(
+                "Error checking file stability",
+                exc_info=True,
+                extra={"bucket": bucket, "key": key, "error": str(e)},
+            )
+            return StabilityResult(stable=False, size=0)
 
     logger.warning(
         "File stability check timed out",
         extra={"bucket": bucket, "key": key, "last_size": last_size, "waited": total_wait},
     )
-    return False, 0
+    return StabilityResult(stable=False, size=0)
 
 
 def requeue_message(original_body: dict, retry_count: int) -> bool:
@@ -140,6 +183,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     requeued_count = 0
     skipped_count = 0
     processed_count = 0
+    duplicate_count = 0
 
     for record in event["Records"]:
         try:
@@ -162,8 +206,24 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 extra={"bucket": bucket_name, "key": decoded_key, "retry_count": retry_count},
             )
 
-            is_stable, _ = check_file_stability(bucket_name, decoded_key)
-            if not is_stable:
+            stability = check_file_stability(bucket_name, decoded_key)
+
+            if stability.vanished:
+                # Duplicate S3 event: a prior delivery already moved this key
+                # out of newTBP/. Silent skip — no requeue, no MaxRetriesExceeded.
+                logger.info(
+                    "s3_duplicate_event",
+                    extra={
+                        "source_bucket": bucket_name,
+                        "source_key": decoded_key,
+                        "retry_count": retry_count,
+                    },
+                )
+                metrics.add_metric(name="S3DuplicateEvent", unit=MetricUnit.Count, value=1)
+                duplicate_count += 1
+                continue
+
+            if not stability.stable:
                 if retry_count >= MAX_REQUEUE_RETRIES:
                     logger.error(
                         "Max retries exceeded for unstable file",
@@ -189,4 +249,5 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "processed": processed_count,
         "requeued": requeued_count,
         "skipped": skipped_count,
+        "duplicate": duplicate_count,
     }

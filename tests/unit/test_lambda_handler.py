@@ -33,10 +33,15 @@ def _sqs_event(bucket: str, key: str, retry_count: int | None = None) -> dict:
 
 class TestLambdaHandler:
     def test_calls_ingest_file_with_source_file(self) -> None:
+        from functions.file_processor.app import StabilityResult
+
         event = _sqs_event("sbm-file-ingester", "newTBP/foo.csv")
 
         with (
-            patch("functions.file_processor.app.check_file_stability", return_value=(True, 100)),
+            patch(
+                "functions.file_processor.app.check_file_stability",
+                return_value=StabilityResult(stable=True, size=100),
+            ),
             patch("functions.file_processor.app.ingest_file") as mock_ingest,
         ):
             mock_ingest.return_value = ParserOutcome(status="processed", rows_written=1)
@@ -50,10 +55,15 @@ class TestLambdaHandler:
 
     def test_url_encoded_key_decoded_before_passing_to_ingest_file(self) -> None:
         """S3 event notifications URL-encode spaces as '+'; SourceFile must receive decoded key."""
+        from functions.file_processor.app import StabilityResult
+
         event = _sqs_event("sbm-file-ingester", "newTBP/Envizi+Water.csv")
 
         with (
-            patch("functions.file_processor.app.check_file_stability", return_value=(True, 100)),
+            patch(
+                "functions.file_processor.app.check_file_stability",
+                return_value=StabilityResult(stable=True, size=100),
+            ),
             patch("functions.file_processor.app.ingest_file") as mock_ingest,
         ):
             mock_ingest.return_value = ParserOutcome(status="processed", rows_written=1)
@@ -65,10 +75,15 @@ class TestLambdaHandler:
         assert kwargs["source_file"].key == "newTBP/Envizi Water.csv"
 
     def test_unstable_file_requeues(self) -> None:
+        from functions.file_processor.app import StabilityResult
+
         event = _sqs_event("sbm-file-ingester", "newTBP/in_flight.csv", retry_count=0)
 
         with (
-            patch("functions.file_processor.app.check_file_stability", return_value=(False, 0)),
+            patch(
+                "functions.file_processor.app.check_file_stability",
+                return_value=StabilityResult(stable=False, size=0),
+            ),
             patch("functions.file_processor.app.requeue_message", return_value=True) as mock_requeue,
             patch("functions.file_processor.app.ingest_file") as mock_ingest,
         ):
@@ -79,10 +94,15 @@ class TestLambdaHandler:
         assert result["statusCode"] == 200
 
     def test_unstable_after_max_retries_skips(self) -> None:
+        from functions.file_processor.app import StabilityResult
+
         event = _sqs_event("sbm-file-ingester", "newTBP/never_stabilises.csv", retry_count=3)
 
         with (
-            patch("functions.file_processor.app.check_file_stability", return_value=(False, 0)),
+            patch(
+                "functions.file_processor.app.check_file_stability",
+                return_value=StabilityResult(stable=False, size=0),
+            ),
             patch("functions.file_processor.app.requeue_message") as mock_requeue,
             patch("functions.file_processor.app.ingest_file") as mock_ingest,
             patch("functions.file_processor.app.MAX_REQUEUE_RETRIES", 3),
@@ -92,6 +112,63 @@ class TestLambdaHandler:
         mock_requeue.assert_not_called()
         mock_ingest.assert_not_called()
         assert result["statusCode"] == 200
+
+
+class TestLambdaHandlerDuplicateEvent:
+    """Verify that a vanished S3 object is treated as a duplicate event."""
+
+    def test_vanished_file_skipped_silently_with_metric(self) -> None:
+        """When stability check returns vanished=True, handler logs + emits
+        S3DuplicateEvent metric and does NOT requeue or raise MaxRetriesExceeded.
+        """
+        import json
+        from unittest.mock import patch
+
+        from functions.file_processor.app import StabilityResult, lambda_handler
+
+        sqs_record_body = {
+            "Records": [
+                {
+                    "s3": {
+                        "bucket": {"name": "sbm-file-ingester"},
+                        "object": {"key": "newTBP/foo.csv"},
+                    }
+                }
+            ]
+        }
+        event = {
+            "Records": [
+                {"body": json.dumps(sqs_record_body), "messageId": "msg-1"},
+            ]
+        }
+
+        class _Ctx:
+            function_name = "test"
+            memory_limit_in_mb = 128
+            invoked_function_arn = "arn:aws:lambda:ap-southeast-2:000:function:test"
+            aws_request_id = "req-1"
+
+        with (
+            patch(
+                "functions.file_processor.app.check_file_stability",
+                return_value=StabilityResult(stable=False, size=0, vanished=True),
+            ) as mock_stab,
+            patch("functions.file_processor.app.requeue_message") as mock_requeue,
+            patch("functions.file_processor.app.ingest_file") as mock_ingest,
+            patch("functions.file_processor.app.metrics") as mock_metrics,
+        ):
+            response = lambda_handler(event, _Ctx())
+
+        assert response["statusCode"] == 200
+        assert response.get("duplicate") == 1
+        assert response["requeued"] == 0
+        assert response["skipped"] == 0
+        mock_stab.assert_called_once()
+        mock_requeue.assert_not_called()
+        mock_ingest.assert_not_called()
+        metric_names = [call.kwargs.get("name") for call in mock_metrics.add_metric.call_args_list]
+        assert "S3DuplicateEvent" in metric_names
+        assert "MaxRetriesExceeded" not in metric_names
 
 
 class TestRetryBudget:

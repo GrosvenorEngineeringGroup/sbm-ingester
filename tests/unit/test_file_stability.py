@@ -42,7 +42,8 @@ class TestCheckFileStability:
 
         with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
             with patch("functions.file_processor.app.FILE_STABILITY_REQUIRED_CHECKS", 2):
-                is_stable, size = check_file_stability("test-bucket", "test-key")
+                result = check_file_stability("test-bucket", "test-key")
+                is_stable, size = result.stable, result.size
 
         assert is_stable is True
         assert size == 1000
@@ -63,7 +64,8 @@ class TestCheckFileStability:
         with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
             with patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 1):
                 with patch("functions.file_processor.app.FILE_STABILITY_REQUIRED_CHECKS", 2):
-                    is_stable, size = check_file_stability("test-bucket", "test-key")
+                    result = check_file_stability("test-bucket", "test-key")
+                    is_stable, size = result.stable, result.size
 
         assert is_stable is True
         assert size == 1000
@@ -76,7 +78,8 @@ class TestCheckFileStability:
 
         with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
             with patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.05):
-                is_stable, size = check_file_stability("test-bucket", "test-key")
+                result = check_file_stability("test-bucket", "test-key")
+                is_stable, size = result.stable, result.size
 
         assert is_stable is False
         assert size == 0
@@ -96,7 +99,8 @@ class TestCheckFileStability:
 
         with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
             with patch("functions.file_processor.app.FILE_STABILITY_MAX_WAIT", 0.05):
-                is_stable, size = check_file_stability("test-bucket", "test-key")
+                result = check_file_stability("test-bucket", "test-key")
+                is_stable, size = result.stable, result.size
 
         assert is_stable is False
         assert size == 0
@@ -111,7 +115,8 @@ class TestCheckFileStability:
         mock_s3_client.head_object.side_effect = error
 
         with patch("functions.file_processor.app.FILE_STABILITY_CHECK_INTERVAL", 0.01):
-            is_stable, size = check_file_stability("test-bucket", "test-key")
+            result = check_file_stability("test-bucket", "test-key")
+            is_stable, size = result.stable, result.size
 
         assert is_stable is False
         assert size == 0
@@ -123,10 +128,73 @@ class TestCheckFileStability:
         # Generic exception without NoSuchKey code
         mock_s3_client.head_object.side_effect = Exception("S3 error")
 
-        is_stable, size = check_file_stability("test-bucket", "test-key")
+        result = check_file_stability("test-bucket", "test-key")
+        is_stable, size = result.stable, result.size
 
         assert is_stable is False
         assert size == 0
+
+    def test_head_returns_404_marks_vanished(self, mock_s3_client: Any, mock_logger: Any) -> None:
+        """HEAD returns 404 (not 'NoSuchKey') when a prior delivery already moved the file."""
+        from botocore.exceptions import ClientError
+
+        from functions.file_processor.app import check_file_stability
+
+        mock_s3_client.head_object.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "404", "Message": "Not Found"},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            operation_name="HeadObject",
+        )
+
+        result = check_file_stability("test-bucket", "test-key")
+
+        assert result.stable is False
+        assert result.size == 0
+        assert result.vanished is True
+
+    def test_head_returns_nosuchkey_marks_vanished(self, mock_s3_client: Any, mock_logger: Any) -> None:
+        """Defensive coverage for code paths that may surface NoSuchKey on HEAD."""
+        from botocore.exceptions import ClientError
+
+        from functions.file_processor.app import check_file_stability
+
+        mock_s3_client.head_object.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "NoSuchKey", "Message": "The specified key does not exist."},
+                "ResponseMetadata": {"HTTPStatusCode": 404},
+            },
+            operation_name="HeadObject",
+        )
+
+        result = check_file_stability("test-bucket", "test-key")
+
+        assert result.stable is False
+        assert result.size == 0
+        assert result.vanished is True
+
+    def test_head_returns_other_client_error_does_not_mark_vanished(
+        self, mock_s3_client: Any, mock_logger: Any
+    ) -> None:
+        """Errors other than 404/NoSuchKey return vanished=False; caller may requeue."""
+        from botocore.exceptions import ClientError
+
+        from functions.file_processor.app import check_file_stability
+
+        mock_s3_client.head_object.side_effect = ClientError(
+            error_response={
+                "Error": {"Code": "AccessDenied", "Message": "Denied"},
+                "ResponseMetadata": {"HTTPStatusCode": 403},
+            },
+            operation_name="HeadObject",
+        )
+
+        result = check_file_stability("test-bucket", "test-key")
+
+        assert result.stable is False
+        assert result.size == 0
+        assert result.vanished is False
 
 
 class TestRequeueMessage:
