@@ -4,17 +4,20 @@ External producer: Synergy's WA portal drops files into newTBP/ with names
 ``Meter_Data_WA (AU)_Electricity_<epoch>_<timestamp>.csv``. The current
 production payload is a 56-byte sentinel CSV indicating "no data found" for
 the queried period; the file is classified as ``processed_empty`` and moved
-to newIrrevFiles/ without writing rows to the Hudi data lake.
+to newP/ (with no rows written to the Hudi data lake).
 
 Real-data files have not been observed in production. If Synergy starts
-emitting them, the strict header match in this parser will fall through to
-NotRelevantParser, and the file will land in newIrrevFiles/ — that
-accumulation is the signal to add real-data parsing logic here.
+emitting them, the strict header match in this parser will raise
+``NotRelevantParser``; dispatch will exhaust all remaining parsers and
+raise ``ParserError("No Valid Parser Found")``, which ``ingest_file``
+catches as ``status="parse_failed"`` and routes the file to newParseErr/.
+That accumulation (and the resulting ParseErrorFiles alarm) is the signal
+to add real-data parsing logic here.
 
-Fail-safe (NotRelevantParser → newIrrevFiles/) is strictly preferred over
-fail-loud (ParserError → newParseErr/) on format drift, because the alarm
-on ParseError counts is tuned for genuine corruption, not for new
-producers.
+Drift is therefore loud-by-design once it occurs at any non-trivial rate.
+This is acceptable because the Synergy WA producer is well-bounded; a
+small number of drift events (one or two during a producer change) will
+not meaningfully impact the alarm baseline.
 """
 
 from __future__ import annotations
