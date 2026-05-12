@@ -4,7 +4,7 @@
 
 **Goal:** Fix three production issues surfaced by post-deploy CloudWatch review of the per-file ingest refactor: (1) `MaxRetriesExceeded` alarm noise from `HeadObject` 404s on duplicate S3 events, (2) WA "No data found" sentinels misclassified as parse errors, (3) `idempotent_cache_hit` log missing structured fields.
 
-**Architecture:** Three forward-only commits on top of `f8282f4` on branch `fix/post-deploy-tuning`. Each commit is one logical fix with TDD (failing test → minimal implementation → passing test → commit). One Terraform-only step adds a CloudWatch alarm. Stability check and requeue logic remain in place — a known production streaming-uploader scenario requires them.
+**Architecture:** Three forward-only commits on `fix/post-deploy-tuning` on top of `f8282f4`. Each Task = one logical commit; **the commit is the LAST step of its Task and Tasks 1–3 each produce exactly one commit**. Tasks 4–5 are operational (no commits). Stability check and requeue logic remain in place — a known streaming-uploader producer requires them.
 
 **Tech Stack:** Python 3.13, `aws-lambda-powertools >= 3.24.0`, `pytest`, `moto`, `boto3`, Terraform, pandas. Working directory: `/Users/zeyu/Desktop/GEG/sbm/sbm-ingester`.
 
@@ -24,31 +24,31 @@
 | `terraform/monitoring.tf` | Modify | Add `FileProcessor-DuplicateEventSpike` alarm |
 | `src/shared/parsers/synergy/__init__.py` | Create | Empty package marker |
 | `src/shared/parsers/synergy/wa_meter_data.py` | Create | `synergy_wa_meter_data_parser` — strict header match, returns `processed_empty` |
-| `tests/unit/fixtures/synergy/wa_no_data_found.csv` | Create (move) | Sentinel fixture (moved from `tests/unit/fixtures/optima_interval/`) |
-| `tests/unit/fixtures/optima_interval/wa_no_data_found.csv` | Delete | Moved to `synergy/` |
+| `tests/unit/fixtures/synergy/wa_no_data_found.csv` | Move | Sentinel fixture (moved from `tests/unit/fixtures/optima_interval/`) |
 | `tests/unit/parsers/synergy/__init__.py` | Create | Empty test package marker |
 | `tests/unit/parsers/synergy/test_wa_meter_data.py` | Create | Tests for Synergy WA parser |
 | `tests/unit/parsers/optima/test_interval.py` | Modify | Remove `test_wa_no_data_found_fixture_returns_processed_empty` |
 | `src/shared/parsers/optima/interval.py` | Modify | Remove WA branch from `_is_no_data_sentinel`, restore strict header gate |
 | `src/shared/parsers/dispatcher.py` | Modify | Register `synergy_wa_meter_data_parser` at position 0 of `PARSERS` |
-| `src/functions/file_processor/persistence.py` | Modify or delete | Branches on Task 0 outcome — either fix the subclass or remove entirely |
+| `src/functions/file_processor/persistence.py` | Modify | Fix service alignment + DataRecord access (or delete entirely if Task 0 finds a native mechanism) |
 | `tests/unit/test_persistence_cache_hit_log.py` | Rewrite | Use `capsys` + JSON parsing; pass a `DataRecord` instead of `dict` |
-| `src/functions/file_processor/pipeline.py` | Conditionally modify | Only if Task 0 chooses path 6A (replace subclass with `log_event=True` or equivalent) |
+| `docs/superpowers/plans/2026-05-12-task-0-decision.md` | Create | One-line decision record written by Task 0 |
 
 ---
 
-## Task 0: Investigate Powertools `log_event=True` for cache-hit observability
+## Task 0: Investigation — Powertools cache-hit observability + DataRecord API
 
-**Goal:** Decide between two branches in Task 6:
-- **Path 6A:** A native Powertools mechanism gives us `source_bucket` + `source_key` + `idempotency_key` on cache hits with no custom subclass → delete `InstrumentedDynamoDBPersistenceLayer`.
-- **Path 6B:** No native mechanism is suitable → fix the subclass in place.
+**Goal:** Determine two things and write a decision record:
+1. Does Powertools provide a native cache-hit hook that gives us `source_bucket` + `source_key` + `idempotency_key`? (If yes → Task 3 path 6A.)
+2. **What does `DataRecord.get_payload()` actually return at `save_inprogress` time?** This is critical: our planned Task 3 fix uses `data.get_payload()` to extract `bucket` / `key`. If the method does NOT return the input payload (e.g. returns the response, which doesn't exist yet at save_inprogress) → Task 3 falls back to logging only `idempotency_key` + an operational SOP to reverse-lookup the file via DynamoDB.
 
-**Time budget:** 30 minutes. If inconclusive after 30 min, default to 6B.
+**Time budget:** 45 minutes (30 for investigation, 15 for writing the decision record).
 
 **Files:**
 - Read: `aws-lambda-powertools` source via local venv
+- Create: `docs/superpowers/plans/2026-05-12-task-0-decision.md`
 
-- [ ] **Step 1: Inspect Powertools idempotency module locally**
+- [ ] **Step 1: Inspect Powertools version**
 
 ```bash
 uv run python -c "
@@ -59,78 +59,150 @@ print('Path:', os.path.dirname(p.__file__))
 "
 ```
 
-Expected output: version `3.24.0` or later, path under `.venv/`.
+Expected output: version `3.24.0` or later.
 
-- [ ] **Step 2: Check `@idempotent_function` for a `log_event` or hook parameter**
+- [ ] **Step 2: Verify `DataRecord.get_payload()` semantics**
+
+This determines whether Task 3's fix is reachable as designed.
+
+```bash
+uv run python -c "
+from aws_lambda_powertools.utilities.idempotency.persistence.base import DataRecord
+import inspect
+
+print('=== DataRecord.__init__ signature ===')
+print(inspect.signature(DataRecord.__init__))
+
+print()
+print('=== Public attributes/methods ===')
+print([m for m in dir(DataRecord) if not m.startswith('_')])
+
+print()
+print('=== get_payload source (if any) ===')
+if hasattr(DataRecord, 'get_payload'):
+    print(inspect.getsource(DataRecord.get_payload))
+else:
+    print('NO get_payload METHOD — fallback path required')
+"
+```
+
+Look for:
+- Does `DataRecord` have a `get_payload()` method? What does it return?
+- Does it read from `self.response_data` (the result — null at save_inprogress) or from a separate field (the input payload)?
+- Is there a separate field like `self.payload`, `self.event`, or `self.original_payload` that holds the **input** dict?
+
+**Note:** in some Powertools versions, `DataRecord.payload_hash` is the HASH of the payload, not the payload itself. If only the hash is reachable from a `DataRecord` constructed for `save_inprogress`, we cannot derive `bucket`/`key` directly. That is the trigger for the fallback path in Task 3.
+
+- [ ] **Step 3: Check `@idempotent_function` for a `log_event` or hook parameter**
 
 ```bash
 uv run python -c "
 from aws_lambda_powertools.utilities.idempotency import idempotent_function
 import inspect
+print('=== idempotent_function signature ===')
 print(inspect.signature(idempotent_function))
-print('---')
-print(inspect.getsource(idempotent_function))
-" | head -60
-```
-
-What to look for:
-- Any parameter named `log_event`, `on_cache_hit`, `cache_hit_handler`, `event_logger`, or similar
-- Powertools' own logging of `IdempotencyItemAlreadyExistsError` with sufficient context
-
-- [ ] **Step 3: Check `DynamoDBPersistenceLayer` for a hook**
-
-```bash
-uv run python -c "
-from aws_lambda_powertools.utilities.idempotency.persistence.dynamodb import DynamoDBPersistenceLayer
-import inspect
-src = inspect.getsource(DynamoDBPersistenceLayer)
-print(src[:3000])
+print()
+print('=== source (first 4000 chars) ===')
+print(inspect.getsource(idempotent_function)[:4000])
 "
 ```
 
-What to look for: any callback/hook for cache hit, or a built-in log statement that already emits the fields we need.
+Look for: any parameter named `log_event`, `on_cache_hit`, `cache_hit_handler`, `event_logger`, or similar.
 
-- [ ] **Step 4: Search for documented config flags**
+- [ ] **Step 4: Check `IdempotencyConfig` for flags**
 
 ```bash
 uv run python -c "
 from aws_lambda_powertools.utilities.idempotency.config import IdempotencyConfig
 import inspect
-print(inspect.signature(IdempotencyConfig))
-print('---')
+print('=== IdempotencyConfig __init__ ===')
+print(inspect.signature(IdempotencyConfig.__init__))
+print()
 print(IdempotencyConfig.__init__.__doc__ or '(no docstring)')
 "
 ```
 
-What to look for: any `log_*` or `event_*` flag.
+Look for: any `log_*` or `event_*` flag.
 
-- [ ] **Step 5: Decide and record**
+- [ ] **Step 5: Write the decision record**
 
-Write the decision into the plan inline by editing this file. Replace this checkbox section with:
+Based on Steps 2–4, write `docs/superpowers/plans/2026-05-12-task-0-decision.md` with exactly one of these forms:
 
+**Form A — `get_payload()` works AND a native cache-hit hook exists (Task 3 → 6A):**
 ```markdown
-**Decision: 6A** (Powertools mechanism `<name>` provides `<fields>` — subclass to be removed)
+# Task 0 Decision
 
-— OR —
+**Powertools version:** 3.X.Y
 
-**Decision: 6B** (No suitable native mechanism; subclass fix in place)
+**DataRecord.get_payload() at save_inprogress time:** returns the input payload dict (verified).
+
+**Native cache-hit hook:** `<name of mechanism>` — emits `<list of fields>`.
+
+**Task 3 path:** 6A — replace `InstrumentedDynamoDBPersistenceLayer` with the native mechanism in `pipeline.py`. Delete `persistence.py` and `test_persistence_cache_hit_log.py`. Verify the native emission carries `source_bucket`, `source_key`, `idempotency_key`.
 ```
 
-Default if undecided after 30 min: **6B**.
+**Form B — `get_payload()` works but no native hook (Task 3 → 6B):**
+```markdown
+# Task 0 Decision
 
-No commit for Task 0 — it's investigation only.
+**Powertools version:** 3.X.Y
+
+**DataRecord.get_payload() at save_inprogress time:** returns the input payload dict (verified).
+
+**Native cache-hit hook:** none suitable.
+
+**Task 3 path:** 6B — fix the subclass in place. Use `data.get_payload()` to extract `bucket` / `key` and `data.idempotency_key` for the hash.
+```
+
+**Form C — `get_payload()` does NOT return input payload at save_inprogress (Task 3 → 6C fallback):**
+```markdown
+# Task 0 Decision
+
+**Powertools version:** 3.X.Y
+
+**DataRecord.get_payload() at save_inprogress time:** does NOT return input payload. It returns `<actual return value>`.
+
+**Reachable from DataRecord at save_inprogress:** `idempotency_key`, `payload_hash`, status. NOT the original `bucket` / `key`.
+
+**Native cache-hit hook:** `<status — none, or one found in Step 3-4>`.
+
+**Task 3 path:** 6C — fallback. Log `idempotency_key` only. Add a runbook entry: "To resolve bucket/key from a cache-hit log, query DynamoDB table `sbm-ingester-idempotency` with `id = <idempotency_key>` and read the `data` (or `response_data`) attribute; if also opaque, search SQS DLQ or recent S3 events around the log timestamp."
+```
+
+If after 45 minutes none of the three forms is conclusive, **default to Form B** (try the planned fix; the TDD red-state in Task 3 will catch a wrong assumption).
+
+No commit. Task 0 produces only the decision record (which IS committed in Task 3).
 
 ---
 
-## Task 1: Fix `check_file_stability` to detect HEAD 404 (TDD)
+## Task 1: Commit 1 — HEAD 404 fix + S3DuplicateEvent metric + alarm
+
+This Task produces **exactly one commit**. All steps are internal; commit happens only at Step 13.
 
 **Files:**
-- Modify: `src/functions/file_processor/app.py:59-108` (`check_file_stability` and its return type)
-- Modify: `tests/unit/test_file_stability.py` (update for new return type, add 404 case)
+- Modify: `src/functions/file_processor/app.py` (lines 1-108 and 136-192)
+- Modify: `tests/unit/test_file_stability.py`
+- Modify: `tests/unit/test_lambda_handler.py`
+- Modify: `terraform/monitoring.tf`
 
-- [ ] **Step 1: Write the failing test for 404 handling**
+### Part A: Update tests for new return type (TDD red)
 
-Append this test to `tests/unit/test_file_stability.py` inside the existing `TestCheckFileStability` class:
+- [ ] **Step 1: Audit all existing call sites of `check_file_stability` that will break**
+
+```bash
+grep -rn "check_file_stability" src/ tests/
+```
+
+Expected hit list:
+- `src/functions/file_processor/app.py` (definition + one call inside `lambda_handler`)
+- `tests/unit/test_file_stability.py` (multiple tuple-unpack call sites)
+- Possibly other test files
+
+Note each tuple-unpack site (`is_stable, size = ...` or `is_stable, _ = ...`). All must be rewritten to use `StabilityResult` attributes when the new return type lands in Part B.
+
+- [ ] **Step 2: Append failing tests for HEAD 404 to `test_file_stability.py`**
+
+Append these three tests inside the existing `TestCheckFileStability` class:
 
 ```python
     def test_head_returns_404_marks_vanished(self, mock_s3_client: Any, mock_logger: Any) -> None:
@@ -139,9 +211,6 @@ Append this test to `tests/unit/test_file_stability.py` inside the existing `Tes
 
         from functions.file_processor.app import check_file_stability
 
-        # HeadObject returns Code="404", Message="Not Found" — distinct from
-        # GetObject's NoSuchKey. Real S3 returns this on a duplicate event for
-        # an already-moved key.
         mock_s3_client.head_object.side_effect = ClientError(
             error_response={
                 "Error": {"Code": "404", "Message": "Not Found"},
@@ -157,7 +226,7 @@ Append this test to `tests/unit/test_file_stability.py` inside the existing `Tes
         assert result.vanished is True
 
     def test_head_returns_nosuchkey_marks_vanished(self, mock_s3_client: Any, mock_logger: Any) -> None:
-        """Defensive coverage for older boto3 paths that surface NoSuchKey on HEAD."""
+        """Defensive coverage for code paths that may surface NoSuchKey on HEAD."""
         from botocore.exceptions import ClientError
 
         from functions.file_processor.app import check_file_stability
@@ -199,34 +268,115 @@ Append this test to `tests/unit/test_file_stability.py` inside the existing `Tes
         assert result.vanished is False
 ```
 
-Also update **every existing** `is_stable, size = check_file_stability(...)` tuple unpack in this file to use the new `StabilityResult` attribute form. Search and replace:
+- [ ] **Step 3: Rewrite every existing tuple-unpack call in `test_file_stability.py`**
 
-```bash
-grep -n "is_stable, size = check_file_stability\|is_stable, _ = check_file_stability\|, size = check_file_stability" tests/unit/test_file_stability.py
-```
-
-For each match, replace tuple-unpack with attribute access:
+For every test method using `is_stable, size = check_file_stability(...)` or `is_stable, _ = check_file_stability(...)`, rewrite to:
 
 ```python
-# Before:
-is_stable, size = check_file_stability("test-bucket", "test-key")
-
-# After:
 result = check_file_stability("test-bucket", "test-key")
 is_stable, size = result.stable, result.size
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+(Keep the variable names so existing assertions like `assert is_stable is True; assert size == 1000` continue to work.)
 
+Verify all sites are updated:
 ```bash
-uv run pytest tests/unit/test_file_stability.py -v
+grep -n "check_file_stability" tests/unit/test_file_stability.py
 ```
 
-Expected: All three new tests FAIL with `AttributeError: 'tuple' object has no attribute 'stable'` (or similar). Updated existing tests should pass after the unpack rewrite is in place once `StabilityResult` exists.
+Expected: every call now uses `result = ...` form. No remaining `is_stable, size = check_file_stability(`.
 
-- [ ] **Step 3: Implement `StabilityResult` and refactor `check_file_stability`**
+- [ ] **Step 4: Add the duplicate-event handler test to `test_lambda_handler.py`**
 
-Replace lines 1-108 of `src/functions/file_processor/app.py` (everything from the module docstring through the end of `check_file_stability`) with:
+First inspect the existing test class structure:
+```bash
+grep -n "^class \|def test_" tests/unit/test_lambda_handler.py | head -30
+```
+
+Append the following test. Place it inside an existing test class if one tests stability-check paths (look for a class name containing `Stability`, `Requeue`, or `Handler`); otherwise create a new class `TestLambdaHandlerDuplicateEvent` at the end of the file. The test imports its own dependencies so it is self-contained.
+
+```python
+class TestLambdaHandlerDuplicateEvent:
+    """Verify that a vanished S3 object is treated as a duplicate event."""
+
+    def test_vanished_file_skipped_silently_with_metric(self) -> None:
+        """When stability check returns vanished=True, handler logs + emits
+        S3DuplicateEvent metric and does NOT requeue or raise MaxRetriesExceeded.
+        """
+        import json
+        from unittest.mock import patch
+
+        from functions.file_processor.app import StabilityResult, lambda_handler
+
+        sqs_record_body = {
+            "Records": [
+                {
+                    "s3": {
+                        "bucket": {"name": "sbm-file-ingester"},
+                        "object": {"key": "newTBP/foo.csv"},
+                    }
+                }
+            ]
+        }
+        event = {
+            "Records": [
+                {"body": json.dumps(sqs_record_body), "messageId": "msg-1"},
+            ]
+        }
+
+        class _Ctx:
+            function_name = "test"
+            memory_limit_in_mb = 128
+            invoked_function_arn = "arn:aws:lambda:ap-southeast-2:000:function:test"
+            aws_request_id = "req-1"
+
+        with patch(
+            "functions.file_processor.app.check_file_stability",
+            return_value=StabilityResult(stable=False, size=0, vanished=True),
+        ) as mock_stab, patch(
+            "functions.file_processor.app.requeue_message"
+        ) as mock_requeue, patch(
+            "functions.file_processor.app.ingest_file"
+        ) as mock_ingest, patch(
+            "functions.file_processor.app.metrics"
+        ) as mock_metrics:
+            response = lambda_handler(event, _Ctx())
+
+        assert response["statusCode"] == 200
+        assert response.get("duplicate") == 1
+        assert response["requeued"] == 0
+        assert response["skipped"] == 0
+        mock_stab.assert_called_once()
+        mock_requeue.assert_not_called()
+        mock_ingest.assert_not_called()
+        metric_names = [call.kwargs.get("name") for call in mock_metrics.add_metric.call_args_list]
+        assert "S3DuplicateEvent" in metric_names
+        assert "MaxRetriesExceeded" not in metric_names
+```
+
+- [ ] **Step 5: Audit existing `lambda_handler` tests for full-response-dict equality**
+
+The new code adds a `duplicate` field to the handler response. If any existing test does `assert response == {...exact dict...}`, that assertion will break.
+
+```bash
+grep -n "response ==" tests/unit/test_lambda_handler.py
+```
+
+For every match, either change to attribute-by-attribute assertion (`assert response["processed"] == N`) or add the new `"duplicate": 0` key to the expected dict.
+
+- [ ] **Step 6: Run tests to verify they fail**
+
+```bash
+uv run pytest tests/unit/test_file_stability.py tests/unit/test_lambda_handler.py -v
+```
+
+Expected: New tests FAIL (AttributeError / ImportError for `StabilityResult`, assertion fail on `duplicate` field, missing metric). Modified existing tests may fail too; that is expected until Part B lands.
+
+### Part B: Implementation (TDD green)
+
+- [ ] **Step 7: Replace `check_file_stability` and module preamble in `app.py`**
+
+Replace the entire content from line 1 through the end of `check_file_stability` (around line 108) with:
 
 ```python
 """SQS-triggered Lambda handler for the SBM file ingester.
@@ -382,92 +532,9 @@ def check_file_stability(bucket: str, key: str) -> StabilityResult:
     return StabilityResult(stable=False, size=0)
 ```
 
-- [ ] **Step 4: Run tests to verify all pass**
+- [ ] **Step 8: Replace `lambda_handler` to handle `vanished`**
 
-```bash
-uv run pytest tests/unit/test_file_stability.py -v
-```
-
-Expected: All tests PASS, including the three new ones.
-
-- [ ] **Step 5: No commit yet — Task 2 finishes the lambda_handler caller side, both commit together.**
-
----
-
-## Task 2: Update `lambda_handler` to skip on `vanished` and emit metric (TDD)
-
-**Files:**
-- Modify: `src/functions/file_processor/app.py:136-192` (`lambda_handler`)
-- Modify: `tests/unit/test_lambda_handler.py` (new test)
-
-- [ ] **Step 1: Write the failing test**
-
-Find an existing test class in `tests/unit/test_lambda_handler.py` for the stability check path. Append:
-
-```python
-    def test_vanished_file_skipped_silently_with_metric(
-        self, mock_lambda_context: Any
-    ) -> None:
-        """When stability check returns vanished=True, handler logs + emits
-        S3DuplicateEvent metric and does NOT requeue or raise MaxRetriesExceeded.
-        """
-        from functions.file_processor.app import StabilityResult, lambda_handler
-
-        sqs_record_body = {
-            "Records": [
-                {
-                    "s3": {
-                        "bucket": {"name": "sbm-file-ingester"},
-                        "object": {"key": "newTBP/foo.csv"},
-                    }
-                }
-            ]
-        }
-        event = {
-            "Records": [
-                {"body": json.dumps(sqs_record_body), "messageId": "msg-1"},
-            ]
-        }
-
-        with patch(
-            "functions.file_processor.app.check_file_stability",
-            return_value=StabilityResult(stable=False, size=0, vanished=True),
-        ) as mock_stab, patch(
-            "functions.file_processor.app.requeue_message"
-        ) as mock_requeue, patch(
-            "functions.file_processor.app.ingest_file"
-        ) as mock_ingest, patch(
-            "functions.file_processor.app.metrics"
-        ) as mock_metrics:
-            response = lambda_handler(event, mock_lambda_context)
-
-        assert response["statusCode"] == 200
-        assert response["skipped"] == 0  # vanished is not "skipped" — it's "duplicate"
-        assert response["requeued"] == 0
-        mock_stab.assert_called_once()
-        mock_requeue.assert_not_called()
-        mock_ingest.assert_not_called()
-        # Metric: S3DuplicateEvent +1, NOT MaxRetriesExceeded.
-        metric_names = [c.kwargs["name"] for c in mock_metrics.add_metric.call_args_list]
-        assert "S3DuplicateEvent" in metric_names
-        assert "MaxRetriesExceeded" not in metric_names
-```
-
-Make sure `import json` and `from unittest.mock import patch` are imported at the top of the file.
-
-- [ ] **Step 2: Run test to verify it fails**
-
-```bash
-uv run pytest tests/unit/test_lambda_handler.py::TestLambdaHandlerWithStabilityCheck::test_vanished_file_skipped_silently_with_metric -v
-```
-
-Expected: FAIL with `AttributeError` (no `StabilityResult` import yet failing the test setup) OR with the assertion that `S3DuplicateEvent` is not in the metric list.
-
-If the test's class name differs, adjust the path or place the test at module scope.
-
-- [ ] **Step 3: Update `lambda_handler` to handle vanished**
-
-Replace lines 136-192 of `src/functions/file_processor/app.py` (the entire `lambda_handler` function) with:
+Replace the entire `lambda_handler` function (currently lines 136-192, ending at the closing `}` of the return dict) with:
 
 ```python
 @tracer.capture_lambda_handler
@@ -547,47 +614,17 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     }
 ```
 
-- [ ] **Step 4: Run the full test_lambda_handler suite + test_file_stability suite**
+- [ ] **Step 9: Run tests, verify they all pass**
 
 ```bash
-uv run pytest tests/unit/test_lambda_handler.py tests/unit/test_file_stability.py -v
+uv run pytest tests/unit/test_file_stability.py tests/unit/test_lambda_handler.py -v
 ```
 
-Expected: All pass.
+Expected: All tests PASS, including the three new stability tests and the new duplicate-event handler test.
 
-- [ ] **Step 5: Run the full repo test suite as a regression check**
+### Part C: Terraform alarm
 
-```bash
-uv run pytest -q
-```
-
-Expected: PASS (~770 tests). Watch for any tests that destructured `check_file_stability` return value as a tuple — fix them with the same attribute-access pattern from Task 1 Step 1.
-
-- [ ] **Step 6: Commit (Commit 1 of 3)**
-
-```bash
-git add src/functions/file_processor/app.py tests/unit/test_file_stability.py tests/unit/test_lambda_handler.py
-git commit -m "fix: treat HEAD 404 as duplicate S3 event + revert REQUEUE_DELAY 90->60
-
-Root cause for the FileProcessor-MaxRetriesExceeded alarm noise was not slow
-uploads but HeadObject returning Code='404' / Message='Not Found' on duplicate
-S3 events for already-moved keys (NoSuchKey check in check_file_stability
-never fired because that's GetObject semantics). The 90s REQUEUE_DELAY bump
-in f8282f4 treated the wrong symptom.
-
-Refactor check_file_stability to return a StabilityResult dataclass with a
-vanished flag, and have lambda_handler skip vanished records silently with
-a new S3DuplicateEvent metric. Reverts REQUEUE_DELAY_SECONDS 90 -> 60."
-```
-
----
-
-## Task 3: Add `FileProcessor-DuplicateEventSpike` alarm in Terraform
-
-**Files:**
-- Modify: `terraform/monitoring.tf` (append a new alarm resource)
-
-- [ ] **Step 1: Append the alarm resource**
+- [ ] **Step 10: Append `FileProcessor-DuplicateEventSpike` alarm**
 
 Append to the end of `terraform/monitoring.tf`:
 
@@ -645,80 +682,87 @@ resource "aws_cloudwatch_metric_alarm" "file_processor_duplicate_event_spike" {
 }
 ```
 
-- [ ] **Step 2: Validate the change with `terraform plan`**
+- [ ] **Step 11: Validate Terraform plan**
 
 ```bash
-cd terraform && terraform plan -out=/tmp/duplicate-event-spike.tfplan
+cd terraform && terraform plan -out=/tmp/duplicate-event-spike.tfplan && cd ..
 ```
 
-Expected:
-```
-Plan: 1 to add, 0 to change, 0 to destroy.
-```
+Expected output line: `Plan: 1 to add, 0 to change, 0 to destroy.` The single addition must be `aws_cloudwatch_metric_alarm.file_processor_duplicate_event_spike`. Anything else → stop and investigate.
 
-The single addition should be `aws_cloudwatch_metric_alarm.file_processor_duplicate_event_spike`. If anything else appears, stop and investigate.
+### Part D: Lint, full regression, commit
 
-- [ ] **Step 3: Commit (folds into Commit 1)**
+- [ ] **Step 12: Repo-wide regression + lint**
 
 ```bash
-cd ..
-git add terraform/monitoring.tf
-git commit --amend --no-edit
+uv run pytest -q
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
 ```
 
-This keeps the Terraform change in the same logical commit as the Lambda code that emits the metric.
+Expected: all pass (~770 tests + lint clean).
 
-**Do not run `terraform apply` yet.** Apply happens in Task 8 (deploy) so the alarm and Lambda code go live together.
+- [ ] **Step 13: Commit (Commit 1 of 3)**
+
+```bash
+git add src/functions/file_processor/app.py \
+        tests/unit/test_file_stability.py \
+        tests/unit/test_lambda_handler.py \
+        terraform/monitoring.tf
+git status  # verify nothing unintended is staged
+git commit -m "fix: treat HEAD 404 as duplicate S3 event + revert REQUEUE_DELAY 90->60
+
+Root cause for the FileProcessor-MaxRetriesExceeded alarm noise was not slow
+uploads but HeadObject returning Code='404' / Message='Not Found' on duplicate
+S3 events for already-moved keys (the existing NoSuchKey check never fired
+because that's GetObject semantics, not HeadObject). The 90s REQUEUE_DELAY
+bump in f8282f4 treated the wrong symptom.
+
+Refactor check_file_stability to return a StabilityResult dataclass with a
+vanished flag, and have lambda_handler skip vanished records silently with
+a new S3DuplicateEvent metric and a structured s3_duplicate_event log line.
+Reverts REQUEUE_DELAY_SECONDS 90 -> 60.
+
+Adds FileProcessor-DuplicateEventSpike CloudWatch alarm (S3DuplicateEvent /
+Invocations > 50% over 2h) to detect a future regression in the
+move-after-process logic or anomalous S3 event behavior."
+```
 
 ---
 
-## Task 4: Create Synergy WA parser (TDD)
+## Task 2: Commit 2 — Synergy WA parser + interval.py cleanup
+
+This Task produces **exactly one commit**. Commit happens only at Step 12.
 
 **Files:**
 - Create: `src/shared/parsers/synergy/__init__.py` (empty)
 - Create: `src/shared/parsers/synergy/wa_meter_data.py`
 - Create: `tests/unit/parsers/synergy/__init__.py` (empty)
 - Create: `tests/unit/parsers/synergy/test_wa_meter_data.py`
-- Move: `tests/unit/fixtures/optima_interval/wa_no_data_found.csv` →
-  `tests/unit/fixtures/synergy/wa_no_data_found.csv`
+- Move: `tests/unit/fixtures/optima_interval/wa_no_data_found.csv` → `tests/unit/fixtures/synergy/wa_no_data_found.csv`
+- Modify: `src/shared/parsers/dispatcher.py`
+- Modify: `src/shared/parsers/optima/interval.py`
+- Modify: `tests/unit/parsers/optima/test_interval.py`
 
-- [ ] **Step 1: Move the fixture**
+### Part A: Create the new parser (TDD red)
+
+- [ ] **Step 1: Create directory structure and move fixture**
 
 ```bash
-mkdir -p tests/unit/fixtures/synergy
+mkdir -p src/shared/parsers/synergy tests/unit/parsers/synergy tests/unit/fixtures/synergy
+touch src/shared/parsers/synergy/__init__.py tests/unit/parsers/synergy/__init__.py
 git mv tests/unit/fixtures/optima_interval/wa_no_data_found.csv tests/unit/fixtures/synergy/wa_no_data_found.csv
-```
-
-Verify the file is byte-identical (should be 56 bytes):
-
-```bash
 wc -c tests/unit/fixtures/synergy/wa_no_data_found.csv
 ```
 
-Expected: `56 tests/unit/fixtures/synergy/wa_no_data_found.csv`.
+Expected: `56 tests/unit/fixtures/synergy/wa_no_data_found.csv`. The byte count proves the file content survived the move.
 
-- [ ] **Step 2: Create empty package markers**
+- [ ] **Step 2: Write the failing tests**
 
-```bash
-touch src/shared/parsers/synergy/__init__.py
-mkdir -p tests/unit/parsers/synergy
-touch tests/unit/parsers/synergy/__init__.py
-```
-
-- [ ] **Step 3: Write the failing tests**
-
-Create `tests/unit/parsers/synergy/test_wa_meter_data.py`:
+Create `tests/unit/parsers/synergy/test_wa_meter_data.py` with:
 
 ```python
-"""Tests for the Synergy WA meter data parser.
-
-Synergy WA's portal drops files into newTBP/ with names like
-`Meter_Data_WA (AU)_Electricity_*.csv`. The current production payload is
-always a 56-byte sentinel CSV (3 columns, 3 rows) indicating "no data found"
-for the queried period. Real data files have not yet been observed — if/when
-they appear, the strict header check below will fall through to
-NotRelevantParser, surfacing the new format in newIrrevFiles/ for follow-up.
-"""
+"""Tests for the Synergy WA meter data parser."""
 
 from __future__ import annotations
 
@@ -734,6 +778,7 @@ FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures" / "synergy"
 
 class TestSynergyWaMeterDataParser:
     def test_sentinel_fixture_returns_processed_empty(self) -> None:
+        """The committed fixture (a 56-byte 'No data found' sentinel) returns processed_empty."""
         outcome = synergy_wa_meter_data_parser(str(FIXTURE_DIR / "wa_no_data_found.csv"))
 
         assert isinstance(outcome, ParserOutcome)
@@ -741,6 +786,7 @@ class TestSynergyWaMeterDataParser:
         assert outcome.reason == "no_data_available"
 
     def test_rejects_files_without_synergy_wa_prefix(self, tmp_path: Path) -> None:
+        """Any filename not starting with the Synergy WA prefix is NotRelevantParser."""
         f = tmp_path / "interval_au_single_day.csv"
         f.write_text("Date,Start Time,Identifier\n")
 
@@ -748,10 +794,10 @@ class TestSynergyWaMeterDataParser:
             synergy_wa_meter_data_parser(str(f))
 
     def test_falls_through_on_header_drift(self, tmp_path: Path) -> None:
-        """A future format with a different header must NOT be silently consumed.
+        """A future format with a different header falls through to NotRelevantParser.
 
-        Falls through to NotRelevantParser so the dispatcher routes the file to
-        newIrrevFiles/, where its accumulation prompts us to add real parsing.
+        Routes to newIrrevFiles/ rather than newParseErr/, so format drift surfaces
+        as accumulation in newIrrevFiles/ instead of false-positive parse errors.
         """
         f = tmp_path / "Meter_Data_WA (AU)_Electricity_1778999999_2026051300000000.csv"
         f.write_text("Date,NMI,Usage\n2026-05-13,12345,1.23\n")
@@ -759,32 +805,10 @@ class TestSynergyWaMeterDataParser:
         with pytest.raises(NotRelevantParser, match="drifted"):
             synergy_wa_meter_data_parser(str(f))
 
-    def test_filename_with_dot_and_paren_chars_accepted(self) -> None:
-        """The literal filename pattern includes parens and a dot — the prefix
-        matcher must handle those without surprises."""
-        # We use the real fixture because its filename was renamed during the
-        # move; build a temp file with the production filename pattern.
-        outcome = synergy_wa_meter_data_parser(str(FIXTURE_DIR / "wa_no_data_found.csv"))
-        # The fixture filename does NOT match the production prefix — so this
-        # path proves we are NOT prefix-matching by accident on filenames
-        # without it. (We rely on the dispatcher seeing the real filename.)
-        # This is the same call as the first test; we keep it to assert the
-        # outcome is reproducible from path string alone, not from file metadata.
-        assert outcome.status == "processed_empty"
-```
-
-Wait — the last test as written is meaningless. Replace it with a true production-name fixture call:
-
-```python
     def test_production_filename_pattern_matches(self, tmp_path: Path) -> None:
         """Use the actual production filename pattern with the sentinel body."""
-        prod_path = (
-            tmp_path
-            / "Meter_Data_WA (AU)_Electricity_1778517074_2026051202315309.csv"
-        )
-        prod_path.write_bytes(
-            (FIXTURE_DIR / "wa_no_data_found.csv").read_bytes()
-        )
+        prod_path = tmp_path / "Meter_Data_WA (AU)_Electricity_1778517074_2026051202315309.csv"
+        prod_path.write_bytes((FIXTURE_DIR / "wa_no_data_found.csv").read_bytes())
 
         outcome = synergy_wa_meter_data_parser(str(prod_path))
 
@@ -792,19 +816,19 @@ Wait — the last test as written is meaningless. Replace it with a true product
         assert outcome.reason == "no_data_available"
 ```
 
-Delete the `test_filename_with_dot_and_paren_chars_accepted` placeholder above and replace with this version.
-
-- [ ] **Step 4: Run tests to verify they fail**
+- [ ] **Step 3: Run tests, confirm they fail**
 
 ```bash
 uv run pytest tests/unit/parsers/synergy/ -v
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'shared.parsers.synergy.wa_meter_data'`.
+Expected: ALL FOUR tests FAIL with `ModuleNotFoundError: No module named 'shared.parsers.synergy.wa_meter_data'`.
 
-- [ ] **Step 5: Implement the parser**
+### Part B: Implement (TDD green)
 
-Create `src/shared/parsers/synergy/wa_meter_data.py`:
+- [ ] **Step 4: Create the parser**
+
+Create `src/shared/parsers/synergy/wa_meter_data.py` with:
 
 ```python
 """Synergy WA "meter data" archiver / sentinel handler.
@@ -853,8 +877,6 @@ def synergy_wa_meter_data_parser(file_name: str) -> ParserOutcome:
             f"Synergy WA file not readable as text: {e}"
         ) from e
 
-    # Strict signature: any drift falls through to NotRelevantParser (and
-    # thus to newIrrevFiles/) rather than ParserError. See module docstring.
     if first_line != SENTINEL_HEADER:
         raise NotRelevantParser(
             f"Synergy WA file format drifted. First line: {first_line!r}"
@@ -867,7 +889,7 @@ def synergy_wa_meter_data_parser(file_name: str) -> ParserOutcome:
     return ParserOutcome(status="processed_empty", reason="no_data_available")
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [ ] **Step 5: Tests pass for new parser**
 
 ```bash
 uv run pytest tests/unit/parsers/synergy/ -v
@@ -875,26 +897,17 @@ uv run pytest tests/unit/parsers/synergy/ -v
 
 Expected: All four tests PASS.
 
-- [ ] **Step 7: No commit yet — Task 5 finishes the refactor, both commit together.**
+### Part C: Wire into dispatcher, remove from interval.py
 
----
+- [ ] **Step 6: Register in dispatcher**
 
-## Task 5: Register Synergy parser, remove WA detection from `interval.py`
-
-**Files:**
-- Modify: `src/shared/parsers/dispatcher.py` (register at position 0)
-- Modify: `src/shared/parsers/optima/interval.py` (remove WA logic)
-- Modify: `tests/unit/parsers/optima/test_interval.py` (remove WA test)
-
-- [ ] **Step 1: Register parser in dispatcher**
-
-Edit `src/shared/parsers/dispatcher.py`. Add an import after the existing parser imports (alphabetical-ish, but synergy comes after racv, so add at the end of the import block):
+Edit `src/shared/parsers/dispatcher.py`. Add the import after the existing parser imports (at the end of the import block):
 
 ```python
 from shared.parsers.synergy.wa_meter_data import synergy_wa_meter_data_parser
 ```
 
-Then replace the `PARSERS = [...]` list (currently lines 25-36) with:
+Then replace `PARSERS = [...]` (currently lines 25-36) with:
 
 ```python
 PARSERS = [
@@ -916,9 +929,9 @@ PARSERS = [
 ]
 ```
 
-- [ ] **Step 2: Remove WA detection from `interval.py`**
+- [ ] **Step 7: Remove WA detection from `interval.py`**
 
-Edit `src/shared/parsers/optima/interval.py`. Replace `_is_no_data_sentinel` (lines 29-50) with the AU/NZ-only version:
+In `src/shared/parsers/optima/interval.py`, replace the `_is_no_data_sentinel` function (lines 29-50) with the AU/NZ-only version:
 
 ```python
 def _is_no_data_sentinel(raw_df: pd.DataFrame) -> bool:
@@ -945,7 +958,7 @@ def _is_no_data_sentinel(raw_df: pd.DataFrame) -> bool:
     return False
 ```
 
-And restore the strict cheap relevance gate (lines 65-67):
+And restore the strict cheap relevance gate (currently lines 63-67) to:
 
 ```python
     # All three column markers must appear in the header row.
@@ -955,39 +968,52 @@ And restore the strict cheap relevance gate (lines 65-67):
 
 (Removes the `is_wa_sentinel_header` variable and the disjunction with `Unnamed: 0`/`NMI`/`Unnamed: 2`.)
 
-- [ ] **Step 3: Remove the orphaned WA test from `test_interval.py`**
+- [ ] **Step 8: Delete the orphan WA test from `test_interval.py`**
 
 ```bash
-grep -n "test_wa_no_data_found_fixture_returns_processed_empty" tests/unit/parsers/optima/test_interval.py
+grep -n "test_wa_no_data_found_fixture_returns_processed_empty\|wa_no_data_found" tests/unit/parsers/optima/test_interval.py
 ```
 
-Open the file at that line and delete the entire test method (typically 8-12 lines including the docstring and any decorators).
+Open the file at the match line. Delete the entire `test_wa_no_data_found_fixture_returns_processed_empty` test method (including its decorator if any).
 
-If the test uses the fixture path `FIXTURE_DIR / "wa_no_data_found.csv"`, that fixture no longer exists at `optima_interval/`. Verify no other test in this file references it:
+If the enclosing class becomes empty (no other test methods after deletion), delete the empty class definition as well. Use `grep -A 20 "class TestXxx"` to inspect class contents before deciding.
+
+Repo-wide check for any other reference to the old fixture path:
 
 ```bash
-grep -n "wa_no_data_found" tests/unit/parsers/optima/test_interval.py
+grep -rn "optima_interval/wa_no_data_found\|optima_interval.*wa_no_data" tests/ src/
 ```
 
-Expected: no matches after deletion.
+Expected: empty output. If any match appears, update it to the new path `tests/unit/fixtures/synergy/wa_no_data_found.csv`.
 
-- [ ] **Step 4: Run the relevant test suites**
+### Part D: Lint, full regression, commit
+
+- [ ] **Step 9: Run all parser tests**
 
 ```bash
 uv run pytest tests/unit/parsers/synergy/ tests/unit/parsers/optima/test_interval.py tests/unit/test_non_nem_parsers.py -v
 ```
 
-Expected: All pass. The Synergy WA fixture should now match via the new parser, not the interval parser.
+Expected: All pass. The Synergy fixture should now match via the new parser; the orphan WA test is gone.
 
-- [ ] **Step 5: Run the full repo test suite**
+- [ ] **Step 10: Repo-wide regression**
 
 ```bash
 uv run pytest -q
 ```
 
-Expected: PASS. Watch for any test that still references the old fixture path `tests/unit/fixtures/optima_interval/wa_no_data_found.csv` and update it to the new location if found.
+Expected: PASS (~770 tests, possibly -1 from the deleted orphan test and +4 from the new Synergy tests, net +3).
 
-- [ ] **Step 6: Commit (Commit 2 of 3)**
+- [ ] **Step 11: Lint**
+
+```bash
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+```
+
+Expected: clean.
+
+- [ ] **Step 12: Commit (Commit 2 of 3)**
 
 ```bash
 git add src/shared/parsers/synergy/ \
@@ -996,8 +1022,8 @@ git add src/shared/parsers/synergy/ \
         src/shared/parsers/dispatcher.py \
         src/shared/parsers/optima/interval.py \
         tests/unit/parsers/optima/test_interval.py
-# git mv from Task 4 Step 1 also stages the deletion at tests/unit/fixtures/optima_interval/
-git status  # verify nothing unintended is staged
+# git mv from Step 1 also stages the deletion at tests/unit/fixtures/optima_interval/
+git status  # verify nothing unintended
 git commit -m "refactor: extract Synergy WA parser; restore interval.py SRP
 
 Synergy WA's portal drops 'Meter_Data_WA (AU)_Electricity_*.csv' sentinel
@@ -1017,18 +1043,36 @@ filename pattern."
 
 ---
 
-## Task 6: Fix `idempotent_cache_hit` log (TDD; branches on Task 0 outcome)
+## Task 3: Commit 3 — Cache-hit log fix (branches on Task 0 decision)
 
-This task has two implementation paths depending on Task 0's investigation result. Both paths share the test rewrite — write the test first, then choose the implementation.
-
-### Step A (both paths): Rewrite the test using `capsys` + JSON parsing
+This Task produces **exactly one commit**. Commit happens only at the final step. The implementation steps differ based on the form recorded in `docs/superpowers/plans/2026-05-12-task-0-decision.md`.
 
 **Files:**
+- Read: `docs/superpowers/plans/2026-05-12-task-0-decision.md`
 - Rewrite: `tests/unit/test_persistence_cache_hit_log.py`
+- Modify or delete: `src/functions/file_processor/persistence.py`
+- Conditionally modify: `src/functions/file_processor/pipeline.py` (Form A only)
 
-- [ ] **Step 1: Replace the existing test file in full**
+### Step 1: Read the Task 0 decision
 
-Overwrite `tests/unit/test_persistence_cache_hit_log.py` with:
+- [ ] **Step 1: Read the decision form**
+
+```bash
+cat docs/superpowers/plans/2026-05-12-task-0-decision.md
+```
+
+Identify the path:
+- **Form A** → Step 2A (native mechanism replaces subclass)
+- **Form B** → Step 2B (fix subclass using `data.get_payload()`)
+- **Form C** → Step 2C (fallback: log only `idempotency_key`)
+
+### Step 2: Rewrite the test (TDD red, shared across all forms)
+
+- [ ] **Step 2: Replace `tests/unit/test_persistence_cache_hit_log.py` in full**
+
+Common shared rewrite for all forms — the test uses `capsys` + JSON parsing to capture stdout the way CloudWatch sees it, and constructs a real `DataRecord` to exercise the production code path.
+
+**For Forms A and B** (`get_payload()` works → bucket/key reachable):
 
 ```python
 """Tests for idempotent_cache_hit structured log emission.
@@ -1039,9 +1083,8 @@ the JSON formatter was being bypassed — was invisible) AND it passed a dict
 where production passes a DataRecord (so the isinstance(data, dict) branch
 masked the real type-confusion bug).
 
-This rewrite asserts against stdout JSON, which is what CloudWatch sees, and
-constructs a real DataRecord so the test exercises the same code path as
-production.
+This rewrite asserts against stdout JSON (what CloudWatch sees) using a real
+DataRecord constructed via Powertools' public API.
 """
 
 from __future__ import annotations
@@ -1049,27 +1092,20 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import boto3
 import pytest
 from aws_lambda_powertools.utilities.idempotency.exceptions import (
     IdempotencyItemAlreadyExistsError,
 )
-from aws_lambda_powertools.utilities.idempotency.persistence.base import (
-    DataRecord,
-)
+from aws_lambda_powertools.utilities.idempotency.persistence.base import DataRecord
 from aws_lambda_powertools.utilities.idempotency.persistence.dynamodb import (
     DynamoDBPersistenceLayer,
 )
 from moto import mock_aws
 
-from functions.file_processor.persistence import (
-    InstrumentedDynamoDBPersistenceLayer,
-)
-
 
 @pytest.fixture
 def idempotency_table():
-    import boto3
-
     with mock_aws():
         ddb = boto3.client("dynamodb", region_name="ap-southeast-2")
         ddb.create_table(
@@ -1082,19 +1118,35 @@ def idempotency_table():
 
 
 def _make_data_record(idempotency_key: str, payload: dict) -> DataRecord:
-    """Build a DataRecord that mimics what Powertools constructs internally."""
+    """Build a DataRecord that exercises the production save_inprogress path."""
     return DataRecord(
         idempotency_key=idempotency_key,
         status="INPROGRESS",
         payload_hash="",
+        # response_data field holds the serialized payload; the production
+        # code accesses it via data.get_payload() which json.loads it back.
         response_data=json.dumps(payload),
     )
+
+
+def _extract_cache_hit_logs(captured_out: str) -> list[dict]:
+    """Parse capsys stdout for JSON log lines whose 'message' is the cache-hit marker."""
+    lines = [
+        json.loads(line)
+        for line in captured_out.splitlines()
+        if line.strip().startswith("{")
+    ]
+    return [line for line in lines if line.get("message") == "idempotent_cache_hit"]
 
 
 class TestIdempotentCacheHitLog:
     def test_emits_structured_json_with_source_fields(
         self, capsys, idempotency_table
     ) -> None:
+        from functions.file_processor.persistence import (
+            InstrumentedDynamoDBPersistenceLayer,
+        )
+
         layer = InstrumentedDynamoDBPersistenceLayer(
             table_name="sbm-ingester-idempotency",
         )
@@ -1111,14 +1163,7 @@ class TestIdempotentCacheHitLog:
             layer.save_inprogress(data=data)
 
         out = capsys.readouterr().out
-        lines = [
-            json.loads(line)
-            for line in out.splitlines()
-            if line.strip().startswith("{")
-        ]
-        cache_hits = [
-            line for line in lines if line.get("message") == "idempotent_cache_hit"
-        ]
+        cache_hits = _extract_cache_hit_logs(out)
         assert len(cache_hits) == 1, f"Expected 1 cache-hit JSON line; got {len(cache_hits)} in:\n{out}"
         log = cache_hits[0]
         assert log["source_bucket"] == "sbm-file-ingester"
@@ -1126,6 +1171,10 @@ class TestIdempotentCacheHitLog:
         assert log["idempotency_key"] == "abc123"
 
     def test_no_log_on_successful_save(self, capsys, idempotency_table) -> None:
+        from functions.file_processor.persistence import (
+            InstrumentedDynamoDBPersistenceLayer,
+        )
+
         layer = InstrumentedDynamoDBPersistenceLayer(
             table_name="sbm-ingester-idempotency",
         )
@@ -1135,36 +1184,70 @@ class TestIdempotentCacheHitLog:
             layer.save_inprogress(data=data)
 
         out = capsys.readouterr().out
-        lines = [
-            json.loads(line)
-            for line in out.splitlines()
-            if line.strip().startswith("{")
-        ]
-        cache_hits = [
-            line for line in lines if line.get("message") == "idempotent_cache_hit"
-        ]
+        cache_hits = _extract_cache_hit_logs(out)
         assert cache_hits == []
 ```
 
-- [ ] **Step 2: Run the test to verify it fails against current code**
+**For Form C** (`get_payload()` doesn't work → only `idempotency_key`):
+
+Use the same file structure as above but change the first test's assertion to:
+
+```python
+        log = cache_hits[0]
+        assert log["idempotency_key"] == "abc123"
+        # source_bucket / source_key are NOT logged in Form C — they aren't
+        # reachable from a DataRecord at save_inprogress time. The operational
+        # runbook describes how to resolve idempotency_key → file via DynamoDB.
+        assert "source_bucket" not in log
+        assert "source_key" not in log
+```
+
+Run the test:
 
 ```bash
 uv run pytest tests/unit/test_persistence_cache_hit_log.py -v
 ```
 
-Expected: `test_emits_structured_json_with_source_fields` FAILS because:
-- The current code uses `service="instrumented-persistence", child=True` with no parent matching that service → stdlib formatter → no JSON line on stdout, OR
-- The current code's `payload = data if isinstance(data, dict) else {}` falls through to `{}` for a `DataRecord` → fields are `None` in any JSON that does emit
+Expected: `test_emits_structured_json_with_source_fields` FAILS against the current persistence.py (either no JSON line on stdout, or fields are `None`). This is the TDD red-state that proves the existing test was a false positive.
 
-This is the proof that the existing test was a false positive.
+### Step 3: Implement based on form
 
-### Step B: Now choose implementation path based on Task 0
+#### Form A: Replace subclass with native mechanism
 
-#### Path 6B (default — fix the subclass)
+- [ ] **Step 3A.1: Delete the subclass file**
 
-- [ ] **Step 3 (6B): Replace `persistence.py`**
+```bash
+git rm src/functions/file_processor/persistence.py
+```
 
-Overwrite `src/functions/file_processor/persistence.py` with:
+- [ ] **Step 3A.2: Edit `pipeline.py` to remove subclass references**
+
+In `src/functions/file_processor/pipeline.py`:
+1. Remove the `from functions.file_processor.persistence import InstrumentedDynamoDBPersistenceLayer` import.
+2. Replace the persistence layer constructor (currently `InstrumentedDynamoDBPersistenceLayer(...)`) with `DynamoDBPersistenceLayer(...)`.
+3. Apply the native mechanism per the decision record (e.g. `IdempotencyConfig(log_event=True)` or whatever Task 0 identified).
+
+The exact code lines are determined by what the decision record specifies. Verify the change with:
+
+```bash
+grep -n "InstrumentedDynamoDBPersistenceLayer\|DynamoDBPersistenceLayer\|IdempotencyConfig" src/functions/file_processor/pipeline.py
+```
+
+Expected: no references to `InstrumentedDynamoDBPersistenceLayer` remain.
+
+- [ ] **Step 3A.3: Run tests**
+
+```bash
+uv run pytest tests/unit/test_persistence_cache_hit_log.py -v
+```
+
+Expected: both tests pass via the native mechanism.
+
+#### Form B: Fix the subclass in place
+
+- [ ] **Step 3B.1: Rewrite `persistence.py`**
+
+Replace the entire content of `src/functions/file_processor/persistence.py` with:
 
 ```python
 """Persistence layer subclass that logs idempotency cache hits.
@@ -1177,15 +1260,16 @@ identification, and re-raise so Powertools handles the cached response
 normally.
 
 The Logger MUST share its service string with the parent Logger in
-``functions.file_processor.app`` so that ``child=True`` resolves to a
-process-wide Powertools logger with the JSON formatter attached. With a
-mismatched service string, child=True falls back to a stdlib logger that
-drops ``extra=`` kwargs from JSON output entirely.
+``functions.file_processor.app`` and ``...pipeline`` so that ``child=True``
+resolves to a process-wide Powertools logger with the JSON formatter
+attached. With a mismatched service string, child=True falls back to a
+stdlib logger that drops ``extra=`` kwargs from JSON output entirely.
 
 Field source:
   - ``DataRecord.idempotency_key`` — the hash key.
-  - ``DataRecord.get_payload()`` — the serialized payload dict (containing
-    the SourceFile fields ``bucket`` and ``key``).
+  - ``DataRecord.get_payload()`` — the deserialized input payload dict
+    (containing the SourceFile fields ``bucket`` and ``key``). Verified
+    against the pinned Powertools version in Task 0.
 """
 
 from __future__ import annotations
@@ -1223,86 +1307,112 @@ class InstrumentedDynamoDBPersistenceLayer(DynamoDBPersistenceLayer):
             raise
 ```
 
-#### Path 6A (only if Task 0 found a native mechanism)
+#### Form C: Fallback — log only `idempotency_key`
 
-- [ ] **Step 3 (6A): Apply the native mechanism**
+- [ ] **Step 3C.1: Rewrite `persistence.py` to log only the hash**
 
-Replace `persistence.py` and pipeline decorator usage per Task 0's recorded findings. Concrete changes will be:
-1. Delete `src/functions/file_processor/persistence.py`.
-2. Edit `src/functions/file_processor/pipeline.py` to remove the import and constructor reference to `InstrumentedDynamoDBPersistenceLayer`, and add the native configuration (e.g. `IdempotencyConfig(log_event=True)`) so cache hits log with file identification.
-3. Verify the log line still carries `source_bucket`, `source_key`, `idempotency_key` (test from Step 1 enforces this).
+Replace the entire content of `src/functions/file_processor/persistence.py` with:
 
-Exact code is determined by what Task 0 finds — if Powertools provides a flag/hook with full field coverage, this path is preferred and the subclass is deleted.
+```python
+"""Persistence layer subclass that logs idempotency cache hits.
 
-### Step C (both paths): Verify
+DESIGN NOTE: At save_inprogress time, Powertools' DataRecord does NOT carry
+the original input payload (verified in Task 0). We therefore log only the
+idempotency_key; the runbook describes how to reverse-lookup the source file
+via DynamoDB table ``sbm-ingester-idempotency``.
 
-- [ ] **Step 4: Run the rewritten test**
+Service string MUST match the parent Logger in app.py / pipeline.py for
+child=True to inherit the JSON formatter.
+"""
+
+from __future__ import annotations
+
+from aws_lambda_powertools import Logger
+from aws_lambda_powertools.utilities.idempotency import DynamoDBPersistenceLayer
+from aws_lambda_powertools.utilities.idempotency.exceptions import (
+    IdempotencyItemAlreadyExistsError,
+)
+from aws_lambda_powertools.utilities.idempotency.persistence.base import DataRecord
+
+logger = Logger(service="file-processor", child=True)
+
+
+class InstrumentedDynamoDBPersistenceLayer(DynamoDBPersistenceLayer):
+    def save_inprogress(
+        self,
+        data: DataRecord,
+        remaining_time_in_millis: int | None = None,
+    ) -> None:
+        try:
+            return super().save_inprogress(data, remaining_time_in_millis)
+        except IdempotencyItemAlreadyExistsError:
+            logger.info(
+                "idempotent_cache_hit",
+                extra={"idempotency_key": data.idempotency_key},
+            )
+            raise
+```
+
+Additionally append a short runbook to the existing `CLAUDE.md` (or `docs/ARCHITECTURE.md`):
+
+> **idempotent_cache_hit log → source file lookup.** When this log fires, the original `bucket`/`key` is not in the log line. To resolve: query DynamoDB table `sbm-ingester-idempotency` with `id = <idempotency_key>` and read the `data` attribute (or `response_data` for a completed cache hit). If both are opaque, scan recent S3 events in the SQS DLQ around the log timestamp.
+
+### Step 4: Verify (all forms)
+
+- [ ] **Step 4: Run the cache-hit test + full regression + lint**
 
 ```bash
 uv run pytest tests/unit/test_persistence_cache_hit_log.py -v
-```
-
-Expected: Both tests PASS.
-
-- [ ] **Step 5: Run the full repo test suite**
-
-```bash
 uv run pytest -q
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
 ```
 
-Expected: PASS (~770 tests).
+Expected: all pass.
 
-- [ ] **Step 6: Commit (Commit 3 of 3)**
+### Step 5: Commit (Commit 3 of 3)
 
-If Path 6B:
+- [ ] **Step 5: Commit**
+
+Stage the files based on form:
+- **Form A**: `git add -A` then verify with `git status`.
+- **Forms B / C**: `git add src/functions/file_processor/persistence.py tests/unit/test_persistence_cache_hit_log.py docs/superpowers/plans/2026-05-12-task-0-decision.md` (plus any CLAUDE.md / ARCHITECTURE.md update from Form C).
+
+Commit message (adapt the body to the form taken):
 
 ```bash
-git add src/functions/file_processor/persistence.py tests/unit/test_persistence_cache_hit_log.py
 git commit -m "fix: idempotent_cache_hit log emits structured fields
 
 Two compounding bugs in persistence.py:
 
 1. Logger(service='instrumented-persistence', child=True) had no parent
    matching that service string, so Powertools fell back to a stdlib
-   logger that dropped extra= kwargs from JSON output. Aligned service
-   to 'file-processor' (the parent Logger in app.py and pipeline.py) so
-   child=True resolves to the Powertools logger with its JSON formatter.
+   logger that dropped extra= kwargs from JSON output. Aligned service to
+   'file-processor' so child=True resolves to the Powertools logger with
+   its JSON formatter.
 
 2. The save_inprogress override used isinstance(data, dict) — but
    Powertools passes a DataRecord, not a dict. payload always fell
-   through to {} and fields were always None. Replaced with
-   data.get_payload() and data.idempotency_key (the documented
-   DataRecord public API).
+   through to {} and fields were always None. Replaced with the
+   DataRecord public API (data.get_payload() / data.idempotency_key —
+   API verified in Task 0; see docs/superpowers/plans/2026-05-12-task-0-decision.md).
 
 Existing test_persistence_cache_hit_log.py passed for the wrong reasons:
 caplog captured LogRecord attributes pre-formatter (so the formatter bug
-was invisible) AND the test passed a dict (so the type-confusion bug
-was masked). Rewritten to assert against capsys stdout JSON with a real
-DataRecord, which now exercises the same code path as production."
+was invisible) AND the test passed a dict (so the type-confusion bug was
+masked). Rewritten with capsys + json parsing and a real DataRecord,
+which now exercises the same code path as production."
 ```
 
-If Path 6A:
-
-```bash
-git add -A
-git commit -m "fix: replace InstrumentedDynamoDBPersistenceLayer with Powertools native cache-hit logging
-
-[brief description of the native mechanism chosen, why it covers all
-required fields, and what was deleted as a result]"
-```
+(For Form A, replace bug-fix language with "replaced subclass with Powertools native cache-hit hook X". For Form C, note "logs only idempotency_key; runbook added for file lookup".)
 
 ---
 
-## Task 7: Recover 3 WA sentinel files from `newParseErr/`
+## Task 4: Recover 3 WA sentinel files from `newParseErr/`
 
-**Files:**
-- S3 bucket: `s3://sbm-file-ingester/`
+Operational task — no commit. **Run only after Task 5's deploy completes.**
 
-These three files were misclassified as parse errors by the pre-fix `interval.py`. After Commit 2 (the dispatcher routes WA files to the new parser → `processed_empty`), retroactive recovery is a simple S3 move from `newParseErr/` to `newIrrevFiles/`.
-
-**Run this only after Task 8's deploy completes** — otherwise the recovered files might race back into the SQS queue and re-hit the old code if the deploy is mid-flight.
-
-- [ ] **Step 1: List the 3 active WA files**
+- [ ] **Step 1: List the active WA files**
 
 ```bash
 aws s3 ls 's3://sbm-file-ingester/newParseErr/' --region ap-southeast-2 \
@@ -1310,32 +1420,22 @@ aws s3 ls 's3://sbm-file-ingester/newParseErr/' --region ap-southeast-2 \
   | grep -v archived/
 ```
 
-Expected: 3 files matching `Meter_Data_WA (AU)_Electricity_*` (56 bytes each), e.g.:
-```
-2026-05-11 10:31:58         56 Meter_Data_WA (AU)_Electricity_1778459473_2026051110313572.csv
-2026-05-11 18:32:11         56 Meter_Data_WA (AU)_Electricity_1778488273_2026051118315106.csv
-2026-05-12 02:32:09         56 Meter_Data_WA (AU)_Electricity_1778517074_2026051202315309.csv
-```
+Expected: 3 files matching `Meter_Data_WA (AU)_Electricity_*` (56 bytes each).
 
-If the list contains more or fewer files than expected, stop and reconcile before moving.
+If the count is not 3, stop and reconcile — fresh WA files may have arrived (now correctly classified as `processed_empty` post-deploy, so they'd be in `newIrrevFiles/` not `newParseErr/`; investigate any anomaly).
 
 - [ ] **Step 2: Move each file to `newIrrevFiles/`**
 
-For each file from Step 1, run:
+For each filename from Step 1, run:
 
 ```bash
 aws s3 mv \
-  "s3://sbm-file-ingester/newParseErr/Meter_Data_WA (AU)_Electricity_<epoch>_<ts>.csv" \
-  "s3://sbm-file-ingester/newIrrevFiles/Meter_Data_WA (AU)_Electricity_<epoch>_<ts>.csv" \
+  "s3://sbm-file-ingester/newParseErr/<exact filename>" \
+  "s3://sbm-file-ingester/newIrrevFiles/<exact filename>" \
   --region ap-southeast-2
 ```
 
-Substitute `<epoch>_<ts>` with each filename from Step 1.
-
-Expected output per move:
-```
-move: s3://sbm-file-ingester/newParseErr/... to s3://sbm-file-ingester/newIrrevFiles/...
-```
+The filename contains parentheses and spaces — quote with double quotes as shown.
 
 - [ ] **Step 3: Verify**
 
@@ -1355,25 +1455,25 @@ aws s3 ls 's3://sbm-file-ingester/newIrrevFiles/' --region ap-southeast-2 \
   | wc -l
 ```
 
-Expected: at least `3` (could be more if new WA files have already been routed there by the new parser since deploy).
-
-No commit — Task 7 is operational, not code.
+Expected: ≥ 3.
 
 ---
 
-## Task 8: Deploy
+## Task 5: Deploy
 
-- [ ] **Step 1: Final pre-merge sanity**
+Operational task — no commits.
+
+- [ ] **Step 1: Pre-merge sanity**
 
 ```bash
-git status                # working tree clean
-git log --oneline main..HEAD  # should show exactly 3 new commits on top of f8282f4 + the spec commit(s)
-uv run pytest -q          # ~770 tests pass
-uv run ruff check .       # lint clean
-uv run ruff format --check .  # format clean
+git status                    # working tree clean
+git log --oneline main..HEAD  # should show exactly 3 new commits (1 per Task 1-3) + the spec + plan commits
+uv run pytest -q              # ~770 tests pass
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
 ```
 
-If any of these fail, fix before continuing.
+All must pass. Stop on any failure.
 
 - [ ] **Step 2: Terraform apply (alarm only)**
 
@@ -1382,16 +1482,16 @@ cd terraform
 terraform plan -out=/tmp/post-deploy-tuning.tfplan
 ```
 
-Expected: `Plan: 1 to add, 0 to change, 0 to destroy.` (the new `FileProcessor-DuplicateEventSpike` alarm).
+Expected: `Plan: 1 to add, 0 to change, 0 to destroy.` The single addition is `aws_cloudwatch_metric_alarm.file_processor_duplicate_event_spike`.
 
 ```bash
 terraform apply /tmp/post-deploy-tuning.tfplan
 cd ..
 ```
 
-Expected: Apply complete. 1 resource added. The alarm starts in `INSUFFICIENT_DATA` state — that's expected (no data yet for the new metric).
+Expected: 1 resource added. The alarm starts in `INSUFFICIENT_DATA` state (no metric data yet — expected).
 
-- [ ] **Step 3: Merge branch to `main`**
+- [ ] **Step 3: Merge to `main`**
 
 ```bash
 git checkout main
@@ -1399,32 +1499,32 @@ git pull
 git merge --no-ff fix/post-deploy-tuning
 ```
 
-Expected: Fast-forward not possible (because `--no-ff`); merge commit created. Resolve any conflicts (should not be any if main hasn't moved).
+Expected: merge commit created.
 
-- [ ] **Step 4: Push to origin — triggers GitHub Actions auto-deploy**
+- [ ] **Step 4: Push and watch the GitHub Actions deploy**
 
 ```bash
 git push origin main
-```
-
-Expected: GitHub Actions starts a workflow that:
-- Builds Lambda zips
-- Uploads to `gega-code-deployment-bucket`
-- Runs `aws lambda update-function-code` for `sbm-files-ingester`
-
-Watch the run:
-```bash
 gh run watch
 ```
 
-Expected: Workflow succeeds. Lambda code version updated.
+Expected: workflow succeeds.
 
-- [ ] **Step 5: Smoke check the deployed Lambda**
+- [ ] **Step 5: Wait for Lambda update to complete (NOT the GH workflow)**
+
+The GitHub Actions workflow returns success when `aws lambda update-function-code` returns, but Lambda then transitions through `InProgress` → `Successful` asynchronously. Wait for the active state before smoke-testing:
 
 ```bash
-# Confirm the new code is live by checking a recent Lambda log group for
-# the new s3_duplicate_event log line (will only appear when an actual
-# duplicate fires — but the code path is exercised on every cold start).
+aws lambda wait function-updated \
+  --function-name sbm-files-ingester \
+  --region ap-southeast-2
+```
+
+Expected: returns silently when the function transitions to `Successful`.
+
+- [ ] **Step 6: Smoke check — confirm new code is live**
+
+```bash
 aws logs filter-log-events \
   --log-group-name /aws/lambda/sbm-files-ingester \
   --start-time $(($(date +%s) * 1000 - 600000)) \
@@ -1434,13 +1534,11 @@ aws logs filter-log-events \
   --query 'events[*].message' --output text
 ```
 
-Expected: A recent `INIT_REPORT Init Duration` line confirming a cold start happened on the new code.
+Expected: a recent `INIT_REPORT Init Duration` line indicating a cold start on the new code in the last 10 minutes.
 
-- [ ] **Step 6: Run Task 7 (recovery) now that the deploy is live.**
+- [ ] **Step 7: Run Task 4 (file recovery) now that deploy is confirmed live.**
 
-- [ ] **Step 7: Watch for 12 hours**
-
-After 12 hours (next-day check), verify:
+- [ ] **Step 8: 12-hour CloudWatch watch (next-day check)**
 
 ```bash
 # 1) MaxRetriesExceeded should be near zero.
@@ -1463,7 +1561,8 @@ aws cloudwatch get-metric-statistics \
   --end-time $(date -u '+%Y-%m-%dT%H:%M:%SZ') \
   --region ap-southeast-2
 
-# 3) idempotent_cache_hit log lines should now contain source_bucket / source_key.
+# 3) idempotent_cache_hit log lines should now contain source_bucket / source_key
+#    (Forms A and B) or at minimum idempotency_key (Form C).
 aws logs filter-log-events \
   --log-group-name /aws/lambda/sbm-files-ingester \
   --start-time $(($(date +%s) * 1000 - 43200000)) \
@@ -1474,11 +1573,11 @@ aws logs filter-log-events \
 ```
 
 Expected:
-1. `MaxRetriesExceeded` Sum ≤ a small number (single digits over 12h, ideally 0)
+1. `MaxRetriesExceeded` Sum near 0 (single digits or less over 12h)
 2. `S3DuplicateEvent` Sum > 0, < 50% of `Invocations`
-3. `idempotent_cache_hit` log entries are JSON with top-level `source_bucket` and `source_key` keys
+3. `idempotent_cache_hit` log entries are valid JSON with the expected fields
 
-- [ ] **Step 8: Cleanup the local branch (optional)**
+- [ ] **Step 9: Cleanup local branch (optional)**
 
 ```bash
 git branch -d fix/post-deploy-tuning
@@ -1490,18 +1589,16 @@ git branch -d fix/post-deploy-tuning
 
 If post-deploy monitoring reveals a regression:
 
-- **Code rollback:** revert the Lambda to the previous code version:
+- **Code rollback:**
   ```bash
-  # Find the prior zip key:
   aws s3 ls s3://gega-code-deployment-bucket/sbm-files-ingester/ --region ap-southeast-2 | sort
-  # Apply:
   aws lambda update-function-code \
     --function-name sbm-files-ingester \
     --s3-bucket gega-code-deployment-bucket \
     --s3-key sbm-files-ingester/<previous-zip-key>.zip \
     --region ap-southeast-2
   ```
-- **Terraform rollback:** if only the alarm misbehaves:
+- **Terraform rollback** (alarm only, if it misbehaves):
   ```bash
   cd terraform
   terraform destroy -target=aws_cloudwatch_metric_alarm.file_processor_duplicate_event_spike
@@ -1510,10 +1607,11 @@ If post-deploy monitoring reveals a regression:
 
 ---
 
-## Self-Review Checklist (run AFTER plan complete)
+## Self-Review Checklist
 
-- [x] Spec coverage: Tasks 1+2+3 cover Issue 1 (404 fix + metric + alarm + REQUEUE_DELAY revert). Tasks 4+5 cover Issue 2 (Synergy parser + interval.py cleanup + fixture move + orphan-test removal). Task 6 covers Issue 3 (cache-hit log with both implementation paths). Task 7 covers recovery. Task 8 covers deploy + monitoring.
-- [x] Placeholder scan: No "TBD", "TODO", "implement later", "similar to" — all code blocks fully written.
-- [x] Type consistency: `StabilityResult` referenced consistently in Tasks 1 and 2. `DataRecord.idempotency_key` and `data.get_payload()` consistent in Task 6 spec and implementation. `synergy_wa_meter_data_parser` name consistent across Tasks 4, 5.
-- [x] Commit structure matches spec: 3 commits (one per fix) on `fix/post-deploy-tuning`, plus the existing spec commits.
-- [x] Forward-only on `f8282f4`: REQUEUE_DELAY 90→60 revert and WA interval.py removal happen as normal commits (not `git reset`).
+- [x] **Spec coverage:** Task 1 → Issue 1 (404, metric, alarm, REQUEUE_DELAY revert). Task 2 → Issue 2 (Synergy parser, fixture move, interval.py cleanup, orphan test removal). Task 3 → Issue 3 (cache-hit log, with three implementation forms based on Task 0's verified API findings). Task 4 → recovery. Task 5 → deploy + monitoring + rollback.
+- [x] **No placeholders:** every code block is complete; no "TBD" / "similar to" / "implement later".
+- [x] **Type consistency:** `StabilityResult` used consistently in Task 1 (Parts A & B) and referenced in Task 1 Step 4 test mock. `DataRecord.idempotency_key` / `data.get_payload()` consistent in Task 3 Forms A/B; Form C is explicit about omitting `source_bucket`/`source_key`. `synergy_wa_meter_data_parser` consistent across Task 2 Steps 4-6.
+- [x] **One commit per Task** (Tasks 1-3 = 3 commits total). Each Task's commit is the last step. No `git commit --amend` across Tasks. Subagent-driven mode: each subagent owns one Task and produces exactly one commit.
+- [x] **Forward-only on `f8282f4`:** `REQUEUE_DELAY 90→60` revert and `interval.py` WA removal happen as normal commits inside Task 1 and Task 2 respectively. No `git reset`.
+- [x] **Task 0 verifies the critical assumption:** `DataRecord.get_payload()` behaviour determines Task 3's path (Form A/B/C). Fallback (Form C) exists if the API does not work as initially inferred.
