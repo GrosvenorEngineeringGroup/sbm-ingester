@@ -137,3 +137,55 @@ resource "aws_cloudwatch_metric_alarm" "idempotent_skip_spike" {
     TableName = aws_dynamodb_table.sbm_ingester_idempotency.name
   }
 }
+
+# Anomaly detector for the S3DuplicateEvent metric introduced 2026-05-12.
+# Normal baseline expected: ~30 events/day (~5% of invocations) from
+# S3's at-least-once ObjectCreated delivery. Alarm fires when the
+# duplicates/invocations ratio crosses 50% over a 2-hour evaluation —
+# that level indicates either an S3 misbehavior or that our
+# move-after-process logic stopped working.
+resource "aws_cloudwatch_metric_alarm" "file_processor_duplicate_event_spike" {
+  alarm_name          = "FileProcessor-DuplicateEventSpike"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  threshold           = 0.5
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "S3DuplicateEvent / Invocations ratio above 50% — investigate move-after-process logic or S3 event configuration"
+  alarm_actions       = [aws_sns_topic.sbm_alerts.arn]
+
+  metric_query {
+    id          = "ratio"
+    expression  = "duplicates / invocations"
+    label       = "S3DuplicateEvent ratio"
+    return_data = true
+  }
+
+  metric_query {
+    id          = "duplicates"
+    return_data = false
+    metric {
+      namespace   = "SBM/Ingester"
+      metric_name = "S3DuplicateEvent"
+      period      = 3600
+      stat        = "Sum"
+    }
+  }
+
+  metric_query {
+    id          = "invocations"
+    return_data = false
+    metric {
+      namespace   = "AWS/Lambda"
+      metric_name = "Invocations"
+      period      = 3600
+      stat        = "Sum"
+      dimensions = {
+        FunctionName = aws_lambda_function.sbm_files_ingester.function_name
+      }
+    }
+  }
+
+  tags = {
+    Name = "FileProcessor-DuplicateEventSpike"
+  }
+}
