@@ -42,12 +42,17 @@ from functions.file_processor.persistence import InstrumentedDynamoDBPersistence
 
 @pytest.fixture
 def idempotency_table():
+    # Provides the moto mock_aws() context so DynamoDBPersistenceLayer.__init__
+    # can create a boto3 client without hitting real AWS. The table itself is
+    # not queried in these tests because save_inprogress is fully patched —
+    # but its KeySchema is aligned with production (key_attr="file_key") so
+    # future tests exercising real writes won't silently fail.
     with mock_aws():
         ddb = boto3.client("dynamodb", region_name="ap-southeast-2")
         ddb.create_table(
             TableName="sbm-ingester-idempotency",
-            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "file_key", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "file_key", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         yield ddb
@@ -97,6 +102,7 @@ class TestIdempotentCacheHitLog:
     def test_emits_structured_json_with_source_fields(self, captured_log_stream, idempotency_table) -> None:
         layer = InstrumentedDynamoDBPersistenceLayer(
             table_name="sbm-ingester-idempotency",
+            key_attr="file_key",
         )
         data = {"bucket": "sbm-file-ingester", "key": "newTBP/foo.csv"}
 
@@ -120,6 +126,7 @@ class TestIdempotentCacheHitLog:
     def test_no_log_on_successful_save(self, captured_log_stream, idempotency_table) -> None:
         layer = InstrumentedDynamoDBPersistenceLayer(
             table_name="sbm-ingester-idempotency",
+            key_attr="file_key",
         )
         with patch.object(DynamoDBPersistenceLayer, "save_inprogress", return_value=None):
             layer.save_inprogress(data={"bucket": "b", "key": "k"})
