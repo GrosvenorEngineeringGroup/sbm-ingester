@@ -416,23 +416,6 @@ class TestIntervalParserOnRealFixtures:
         assert result.reason == "no_data_sentinel"
         assert result.dataframes == []
 
-    def test_wa_no_data_found_fixture_returns_processed_empty(self) -> None:
-        """WA endpoint emits a different sentinel shape than AU/NZ.
-
-        Header is 'Unnamed: 0,NMI,Unnamed: 2' (pandas-style placeholders from
-        a malformed source header), followed by two rows; the 'No data found'
-        marker appears in the data area. Parser must classify as
-        processed_empty / no_data_sentinel — not parse_failed.
-        """
-        from shared.parsers.optima.interval import interval_parser
-
-        path = str(self.FIXTURE_DIR / "wa_no_data_found.csv")
-        result = interval_parser(path)
-
-        assert result.status == "processed_empty"
-        assert result.reason == "no_data_sentinel"
-        assert result.dataframes == []
-
 
 class TestIntervalParserCheapGate:
     """Cheap relevance gate must run before any pd.read_csv full parse."""

@@ -27,24 +27,17 @@ logger = Logger(service="optima-interval-parser", child=True)
 
 
 def _is_no_data_sentinel(raw_df: pd.DataFrame) -> bool:
-    """Detect AU/NZ ('No data is available') and WA ('No data found') sentinels."""
-    # AU/NZ endpoint sentinel: single row with BuyerShortName == "No data is available"
-    # and every other column blank.
+    """Detect the AU/NZ 'No data is available' sentinel.
+
+    A single-row CSV with ``BuyerShortName == "No data is available"`` and every
+    other column blank.
+    """
     if len(raw_df) == 1 and "BuyerShortName" in raw_df.columns:
         buyer_short_name = raw_df["BuyerShortName"].iloc[0]
         if pd.notna(buyer_short_name) and str(buyer_short_name).strip() == "No data is available":
             other_values = raw_df.drop(columns=["BuyerShortName"]).iloc[0]
             non_blank_values = other_values.notna() & other_values.astype(str).str.strip().ne("")
             if not non_blank_values.any():
-                return True
-
-    # WA endpoint sentinel: pandas inferred "Unnamed:" columns around an "NMI" column
-    # because the source CSV header was malformed-but-recognisable; at most two data
-    # rows; one cell contains the literal "No data found". Bounded row count rules
-    # out legitimate interval files that might happen to contain the string.
-    if "NMI" in raw_df.columns and len(raw_df) <= 2:
-        for col in raw_df.columns:
-            if raw_df[col].astype(str).str.strip().eq("No data found").any():
                 return True
 
     return False
@@ -59,11 +52,8 @@ def interval_parser(file_name: str) -> ParserOutcome:
     except (OSError, UnicodeDecodeError) as e:
         raise NotRelevantParser(f"Not readable as an Optima interval CSV: {e}") from e
 
-    # All three column markers must appear in the header row, OR the file matches
-    # the WA endpoint's "No data found" sentinel header (different shape, no Date /
-    # Start Time / Identifier columns — pandas inferred "Unnamed:" placeholders).
-    is_wa_sentinel_header = all(token in first_line for token in ("Unnamed: 0", "NMI", "Unnamed: 2"))
-    if not (all(token in first_line for token in ("Date", "Start Time", "Identifier")) or is_wa_sentinel_header):
+    # All three column markers must appear in the header row.
+    if not all(token in first_line for token in ("Date", "Start Time", "Identifier")):
         raise NotRelevantParser("Not an Optima interval CSV")
 
     # Gate passed — full parse. Failures here indicate a corrupt body of a

@@ -19,10 +19,12 @@ from shared.parsers.optima.interval import interval_parser
 from shared.parsers.optima.racv_billing import racv_billing_parser
 from shared.parsers.racv.elec import racv_elec_parser
 from shared.parsers.racv.noosa_solar import noosa_solar_parser
+from shared.parsers.synergy.wa_meter_data import synergy_wa_meter_data_parser
 
 logger = Logger(service="non-nem-parsers", child=True)
 
 PARSERS = [
+    synergy_wa_meter_data_parser,
     noosa_solar_parser,
     envizi_vertical_parser_water,
     envizi_vertical_parser_electricity,
