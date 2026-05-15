@@ -111,9 +111,12 @@ tests/unit/fixtures/nem12_real*.csv
 # Local test output
 output/
 
-# Local data files
-data/*.csv
+# Local data files (entire directory — was data/*.csv; broadened on 2026-05-15)
+/data/
 tmp_optima_test/
+
+# AI/agent planning artifacts (specs + plans authored alongside features)
+docs/superpowers/
 
 .agents/
 .conductor/
