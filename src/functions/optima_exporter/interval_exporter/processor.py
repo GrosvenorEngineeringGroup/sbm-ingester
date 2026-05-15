@@ -7,6 +7,7 @@ from typing import Any
 from aws_lambda_powertools import Logger
 from optima_shared.auth import login_bidenergy
 from optima_shared.config import MAX_WORKERS, OPTIMA_DAYS_BACK, S3_UPLOAD_PREFIX, get_project_config
+from optima_shared.dates import PREVIOUS_MONTH_MODE, previous_month_range
 from optima_shared.dynamodb import get_site_by_nmi, get_sites_for_project
 
 from interval_exporter.downloader import download_interval_zip, extract_first_csv
@@ -117,6 +118,7 @@ def process_export(
     nmi: str | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     """
     Process interval export for a project.
@@ -126,12 +128,21 @@ def process_export(
         nmi: Optional single NMI to export
         start_date: Optional start date (YYYY-MM-DD)
         end_date: Optional end date (YYYY-MM-DD)
+        mode: Optional mode flag. "previous_month" overrides start/end dates
+            and OPTIMA_DAYS_BACK to cover the full previous calendar month.
 
     Returns:
         Response dict with statusCode and body. 200 = all OK; 207 = partial
         failure; 4xx = early reject (no retry needed by EventBridge).
     """
     project = project.lower()
+
+    if mode == PREVIOUS_MONTH_MODE:
+        start_date, end_date = previous_month_range()
+        logger.info(
+            "Mode previous_month: overriding date range",
+            extra={"project": project, "start_date": start_date, "end_date": end_date},
+        )
 
     parsed_start_date = _parse_iso_date(start_date, "start_date") if start_date else None
     if isinstance(parsed_start_date, dict):

@@ -389,7 +389,7 @@ resource "aws_lambda_function" "optima_demand_exporter" {
       S3_UPLOAD_PREFIX = "newTBP/"
 
       # Demand export configuration
-      OPTIMA_DAYS_BACK   = "1"
+      OPTIMA_DAYS_BACK   = "3"
       OPTIMA_MAX_WORKERS = "20"
     })
   }
@@ -443,6 +443,44 @@ resource "aws_scheduler_schedule" "optima_racv_demand" {
   }
 }
 
+# Monthly re-ingest of the previous calendar month — fires 01:00 Sydney on the 1st
+resource "aws_scheduler_schedule" "optima_bunnings_demand_monthly" {
+  name       = "optima-bunnings-demand-monthly"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 1 1 * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_demand_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "bunnings", mode = "previous_month" })
+  }
+}
+
+resource "aws_scheduler_schedule" "optima_racv_demand_monthly" {
+  name       = "optima-racv-demand-monthly"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  # Staggered 1h after bunnings to avoid 4 concurrent BidEnergy pulls
+  schedule_expression          = "cron(0 2 1 * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_demand_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "racv", mode = "previous_month" })
+  }
+}
+
 # CloudWatch alarm — mirror existing optima_nem12_errors alarm
 resource "aws_cloudwatch_metric_alarm" "optima_demand_errors" {
   alarm_name          = "optima-demand-exporter-errors"
@@ -492,7 +530,7 @@ resource "aws_lambda_function" "optima_interval_exporter" {
       POWERTOOLS_SERVICE_NAME = "optima-interval-exporter"
       S3_UPLOAD_BUCKET        = "sbm-file-ingester"
       S3_UPLOAD_PREFIX        = "newTBP/"
-      OPTIMA_DAYS_BACK        = "1"
+      OPTIMA_DAYS_BACK        = "3"
       OPTIMA_MAX_WORKERS      = "20"
     })
   }
@@ -543,6 +581,48 @@ resource "aws_scheduler_schedule" "optima_racv_interval" {
     arn      = aws_lambda_function.optima_interval_exporter.arn
     role_arn = aws_iam_role.optima_scheduler_role.arn
     input    = jsonencode({ project = "racv" })
+  }
+
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
+}
+
+# Monthly re-ingest of the previous calendar month — fires 01:00 Sydney on the 1st
+resource "aws_scheduler_schedule" "optima_bunnings_interval_monthly" {
+  name       = "optima-bunnings-interval-monthly"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 1 1 * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_interval_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "bunnings", mode = "previous_month" })
+  }
+
+  depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]
+}
+
+resource "aws_scheduler_schedule" "optima_racv_interval_monthly" {
+  name       = "optima-racv-interval-monthly"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  # Staggered 1h after bunnings to avoid 4 concurrent BidEnergy pulls
+  schedule_expression          = "cron(0 2 1 * ? *)"
+  schedule_expression_timezone = "Australia/Sydney"
+
+  target {
+    arn      = aws_lambda_function.optima_interval_exporter.arn
+    role_arn = aws_iam_role.optima_scheduler_role.arn
+    input    = jsonencode({ project = "racv", mode = "previous_month" })
   }
 
   depends_on = [aws_iam_role_policy.optima_scheduler_invoke_lambda]

@@ -24,6 +24,7 @@ class TestLambdaHandler:
                 nmi="Optima_3117512760",
                 start_date="2026-04-29",
                 end_date="2026-04-29",
+                mode=None,
             )
             assert result["statusCode"] == 200
 
@@ -48,4 +49,5 @@ class TestLambdaHandler:
                 nmi=None,
                 start_date=None,
                 end_date=None,
+                mode=None,
             )
