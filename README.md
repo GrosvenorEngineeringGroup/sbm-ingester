@@ -1,6 +1,6 @@
 # sbm-ingester
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![AWS Lambda](https://img.shields.io/badge/AWS-Lambda-FF9900?logo=awslambda&logoColor=white)
 ![AWS Glue](https://img.shields.io/badge/AWS-Glue-FF9900?logo=amazonaws&logoColor=white)
@@ -33,22 +33,24 @@ SBM Ingester is part of the Sustainable Building Manager (SBM) platform. It hand
 - **NEM12** - Australian interval meter data (30-minute intervals)
 - **NEM13** - Accumulation meter data
 - **Envizi** - Water and electricity CSV exports
-- **Optima** - Generation data and usage reports
+- **Optima / BidEnergy** - Interval / demand / billing CSVs (4 exporter Lambdas)
+- **RACV** - Elec CSV + Noosa Solar (Fronius inverter) CSV with SkySpark point IDs
+- **Synergy WA** - WA Meter Data sentinel CSVs (no-data days)
 - **Green Square ComX** - Schneider private wire meters
 
 Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, and maps meter readings to Neptune graph database sensor IDs.
 
-### Key Features (v0.6.0)
+### Key Features (v0.7.0)
 
-- **AWS Lambda Powertools** - Structured JSON logging, CloudWatch metrics
-- **X-Ray Tracing** - Optional distributed tracing (enabled per Lambda)
-- **Idempotency** - DynamoDB-backed duplicate processing prevention
-- **Batch Processing** - Configurable buffer size for optimized S3 writes
+- **Per-file ingest boundary** - `ingest_file` orchestrator wrapped by Powertools `@idempotent_function` (12 h TTL). All side effects live inside the boundary, so duplicate SQS deliveries hit the cache instead of replaying state changes.
+- **Structured `ParserOutcome` contract** - Every parser returns a typed `(status, reason, dataframes, accumulators)` dataclass. `derive_final()` collapses post-processing counters into the final disposition. See `docs/ARCHITECTURE.md` for the full contract.
+- **AWS Lambda Powertools** - Structured JSON logging, CloudWatch metrics, X-Ray tracing
+- **Atomic Hudi-source writes** - `HudiSourceCsvWriter` with `flush()` / `commit()` / `abort()` lifecycle on a per-writer staging prefix
+- **File Stability Check** - Two-HEAD streaming-uploader check; HEAD 404 → `S3DuplicateEvent` metric (at-least-once S3 → SQS handling)
 - **Weekly Archiving** - Automated S3 file archiving with concurrent processing (50 workers)
-- **File Stability Check** - Prevents processing of partially uploaded streaming files
 - **Glue ETL Pipeline** - Apache Hudi data lake integration with automated batch import
-- **Optima Exporter** - Automated BidEnergy data export with detailed error diagnostics
-- **CIM Report Exporter** - Browser automation for AFDD ticket report downloads using Playwright
+- **Optima Exporter** - 4 Lambdas: NEM12 (manual/backup), interval (primary), demand, billing
+- **CIM Report Exporter** - Browser automation for AFDD ticket report downloads using Playwright (Docker/ECR)
 
 ## Install
 
@@ -112,25 +114,31 @@ curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem1
 
 ```mermaid
 flowchart LR
-    subgraph Input
-        S3_IN[("S3: newTBP/")]
+    subgraph Input["Input (sbm-file-ingester)"]
+        S3_IN[("newTBP/")]
     end
 
-    subgraph Processing
-        SQS[["SQS Queue"]]
-        Lambda["Lambda<br/>sbm-files-ingester"]
-        DDB[("DynamoDB<br/>Idempotency")]
+    subgraph Processing["File Processor"]
+        SQS[["SQS<br/>batch_size=1<br/>maxReceiveCount=3"]]
+        Lambda["sbm-files-ingester<br/>(ingest_file boundary)"]
+        DDB[("DynamoDB<br/>Idempotency<br/>(12h TTL)")]
     end
 
-    subgraph Output
-        S3_OK[("S3: newP/<br/>processed")]
-        S3_IRR[("S3: newIrrevFiles/<br/>no mapping")]
-        S3_ERR[("S3: newParseErr/<br/>parse failed")]
-        S3_DATA[("S3: hudibucketsrc/<br/>sensorDataFiles")]
+    subgraph Mappings["NEM12 Mappings (hourly refresh)"]
+        MapLambda["nem12-mappings-to-s3<br/>(hourly Lambda)"]
+        Neptune[("Neptune<br/>source of truth")]
+        MapJSON[("S3: nem12_mappings.json")]
     end
 
-    subgraph Data Sources
-        Neptune[("Neptune<br/>NEM12 Mappings")]
+    subgraph Disposition["Source-File Disposition"]
+        S3_OK[("newP/<br/>processed*")]
+        S3_IRR[("newIrrevFiles/<br/>unmapped")]
+        S3_ERR[("newParseErr/<br/>parse_failed")]
+    end
+
+    subgraph DataLake["Hudi Data Lake (hudibucketsrc)"]
+        S3_STAGE[("sensorDataFilesStaging/")]
+        S3_DATA[("sensorDataFiles/")]
     end
 
     subgraph Observability
@@ -138,16 +146,20 @@ flowchart LR
         CW["CloudWatch<br/>Logs & Metrics"]
     end
 
-    S3_IN -->|"S3 Event"| SQS
+    S3_IN -->|"ObjectCreated<br/>(at-least-once)"| SQS
     SQS -->|"Trigger"| Lambda
-    Lambda <-->|"Check/Store"| DDB
-    Lambda -->|"Success"| S3_OK
-    Lambda -->|"No Mapping"| S3_IRR
-    Lambda -->|"Parse Error"| S3_ERR
-    S3_OK -->|"Write CSV"| S3_DATA
-    Neptune -.->|"Lookup"| Lambda
+    Lambda -. "requeue if unstable<br/>(delay=60s, max 3)" .-> SQS
+    Lambda <-->|"Check / Store"| DDB
+    Lambda -->|"Read"| MapJSON
+    MapLambda -->|"Query"| Neptune
+    MapLambda -->|"Write"| MapJSON
+    Lambda -->|"Stage rows"| S3_STAGE
+    S3_STAGE -->|"commit()"| S3_DATA
+    Lambda -->|"Move (processed / empty / external)"| S3_OK
+    Lambda -->|"Move (unmapped)"| S3_IRR
+    Lambda -->|"Move (parse_failed)"| S3_ERR
     Lambda -.->|"Trace"| XRay
-    Lambda -.->|"Log/Metrics"| CW
+    Lambda -.->|"Logs / Metrics<br/>(incl. S3DuplicateEvent)"| CW
 ```
 
 ### Lambda Functions
@@ -204,11 +216,17 @@ EventBridge (daily 8 AM Sydney) → Lambda (cim-report-exporter)
 
 ### File Processing Outcomes
 
-| Outcome | Destination | Description |
-|---------|-------------|-------------|
-| Success | `newP/` | Parsed successfully and mapped to Neptune ID |
-| No Mapping | `newIrrevFiles/` | Parsed but no Neptune ID found |
-| Parse Error | `newParseErr/` | Failed to parse with any parser |
+Every parser returns a `ParserOutcome` with one of 5 statuses; the file processor maps each status to a source-file destination:
+
+| `ParserOutcome.status` | Destination | Description |
+|---|---|---|
+| `processed` | `newP/` | Parsed successfully and at least one row written to the Hudi source |
+| `processed_empty` | `newP/` | File was understood but yielded no usable rows (e.g., vendor "no data available" sentinel, empty NEM envelope) |
+| `processed_external` | `newP/` | Parser wrote rows to a non-Hudi destination (currently only Optima billing → `gegoptimareports`) |
+| `unmapped` | `newIrrevFiles/` | Parsed and produced candidate rows, but no meter identifier resolved to a Neptune ID |
+| `parse_failed` | `newParseErr/` | Caught `ParserError` / `ProcessingError` — deterministic content failure, cached for 12 h TTL so retries do not replay |
+
+The status/reason combinations and the `derive_final()` disposition ladder are documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). (Internal design specs live under `docs/superpowers/specs/` — gitignored; ask a maintainer for access.)
 
 ### S3 Archive Structure
 
@@ -237,8 +255,11 @@ sbm-ingester/
 ├── src/
 │   ├── __init__.py              # Package metadata (version, author)
 │   ├── functions/
-│   │   ├── file_processor/      # Main ingester Lambda
-│   │   │   └── app.py
+│   │   ├── file_processor/      # Main ingester Lambda (per-file refactor)
+│   │   │   ├── app.py           # SQS adapter + stability check + duplicate-event handling
+│   │   │   ├── pipeline.py      # `ingest_file` orchestrator (idempotent boundary)
+│   │   │   ├── csv_writer.py    # `HudiSourceCsvWriter` (flush/commit/abort lifecycle)
+│   │   │   └── persistence.py   # `InstrumentedDynamoDBPersistenceLayer` (cache-hit logging)
 │   │   ├── nem12_exporter/      # NEM12 → Neptune mappings exporter Lambda
 │   │   │   └── app.py
 │   │   ├── redrive_handler/     # Redrive Lambda
@@ -248,42 +269,51 @@ sbm-ingester/
 │   │   ├── glue_trigger/        # Glue trigger Lambda
 │   │   │   └── app.py
 │   │   ├── optima_exporter/     # Optima/BidEnergy exporter (4 Lambdas)
-│   │   │   ├── optima_shared/   # Auth, config, DynamoDB
-│   │   │   ├── nem12_exporter/  # NEM12 CSV download Lambda
-│   │   │   ├── billing_exporter/ # Billing report trigger Lambda
-│   │   │   ├── demand_exporter/ # Demand profile CSV download Lambda
-│   │   │   └── interval_exporter/ # Interval CSV download Lambda
+│   │   │   ├── optima_shared/      # Auth, config, DynamoDB
+│   │   │   ├── nem12_exporter/     # NEM12 CSV download Lambda (manual/backup)
+│   │   │   ├── interval_exporter/  # Interval CSV download Lambda (primary daily source)
+│   │   │   ├── demand_exporter/    # Demand profile CSV download Lambda
+│   │   │   └── billing_exporter/   # Billing report trigger Lambda
 │   │   └── cim_exporter/        # CIM AFDD report exporter (Docker)
 │   │       ├── Dockerfile
 │   │       ├── requirements.txt
 │   │       ├── cim_shared/      # Config utilities
 │   │       └── report_exporter/ # Playwright automation + emailer
 │   ├── glue/
-│   │   └── hudi_import/         # Glue ETL job
+│   │   └── hudi_import/         # Glue ETL job (PySpark, Hudi upsert)
 │   │       └── script.py
 │   └── shared/
 │       ├── __init__.py          # Public API exports
-│       ├── common.py            # Constants (S3 paths, log groups)
-│       ├── nem_adapter.py       # NEM12/NEM13 parser adapter
-│       └── non_nem_parsers.py   # Envizi, Optima, RACV parsers
+│       ├── common.py            # Constants (INPUT_BUCKET, HUDI_BUCKET, S3 prefixes, log groups)
+│       ├── source_file.py       # `SourceFile` dataclass (idempotency key payload)
+│       ├── audit.py             # Audit sidecar helpers
+│       ├── nem_adapter.py       # NEM12/NEM13 parser adapter (nemreader)
+│       └── parsers/             # Vendor-scoped non-NEM parser subpackages
+│           ├── outcome.py       # `ParserOutcome` contract + `derive_final()`
+│           ├── dispatcher.py    # `dispatch_non_nem()` cascade
+│           ├── envizi/          # Water / electricity
+│           ├── optima/          # Interval / demand / billing CSVs
+│           ├── racv/            # RACV Elec + Noosa Solar (Fronius)
+│           ├── synergy/         # Synergy WA Meter Data (sentinel handler)
+│           └── green_square/    # Green Square ComX
 ├── tests/
 │   └── unit/
 │       ├── conftest.py          # Shared fixtures
 │       ├── fixtures/            # Test data files
 │       │   ├── nem12_*.csv      # NEM12/NEM13 sample meter data
 │       │   └── optima_interval/ # Real BidEnergy interval CSVs (AU NMI, NZ ICP, multi-month, empty-data sentinel)
-│       └── test_*.py            # Test modules (525 tests)
+│       └── test_*.py            # Test modules (~785 tests)
 ├── scripts/
 │   ├── process_nem12_locally.py            # Local NEM12 processing
-│   ├── import_optima_config_to_dynamodb.py # Import Optima site config
+│   ├── import_optima_config_to_dynamodb.py # Import Optima site config to DynamoDB
 │   ├── backfill_country_to_dynamodb.py     # Backfill country field in DynamoDB
-│   ├── billing_csv_to_hudi.py              # Convert Optima billing CSV → Hudi
-│   ├── export_billing_to_hudi.py           # Export billing data to Hudi
-│   ├── import_billing_csv.py               # Import billing CSV files
 │   ├── import_billing_points.py            # Import billing point IDs
-│   ├── fetch_billing_point_ids.py          # Fetch billing point IDs from Neptune
-│   ├── generate_billing_points_csv.py      # Generate billing points CSV
+│   ├── import_demand_points.py             # Import demand point IDs
+│   ├── generate_demand_points.py           # Generate demand-points CSV
 │   ├── billing_neptune_helper.py           # Neptune query helpers for billing
+│   ├── glue_delete_offcadence_rows.py      # Off-cadence row purge (Hudi SOP)
+│   ├── glue_delete_offcadence_rows.sh      # Wrapper script for Glue purge job
+│   ├── cleanup_configs/                    # Off-cadence purge configs (e.g. bunnings.conf)
 │   ├── deploy.sh                           # Full deployment script
 │   ├── deploy-lambda.sh                    # Local Lambda zip deployment
 │   ├── deploy-cim-exporter.sh              # CIM Docker image deployment
@@ -296,9 +326,11 @@ sbm-ingester/
 │   ├── monitoring.tf            # Alarms and SNS
 │   ├── logs.tf                  # CloudWatch Log Groups
 │   └── ...                      # Other Terraform modules
-├── docs/                        # Documentation
-├── pyproject.toml               # Project config (uv, ruff, pytest)
-└── CHANGELOG.md                 # Version history
+├── docs/
+│   ├── ARCHITECTURE.md          # Post-refactor architecture reference (per-file ingest)
+│   ├── LEFTHOOK.md              # Git hook configuration
+│   └── CLEANUP_OFFCADENCE_ROWS.md  # Off-cadence row purge SOP
+└── pyproject.toml               # Project config (uv, ruff, pytest)
 ```
 
 ## Scripts
@@ -317,9 +349,9 @@ Local deployment script for quick iterations during development.
 ./scripts/deploy-lambda.sh all
 ```
 
-**Available targets:** `ingester`, `redrive`, `nem12-mappings`, `weekly-archiver`, `glue-trigger`, `optima-exporter`, `cim-exporter`, `all`
+**Available targets:** `ingester`, `redrive`, `nem12` / `nem12-mappings`, `archiver` / `weekly-archiver`, `optima` / `optima-exporter`, `all`
 
-**Note:** `cim-exporter` uses Docker container deployment via ECR, not zip packages.
+**Note:** `cim-exporter` uses its own script (`./scripts/deploy-cim-exporter.sh`) because it's a Docker container image via ECR, not a zip package. `glue-trigger` is not deployed via this script — it's a small Lambda that ships with the main ingester package or via Terraform.
 
 ### Process NEM12 Locally
 
@@ -339,8 +371,11 @@ uv run scripts/process_nem12_locally.py /path/to/file.csv
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `BUCKET_NAME` | Input S3 bucket | `sbm-file-ingester` |
-| `BATCH_SIZE` | Rows to buffer before flushing to S3 CSV | `50000` |
+| `SQS_QUEUE_URL` | **Required** at import time — main queue URL for requeueing unstable files (KeyError on import otherwise) | _(required)_ |
+| `INPUT_BUCKET` | Input S3 bucket (constant in `src/shared/common.py`, not env-driven) | `sbm-file-ingester` |
+| `MAX_REQUEUE_RETRIES` | Max requeue attempts for unstable files (aligned with SQS `maxReceiveCount=3`) | `3` |
+| `REQUEUE_DELAY_SECONDS` | SQS `DelaySeconds` when requeueing an unstable file | `60` |
+| `CSV_FLUSH_ROW_THRESHOLD` | Rows to buffer in `HudiSourceCsvWriter` before flushing to S3 | `50000` |
 
 ### CloudWatch Log Groups
 
@@ -355,16 +390,16 @@ uv run scripts/process_nem12_locally.py /path/to/file.csv
 ### AWS Resources
 
 - **Region:** ap-southeast-2
-- **S3 Buckets:** `sbm-file-ingester` (input), `hudibucketsrc` (output)
-- **SQS:** `sbm-files-ingester-queue` (900s visibility), `sbm-files-ingester-dlq` (14 day retention)
-- **DynamoDB:** `sbm-ingester-idempotency` (duplicate prevention, 24h TTL)
-- **Neptune:** NEM12 ID → sensor ID mappings
-- **SNS:** `sbm-ingester-alerts` (error notifications)
+- **S3 Buckets:** `sbm-file-ingester` (input), `hudibucketsrc` (output, with `sensorDataFilesStaging/` + `sensorDataFiles/` for two-phase commit)
+- **SQS:** `sbm-files-ingester-queue` (1080s visibility, `batch_size=1`, `maxReceiveCount=3`), `sbm-files-ingester-dlq` (14 day retention)
+- **DynamoDB:** `sbm-ingester-idempotency` (12h TTL, PAY_PER_REQUEST)
+- **Neptune:** NEM12 ID → sensor ID mappings (exported hourly to S3 by `sbm-files-ingester-nem12-mappings-to-s3`)
+- **SNS:** `sbm-ingester-alerts` (DLQ + error + duplicate-event-spike notifications)
 - **ECR:** `cim-exporter` (Docker image repository)
 
 ## Testing
 
-Tests use pytest with moto for AWS mocking. **Total: 525 tests.**
+Tests use pytest with moto for AWS mocking. **Total: 785 tests** (20 deselected by default — module/class-level skips for follow-up cleanup).
 
 ```bash
 # Run all tests
@@ -387,9 +422,9 @@ Coverage target: **≥90%** (enforced via lefthook pre-push). Run `uv run pytest
 ## Deployment
 
 Deployment is automated via GitHub Actions on push to `main`. The CI/CD pipeline:
-1. Builds and deploys 8 Lambda functions (7 zip + 1 Docker container)
+1. Builds and deploys 10 Lambda functions (9 zip + 1 Docker container)
 2. Uploads Glue ETL script to S3
-3. Builds and pushes CIM Exporter Docker image to ECR
+3. Builds and pushes CIM Exporter Docker image to ECR (incremental — only when `src/functions/cim_exporter/**` changes)
 
 ### Manual Deployment
 
@@ -445,10 +480,24 @@ curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem1
 
 ## Recent Work
 
-- **`optima-interval-exporter`** — primary interval data source replacing the daily schedules for `optima-nem12-exporter` (NEM12 Lambda kept as backup/manual invoke). Uses BidEnergy's `POST /BuyerReport/exportdailyusagecsv` endpoint, which returns a ZIP wrapping a single per-NMI 12-column CSV. Includes a fix for the existing `interval_parser` to gracefully handle the "No data is available" sentinel CSV.
-  - Spec: [`docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md`](docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md)
-  - Plan: [`docs/superpowers/plans/2026-05-06-optima-interval-exporter.md`](docs/superpowers/plans/2026-05-06-optima-interval-exporter.md) (13 tasks)
-  - Real BidEnergy CSV fixtures already committed at `tests/unit/fixtures/optima_interval/`.
+> Internal design specs and implementation plans for each item below live under `docs/superpowers/{specs,plans}/` (gitignored — local to maintainer machines). The dated filenames are reproduced verbatim so the team can grep locally.
+
+- **Post-deploy tuning** (`fix/post-deploy-tuning`, merged 2026-05-12) — three production fixes after the per-file refactor went live:
+  1. **HEAD 404 as duplicate S3 event.** S3 ObjectCreated → SQS is at-least-once; when a second delivery hits after the file has been moved, the HEAD object returns 404. The stability check now distinguishes 404 (treat as duplicate, log `s3_duplicate_event`, emit `S3DuplicateEvent` CloudWatch metric) from real-not-yet-stable cases. Removed the false `MaxRetriesExceeded` alarm churn.
+  2. **Synergy WA `Meter_Data_WA (AU)_Electricity_*.csv` sentinel parser.** New parser at `src/shared/parsers/synergy/wa_meter_data.py` recognises the "no data found" header pattern and returns `processed_empty / no_data_sentinel` instead of falling through to `parse_failed`.
+  3. **`idempotent_cache_hit` log fields.** Fixed `InstrumentedDynamoDBPersistenceLayer` logger `service=` so the `child=True` logger correctly inherits the JSON formatter and emits `source_bucket` / `source_key` on cache hits.
+  - Internal docs: `docs/superpowers/specs/2026-05-12-post-deploy-tuning-design.md`, `docs/superpowers/plans/2026-05-12-post-deploy-tuning.md`
+
+- **Per-file ingest refactor** (`feat/per-file-ingest-refactor`, merged 2026-05-11) — split `sbm-files-ingester` into 4 modules (`app.py` SQS adapter, `pipeline.py` `ingest_file` orchestrator, `csv_writer.py` `HudiSourceCsvWriter`, `persistence.py` instrumented persistence layer), moved all side effects inside a Powertools `@idempotent_function` boundary (12 h TTL, custom `_ParserOutcomeIdempotencySerializer` for `frozenset` / `Counter` fields), and standardised on the `ParserOutcome` contract (5 statuses × 9 reasons + `derive_final` disposition ladder).
+  - SQS visibility raised 900s → 1080s; `MAX_REQUEUE_RETRIES` 5 → 3 (aligned with `maxReceiveCount`).
+  - `SQS_QUEUE_URL` is now a **required** env var (KeyError on import otherwise).
+  - Constants renamed: `IRREVFILES_DIR` → `UNMAPPED_DIR`; `BUCKET_NAME` → `INPUT_BUCKET`.
+  - Public architecture reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+  - Internal docs: `docs/superpowers/specs/2026-05-07-per-file-ingest-refactor-design.md`, `docs/superpowers/plans/2026-05-07-per-file-ingest-refactor.md` (17 tasks)
+
+- **`optima-interval-exporter`** — primary interval data source replacing the daily schedules for `optima-nem12-exporter` (NEM12 Lambda kept as backup/manual invoke). Uses BidEnergy's `POST /BuyerReport/exportdailyusagecsv` endpoint, which returns a ZIP wrapping a single per-NMI 12-column CSV.
+  - Real BidEnergy CSV fixtures committed at `tests/unit/fixtures/optima_interval/`.
+  - Internal docs: `docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md`, `docs/superpowers/plans/2026-05-06-optima-interval-exporter.md` (13 tasks)
 
 ## Maintainers
 
