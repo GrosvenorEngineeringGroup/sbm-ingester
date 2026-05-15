@@ -9,6 +9,8 @@ Event parameters:
     nmi: NMI identifier - optional (if not provided, exports all NMIs for the project)
     startDate: Start date in ISO format (YYYY-MM-DD) - optional
     endDate: End date in ISO format (YYYY-MM-DD) - optional
+    mode: "previous_month" to re-ingest the previous calendar month
+        (overrides startDate/endDate and OPTIMA_DAYS_BACK) - optional
 """
 
 from typing import Any
@@ -45,6 +47,7 @@ def lambda_handler(event: dict[str, Any], context: LambdaContext) -> dict[str, A
             "nmi": event.get("nmi"),
             "start_date": event.get("startDate"),
             "end_date": event.get("endDate"),
+            "mode": event.get("mode"),
         },
     )
 
@@ -53,6 +56,7 @@ def lambda_handler(event: dict[str, Any], context: LambdaContext) -> dict[str, A
         nmi=event.get("nmi"),
         start_date=event.get("startDate"),
         end_date=event.get("endDate"),
+        mode=event.get("mode"),
     )
 
     body = result.get("body", {})

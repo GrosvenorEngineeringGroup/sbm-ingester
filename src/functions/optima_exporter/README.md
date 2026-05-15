@@ -127,11 +127,14 @@ Lambda (optima-billing-exporter)
   "project": "bunnings",       // Required: "bunnings" or "racv"
   "nmi": "NMI001",            // Optional: Single NMI to export (default: all)
   "startDate": "2026-01-01",  // Optional: ISO date format YYYY-MM-DD
-  "endDate": "2026-01-07"     // Optional: ISO date format YYYY-MM-DD
+  "endDate": "2026-01-07",    // Optional: ISO date format YYYY-MM-DD
+  "mode": "previous_month"     // Optional: re-ingest the previous calendar month
+                               // (overrides startDate/endDate and OPTIMA_DAYS_BACK).
+                               // Interval and Demand exporters only.
 }
 ```
 
-If `startDate`/`endDate` are not provided, defaults to yesterday only (1 day back; configurable via `OPTIMA_DAYS_BACK`). The interval exporter accepts AU NMIs and NZ ICP identifiers.
+If `startDate`/`endDate`/`mode` are not provided, defaults to the last `OPTIMA_DAYS_BACK` days ending yesterday (interval and demand: 3 days; NEM12: 1 day). The interval exporter accepts AU NMIs and NZ ICP identifiers.
 
 ### Billing Exporter
 
@@ -161,7 +164,7 @@ If `startDate`/`endDate` are not provided, defaults to the past 12 months (confi
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPTIMA_DAYS_BACK` | Days of data to export (end_date - days + 1 through end_date) | `1` |
+| `OPTIMA_DAYS_BACK` | Days of data to export (end_date - days + 1 through end_date). Interval/Demand Lambdas deployed with `3`; NEM12 with `1`. | `1` |
 | `OPTIMA_MAX_WORKERS` | Parallel download threads | `20` |
 
 ### Billing Exporter Configuration
