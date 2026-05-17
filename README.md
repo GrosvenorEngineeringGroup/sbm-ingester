@@ -24,7 +24,6 @@ Serverless file ingestion pipeline for building energy data. Processes NEM12/NEM
 - [API](#api)
 - [Maintainers](#maintainers)
 - [Contributing](#contributing)
-- [License](#license)
 
 ## Background
 
@@ -490,7 +489,3 @@ curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem1
 4. Ensure all tests pass: `uv run pytest`
 5. Ensure lint passes: `uv run ruff check .`
 6. Submit a pull request
-
-## License
-
-Proprietary © VerdeOS
