@@ -49,7 +49,7 @@ Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, a
 - **File Stability Check** - Two-HEAD streaming-uploader check; HEAD 404 → `S3DuplicateEvent` metric (at-least-once S3 → SQS handling)
 - **Weekly Archiving** - Automated S3 file archiving with concurrent processing (50 workers)
 - **Glue ETL Pipeline** - Apache Hudi data lake integration with automated batch import
-- **Optima Exporter** - 4 Lambdas: NEM12 (manual/backup), interval (primary), demand, billing
+- **Optima Exporter** - 4 Lambdas: NEM12 (manual/backup), interval (primary daily + monthly re-ingest), demand (daily + monthly re-ingest), billing (weekly trigger)
 - **CIM Report Exporter** - Browser automation for AFDD ticket report downloads using Playwright (Docker/ECR)
 
 ## Install
@@ -171,10 +171,10 @@ flowchart LR
 | `sbm-files-ingester-nem12-mappings-to-s3` | Python 3.13 | 128 MB | 60s | Hourly job - exports NEM12→Neptune ID mappings |
 | `sbm-weekly-archiver` | Python 3.13 | 1024 MB | 600s | Weekly job (Monday UTC 00:00) - archives files with 50 concurrent workers |
 | `sbm-glue-trigger` | Python 3.13 | 128 MB | 30s | Hourly job - triggers Glue ETL when files ≥ threshold |
-| `optima-nem12-exporter` | Python 3.13 | 256 MB | 900s | Daily export - downloads BidEnergy NEM12 files to S3 |
-| `optima-billing-exporter` | Python 3.13 | 128 MB | 120s | Monthly export - triggers BidEnergy billing report (email delivery) |
-| `optima-demand-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:30 PM Sydney) - downloads BidEnergy Demand Profile CSVs (kW/kVa/PF) |
-| `optima-interval-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:00 PM Sydney) - downloads BidEnergy interval CSVs, uploads to S3 |
+| `optima-nem12-exporter` | Python 3.13 | 256 MB | 900s | Manual/backup - downloads BidEnergy NEM12 files to S3 (daily schedules retired in favour of `optima-interval-exporter`) |
+| `optima-billing-exporter` | Python 3.13 | 128 MB | 120s | Weekly export (Saturday 7:00 AM Sydney, Bunnings + RACV) - triggers BidEnergy billing report (email delivery) |
+| `optima-demand-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:30 PM Sydney, 3-day rolling window) + monthly re-ingest (1st @ 02:00 Sydney, `mode=previous_month`) - downloads BidEnergy Demand Profile CSVs (kW/kVa/PF) |
+| `optima-interval-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:00 PM Sydney, 3-day rolling window) + monthly re-ingest (1st @ 01:00 Sydney, `mode=previous_month`) - downloads BidEnergy interval CSVs |
 | `cim-report-exporter` | Python 3.13 | 1024 MB | 300s | Daily job (8 AM Sydney) - Playwright browser automation for CIM AFDD reports |
 
 ### Glue ETL Job
@@ -477,27 +477,6 @@ curl -X GET "https://<api-id>.execute-api.ap-southeast-2.amazonaws.com/prod/nem1
 ```
 
 **Rate Limit:** 500 requests/day
-
-## Recent Work
-
-> Internal design specs and implementation plans for each item below live under `docs/superpowers/{specs,plans}/` (gitignored — local to maintainer machines). The dated filenames are reproduced verbatim so the team can grep locally.
-
-- **Post-deploy tuning** (`fix/post-deploy-tuning`, merged 2026-05-12) — three production fixes after the per-file refactor went live:
-  1. **HEAD 404 as duplicate S3 event.** S3 ObjectCreated → SQS is at-least-once; when a second delivery hits after the file has been moved, the HEAD object returns 404. The stability check now distinguishes 404 (treat as duplicate, log `s3_duplicate_event`, emit `S3DuplicateEvent` CloudWatch metric) from real-not-yet-stable cases. Removed the false `MaxRetriesExceeded` alarm churn.
-  2. **Synergy WA `Meter_Data_WA (AU)_Electricity_*.csv` sentinel parser.** New parser at `src/shared/parsers/synergy/wa_meter_data.py` recognises the "no data found" header pattern and returns `processed_empty / no_data_sentinel` instead of falling through to `parse_failed`.
-  3. **`idempotent_cache_hit` log fields.** Fixed `InstrumentedDynamoDBPersistenceLayer` logger `service=` so the `child=True` logger correctly inherits the JSON formatter and emits `source_bucket` / `source_key` on cache hits.
-  - Internal docs: `docs/superpowers/specs/2026-05-12-post-deploy-tuning-design.md`, `docs/superpowers/plans/2026-05-12-post-deploy-tuning.md`
-
-- **Per-file ingest refactor** (`feat/per-file-ingest-refactor`, merged 2026-05-11) — split `sbm-files-ingester` into 4 modules (`app.py` SQS adapter, `pipeline.py` `ingest_file` orchestrator, `csv_writer.py` `HudiSourceCsvWriter`, `persistence.py` instrumented persistence layer), moved all side effects inside a Powertools `@idempotent_function` boundary (12 h TTL, custom `_ParserOutcomeIdempotencySerializer` for `frozenset` / `Counter` fields), and standardised on the `ParserOutcome` contract (5 statuses × 9 reasons + `derive_final` disposition ladder).
-  - SQS visibility raised 900s → 1080s; `MAX_REQUEUE_RETRIES` 5 → 3 (aligned with `maxReceiveCount`).
-  - `SQS_QUEUE_URL` is now a **required** env var (KeyError on import otherwise).
-  - Constants renamed: `IRREVFILES_DIR` → `UNMAPPED_DIR`; `BUCKET_NAME` → `INPUT_BUCKET`.
-  - Public architecture reference: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-  - Internal docs: `docs/superpowers/specs/2026-05-07-per-file-ingest-refactor-design.md`, `docs/superpowers/plans/2026-05-07-per-file-ingest-refactor.md` (17 tasks)
-
-- **`optima-interval-exporter`** — primary interval data source replacing the daily schedules for `optima-nem12-exporter` (NEM12 Lambda kept as backup/manual invoke). Uses BidEnergy's `POST /BuyerReport/exportdailyusagecsv` endpoint, which returns a ZIP wrapping a single per-NMI 12-column CSV.
-  - Real BidEnergy CSV fixtures committed at `tests/unit/fixtures/optima_interval/`.
-  - Internal docs: `docs/superpowers/specs/2026-05-06-optima-interval-exporter-design.md`, `docs/superpowers/plans/2026-05-06-optima-interval-exporter.md` (13 tasks)
 
 ## Maintainers
 
