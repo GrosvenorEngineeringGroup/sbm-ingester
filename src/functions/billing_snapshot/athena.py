@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from typing import Any
+
 
 def chunk_sensor_ids(ids: list[str], chunk_count: int) -> list[list[str]]:
     """Split ``ids`` into roughly equal ``chunk_count`` chunks.
@@ -27,3 +30,46 @@ def build_chunk_sql(ids: list[str], table: str, start_date: str) -> str:
     return (
         f"SELECT sensorid, ts, val, unit FROM {table} WHERE sensorid IN ({in_list}) AND ts >= timestamp '{start_date}'"
     )
+
+
+class AthenaQueryFailed(RuntimeError):
+    """Raised when an Athena query ends in a non-SUCCEEDED state."""
+
+
+class AthenaQueryTimeout(RuntimeError):
+    """Raised when an Athena query does not complete within the poll timeout."""
+
+
+def submit_query(client: Any, sql: str, workgroup: str, database: str) -> str:
+    response = client.start_query_execution(
+        QueryString=sql,
+        WorkGroup=workgroup,
+        QueryExecutionContext={"Database": database},
+    )
+    return response["QueryExecutionId"]
+
+
+def poll_until_complete(
+    client: Any,
+    query_execution_id: str,
+    interval: float,
+    timeout: float,
+) -> str:
+    """Poll Athena until SUCCEEDED, then return the results S3 URI.
+
+    Raises ``AthenaQueryFailed`` on FAILED/CANCELLED, ``AthenaQueryTimeout``
+    after ``timeout`` seconds with no terminal state.
+    """
+    start = time.monotonic()
+    while True:
+        response = client.get_query_execution(QueryExecutionId=query_execution_id)
+        execution = response["QueryExecution"]
+        state = execution["Status"]["State"]
+        if state == "SUCCEEDED":
+            return execution["ResultConfiguration"]["OutputLocation"]
+        if state in ("FAILED", "CANCELLED"):
+            reason = execution["Status"].get("StateChangeReason", "unknown")
+            raise AthenaQueryFailed(f"Athena query {query_execution_id} {state}: {reason}")
+        if time.monotonic() - start >= timeout:
+            raise AthenaQueryTimeout(f"Athena query {query_execution_id} did not finish within {timeout}s")
+        time.sleep(interval)
