@@ -1,5 +1,6 @@
 """Tests for billing_snapshot.athena helpers."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,8 +10,11 @@ from athena import (
     build_chunk_sql,
     chunk_sensor_ids,
     poll_until_complete,
+    read_results_csv,
     submit_query,
 )
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def test_chunk_sensor_ids_even_split():
@@ -94,3 +98,21 @@ def test_poll_until_complete_raises_on_timeout():
     fake_athena.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "RUNNING"}}}
     with pytest.raises(AthenaQueryTimeout):
         poll_until_complete(fake_athena, "qid-123", interval=0, timeout=0)
+
+
+def test_read_results_csv_strips_header_and_yields_tuples(s3_client):
+    s3_client.create_bucket(
+        Bucket="test-results",
+        CreateBucketConfiguration={"LocationConstraint": "ap-southeast-2"},
+    )
+    s3_client.put_object(
+        Bucket="test-results",
+        Key="qid.csv",
+        Body=(FIXTURES_DIR / "athena_results_sample.csv").read_bytes(),
+    )
+    rows = read_results_csv(s3_client, "s3://test-results/qid.csv")
+    assert rows == [
+        ("p:bunnings:s1", "2025-01-01 00:00:00.000", "100.5", "kwh"),
+        ("p:bunnings:s1", "2025-02-01 00:00:00.000", "110.0", "kwh"),
+        ("p:bunnings:s2", "2025-01-01 00:00:00.000", "-42.50", "aud"),
+    ]

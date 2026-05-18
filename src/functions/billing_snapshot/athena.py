@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 
 def chunk_sensor_ids(ids: list[str], chunk_count: int) -> list[list[str]]:
@@ -73,3 +76,19 @@ def poll_until_complete(
         if time.monotonic() - start >= timeout:
             raise AthenaQueryTimeout(f"Athena query {query_execution_id} did not finish within {timeout}s")
         time.sleep(interval)
+
+
+def read_results_csv(s3_client: Any, s3_uri: str) -> list[tuple[str, str, str, str]]:
+    """Download the Athena results CSV and return rows as 4-tuples.
+
+    Header row is skipped. Field order matches the SELECT in build_chunk_sql:
+    (sensorid, ts, val, unit).
+    """
+    parsed = urlparse(s3_uri)
+    bucket = parsed.netloc
+    key = parsed.path.lstrip("/")
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    body = response["Body"].read().decode("utf-8")
+    reader = csv.reader(io.StringIO(body))
+    next(reader)  # discard header
+    return [(row[0], row[1], row[2], row[3]) for row in reader]
