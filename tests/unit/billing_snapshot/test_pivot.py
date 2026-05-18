@@ -1,16 +1,20 @@
 """Tests for billing_snapshot.pivot pure functions."""
 
+import io
 import json
 from pathlib import Path
 
+import pytest
 from pivot import (
     COLUMNS,
     METRIC_COLUMNS,
     CurrencyStats,
+    EmptyPivotError,
     build_pivot,
     build_reverse_map,
     derive_currencies,
     normalise_field,
+    write_csv,
 )
 
 
@@ -199,3 +203,52 @@ def test_derive_currencies_au_nmi_with_aud_is_not_suspect():
     pivot = {("2002105104", "2025-01-01"): {"energy_charge": (5.0, "aud")}}
     _, stats = derive_currencies(pivot)
     assert stats.suspect == 0
+
+
+def test_write_csv_header_then_rows_sorted():
+    pivot = {
+        ("2002105104", "2025-02-01"): {"peak_usage": (110.0, "kwh"), "total_spend": (60.0, "aud")},
+        ("2002105104", "2025-01-01"): {"peak_usage": (100.5, "kwh"), "total_spend": (50.25, "aud")},
+        ("0000005438UN02B", "2025-01-01"): {"peak_usage": (9.99, "nzd")},
+    }
+    currencies = {"2002105104": "AUD", "0000005438UN02B": "NZD"}
+    buf = io.StringIO()
+    write_csv(buf, pivot, currencies)
+    lines = buf.getvalue().splitlines()
+    assert lines[0].startswith("nmi,month,currency,")
+    # Sorted by (nmi, month) — 0000... sorts before 2002...
+    assert lines[1].startswith("0000005438UN02B,2025-01-01,NZD,")
+    assert lines[2].startswith("2002105104,2025-01-01,AUD,")
+    assert lines[3].startswith("2002105104,2025-02-01,AUD,")
+
+
+def test_write_csv_missing_cells_are_empty_string_not_zero():
+    pivot = {("NMI1", "2025-01-01"): {"peak_usage": (100.0, "kwh")}}
+    currencies = {"NMI1": "AUD"}
+    buf = io.StringIO()
+    write_csv(buf, pivot, currencies)
+    line = buf.getvalue().splitlines()[1]
+    cells = line.split(",")
+    # peak_usage is at index 5 (nmi, month, currency, total_usage, total_estimated_usage, peak_usage)
+    assert cells[5] == "100.00"
+    # Other 22 metric columns are empty strings
+    for cell in cells[3:5] + cells[6:]:
+        assert cell == ""
+
+
+def test_write_csv_negative_and_two_decimals():
+    pivot = {("NMI1", "2025-01-01"): {"energy_charge": (-42.5, "aud"), "total_spend": (1234.5, "aud")}}
+    currencies = {"NMI1": "AUD"}
+    buf = io.StringIO()
+    write_csv(buf, pivot, currencies)
+    line = buf.getvalue().splitlines()[1]
+    cells = line.split(",")
+    # energy_charge at index 14, total_spend at index 24 in the 26-col layout
+    assert cells[14] == "-42.50"
+    assert cells[24] == "1234.50"
+
+
+def test_write_csv_raises_on_empty_pivot():
+    buf = io.StringIO()
+    with pytest.raises(EmptyPivotError):
+        write_csv(buf, {}, {})

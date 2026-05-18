@@ -5,8 +5,10 @@ No AWS dependencies; all functions deterministic and unit-testable.
 
 from __future__ import annotations
 
+import csv
 import re
 from dataclasses import dataclass
+from typing import IO
 
 # Column order per spec — paired actual/estimated within four category blocks.
 # Must stay in lockstep with `tests/unit/billing_snapshot/test_pivot.py::test_columns_count_and_order`.
@@ -151,3 +153,43 @@ def derive_currencies(pivot: Pivot) -> tuple[dict[str, str], CurrencyStats]:
         if picked == "AUD" and NZ_ICP_PATTERN.match(nmi):
             suspect += 1
     return currencies, CurrencyStats(conflict=conflict, unknown=unknown, suspect=suspect)
+
+
+class EmptyPivotError(RuntimeError):
+    """Raised by write_csv when the pivot dict is empty.
+
+    Prevents overwriting `billing-latest.csv` with a header-only file when
+    every chunk legitimately returned zero rows (which would itself be a
+    pipeline failure worth alerting on).
+    """
+
+
+def write_csv(
+    out: IO[str],
+    pivot: Pivot,
+    currencies: dict[str, str],
+) -> None:
+    """Write the wide CSV (header + rows) into ``out``.
+
+    Rows are sorted by ``(nmi, month)``. Missing metric cells are emitted as
+    empty strings (NOT zero) — distinguishes "no bill" from "$0 bill".
+    Numeric values are formatted with `f"{val:.2f}"`.
+
+    Raises ``EmptyPivotError`` if pivot is empty.
+    """
+    if not pivot:
+        raise EmptyPivotError("pivot is empty; refusing to overwrite billing-latest.csv")
+
+    writer = csv.writer(out)
+    writer.writerow(COLUMNS)
+    for nmi, month in sorted(pivot.keys()):
+        fields = pivot[(nmi, month)]
+        row = [nmi, month, currencies.get(nmi, "AUD")]
+        for col in METRIC_COLUMNS:
+            entry = fields.get(col)
+            if entry is None:
+                row.append("")
+            else:
+                val, _unit = entry
+                row.append(f"{val:.2f}")
+        writer.writerow(row)
