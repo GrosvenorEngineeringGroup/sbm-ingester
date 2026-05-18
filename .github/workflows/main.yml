@@ -45,6 +45,10 @@ jobs:
               - 'src/functions/optima_exporter/**'
               - 'pyproject.toml'
               - 'uv.lock'
+            billing_snapshot:
+              - 'src/functions/billing_snapshot/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
             cim_exporter:
               - 'src/functions/cim_exporter/**'
             glue_script:
@@ -58,7 +62,8 @@ jobs:
              [[ "${{ steps.changes.outputs.nem12_mappings }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.weekly_archiver }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.glue_trigger }}" == "true" ]] || \
-             [[ "${{ steps.changes.outputs.optima_exporter }}" == "true" ]]; then
+             [[ "${{ steps.changes.outputs.optima_exporter }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.billing_snapshot }}" == "true" ]]; then
             echo "needed=true" >> $GITHUB_OUTPUT
           else
             echo "needed=false" >> $GITHUB_OUTPUT
@@ -74,6 +79,7 @@ jobs:
              [[ "${{ steps.changes.outputs.weekly_archiver }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.glue_trigger }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.optima_exporter }}" == "true" ]] || \
+             [[ "${{ steps.changes.outputs.billing_snapshot }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.cim_exporter }}" == "true" ]] || \
              [[ "${{ steps.changes.outputs.glue_script }}" == "true" ]]; then
             echo "needed=true" >> $GITHUB_OUTPUT
@@ -180,6 +186,17 @@ jobs:
           cd build/optima_exporter && zip -r ../../optima_exporter.zip . && cd ../..
 
       # --------------------
+      # Build Billing Snapshot Lambda
+      # --------------------
+      - name: Build Billing Snapshot zip
+        if: steps.changes.outputs.billing_snapshot == 'true'
+        run: |
+          mkdir -p build/billing_snapshot
+          cp -r build/deps/* build/billing_snapshot/
+          cp src/functions/billing_snapshot/*.py build/billing_snapshot/
+          cd build/billing_snapshot && zip -r ../../billing_snapshot.zip . && cd ../..
+
+      # --------------------
       # Configure AWS
       # --------------------
       - name: Configure AWS Credentials
@@ -268,6 +285,16 @@ jobs:
             --s3-key sbm-files-ingester/optima_exporter.zip \
             --publish
 
+      - name: Deploy Billing Snapshot
+        if: steps.changes.outputs.billing_snapshot == 'true'
+        run: |
+          aws s3 cp billing_snapshot.zip s3://gega-code-deployment-bucket/sbm-files-ingester/billing_snapshot.zip
+          aws lambda update-function-code \
+            --function-name sbm-bunnings-billing-snapshot \
+            --s3-bucket gega-code-deployment-bucket \
+            --s3-key sbm-files-ingester/billing_snapshot.zip \
+            --region ap-southeast-2
+
       # --------------------
       # Build & Deploy CIM Exporter (Docker container image)
       # --------------------
@@ -325,5 +352,6 @@ jobs:
           echo "Weekly Archiver: ${{ steps.changes.outputs.weekly_archiver }}"
           echo "Glue Trigger: ${{ steps.changes.outputs.glue_trigger }}"
           echo "Optima Exporter: ${{ steps.changes.outputs.optima_exporter }}"
+          echo "Billing Snapshot: ${{ steps.changes.outputs.billing_snapshot }}"
           echo "CIM Exporter: ${{ steps.changes.outputs.cim_exporter }}"
           echo "Glue Script: ${{ steps.changes.outputs.glue_script }}"
