@@ -41,7 +41,7 @@ addopts = "-v --tb=short -m 'not slow'"
 filterwarnings = [
     "ignore:No application metrics to publish:UserWarning:aws_lambda_powertools",
 ]
-pythonpath = ["src/functions/optima_exporter", "."]
+pythonpath = ["src/functions/optima_exporter", "src/functions/billing_snapshot", "."]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"', run with '-m slow')",
 ]
