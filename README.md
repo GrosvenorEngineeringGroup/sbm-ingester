@@ -50,6 +50,7 @@ Files uploaded to S3 trigger an event-driven pipeline that parses, transforms, a
 - **Glue ETL Pipeline** - Apache Hudi data lake integration with automated batch import
 - **Optima Exporter** - 4 Lambdas: NEM12 (manual/backup), interval (primary daily + monthly re-ingest), demand (daily + monthly re-ingest), billing (weekly trigger)
 - **CIM Report Exporter** - Browser automation for AFDD ticket report downloads using Playwright (Docker/ECR)
+- **Bunnings Billing Snapshot** - Weekly Athena snapshot of Bunnings billing data (10K+ sensors) pivoted to wide CSV for SkySpark
 
 ## Install
 
@@ -175,6 +176,7 @@ flowchart LR
 | `optima-demand-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:30 PM Sydney, 3-day rolling window) + monthly re-ingest (1st @ 02:00 Sydney, `mode=previous_month`) - downloads BidEnergy Demand Profile CSVs (kW/kVa/PF) |
 | `optima-interval-exporter` | Python 3.13 | 256 MB | 900s | Daily export (2:00 PM Sydney, 3-day rolling window) + monthly re-ingest (1st @ 01:00 Sydney, `mode=previous_month`) - downloads BidEnergy interval CSVs |
 | `cim-report-exporter` | Python 3.13 | 1024 MB | 300s | Daily job (8 AM Sydney) - Playwright browser automation for CIM AFDD reports |
+| `sbm-bunnings-billing-snapshot` | Python 3.13 | 512 MB | 900s | Weekly job (Sunday 08:00 Sydney) - Athena query on Hudi billing sensors, pivots to wide CSV at `s3://gegoptimareports/bunnings-billing/billing-latest.csv` for SkySpark consumption |
 
 ### Glue ETL Job
 
