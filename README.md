@@ -275,11 +275,16 @@ sbm-ingester/
 │   │   │   ├── interval_exporter/  # Interval CSV download Lambda (primary daily source)
 │   │   │   ├── demand_exporter/    # Demand profile CSV download Lambda
 │   │   │   └── billing_exporter/   # Billing report trigger Lambda
-│   │   └── cim_exporter/        # CIM AFDD report exporter (Docker)
-│   │       ├── Dockerfile
-│   │       ├── requirements.txt
-│   │       ├── cim_shared/      # Config utilities
-│   │       └── report_exporter/ # Playwright automation + emailer
+│   │   ├── cim_exporter/        # CIM AFDD report exporter (Docker)
+│   │   │   ├── Dockerfile
+│   │   │   ├── requirements.txt
+│   │   │   ├── cim_shared/      # Config utilities
+│   │   │   └── report_exporter/ # Playwright automation + emailer
+│   │   └── billing_snapshot/    # Bunnings billing snapshot Lambda (weekly Sun 08:00 Sydney)
+│   │       ├── app.py           # Lambda handler + orchestration
+│   │       ├── athena.py        # Chunking + submit/poll + parallel runner (fail-fast)
+│   │       ├── pivot.py         # COLUMNS + build_reverse_map + build_pivot + derive_currencies + write_csv
+│   │       └── config.py        # Env-var reads
 │   ├── glue/
 │   │   └── hudi_import/         # Glue ETL job (PySpark, Hudi upsert)
 │   │       └── script.py
@@ -299,11 +304,16 @@ sbm-ingester/
 │           └── green_square/    # Green Square ComX
 ├── tests/
 │   └── unit/
-│       ├── conftest.py          # Shared fixtures
+│       ├── conftest.py          # Shared fixtures (sys.path setup for Lambda-style imports)
 │       ├── fixtures/            # Test data files
 │       │   ├── nem12_*.csv      # NEM12/NEM13 sample meter data
 │       │   └── optima_interval/ # Real BidEnergy interval CSVs (AU NMI, NZ ICP, multi-month, empty-data sentinel)
-│       └── test_*.py            # Test modules (~785 tests)
+│       ├── test_*.py            # Test modules (~825 tests)
+│       ├── optima_exporter/     # Optima exporter tests (122 tests)
+│       └── billing_snapshot/    # Bunnings billing snapshot tests (40 tests)
+│           ├── conftest.py      # aws_env + s3_client moto fixtures
+│           ├── fixtures/        # mappings_truncated.json + athena_results_sample.csv
+│           └── test_*.py        # test_config / test_pivot / test_athena / test_app
 ├── scripts/
 │   ├── process_nem12_locally.py            # Local NEM12 processing
 │   ├── import_optima_config_to_dynamodb.py # Import Optima site config to DynamoDB
@@ -318,12 +328,14 @@ sbm-ingester/
 │   ├── deploy.sh                           # Full deployment script
 │   ├── deploy-lambda.sh                    # Local Lambda zip deployment
 │   ├── deploy-cim-exporter.sh              # CIM Docker image deployment
+│   ├── run_billing_snapshot_locally.py     # Local debug runner for Bunnings billing snapshot
 │   └── setup-lefthook.sh                   # Git hooks setup
 ├── terraform/
 │   ├── ingester.tf              # Lambda functions
 │   ├── glue.tf                  # Glue job and trigger
 │   ├── optima_exporter.tf       # Optima exporter Lambda, DynamoDB, Scheduler
 │   ├── cim_exporter.tf          # CIM exporter Lambda, ECR, EventBridge Scheduler
+│   ├── billing_snapshot.tf      # Bunnings billing snapshot Lambda, Athena workgroup, Scheduler, Alarm
 │   ├── monitoring.tf            # Alarms and SNS
 │   ├── logs.tf                  # CloudWatch Log Groups
 │   └── ...                      # Other Terraform modules
@@ -400,7 +412,7 @@ uv run scripts/process_nem12_locally.py /path/to/file.csv
 
 ## Testing
 
-Tests use pytest with moto for AWS mocking. **Total: 785 tests** (20 deselected by default — module/class-level skips for follow-up cleanup).
+Tests use pytest with moto for AWS mocking. **Total: 825 tests** (20 deselected by default — module/class-level skips for follow-up cleanup; includes 40 new billing_snapshot tests).
 
 ```bash
 # Run all tests
