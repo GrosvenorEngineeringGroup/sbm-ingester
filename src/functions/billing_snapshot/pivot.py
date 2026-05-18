@@ -68,3 +68,31 @@ def build_reverse_map(mappings: dict[str, str]) -> dict[str, tuple[str, str]]:
         field = normalise_field(f"billing-{suffix}")
         result[sensor_id] = (nmi, field)
     return result
+
+
+PivotKey = tuple[str, str]  # (nmi, month_iso_date)
+PivotValue = tuple[float, str]  # (val, unit)
+Pivot = dict[PivotKey, dict[str, PivotValue]]
+
+
+def build_pivot(
+    rows: list[tuple[str, str, str, str]],
+    reverse_map: dict[str, tuple[str, str]],
+) -> Pivot:
+    """Long → wide pivot.
+
+    Each input row is (sensorid, ts, val, unit) where ts is an Athena timestamp
+    string like ``2025-01-01 00:00:00.000``. Rows whose sensorid is not in
+    reverse_map are silently ignored (defensive — should never happen for an
+    explicit IN-list query).
+    """
+    pivot: Pivot = {}
+    for sensorid, ts, val_str, unit in rows:
+        target = reverse_map.get(sensorid)
+        if target is None:
+            continue
+        nmi, field = target
+        month_iso = ts[:10]  # YYYY-MM-DD prefix
+        val = float(val_str)
+        pivot.setdefault((nmi, month_iso), {})[field] = (val, unit)
+    return pivot

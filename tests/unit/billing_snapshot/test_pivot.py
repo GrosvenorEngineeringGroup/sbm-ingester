@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from pivot import COLUMNS, METRIC_COLUMNS, build_reverse_map, normalise_field
+from pivot import COLUMNS, METRIC_COLUMNS, build_pivot, build_reverse_map, normalise_field
 
 
 def test_columns_count_and_order():
@@ -77,3 +77,48 @@ def test_build_reverse_map_decodes_nmi_and_field():
     assert rmap["p:bunnings:s1-offpeak"] == ("2002105104", "off_peak_usage")
     assert rmap["p:bunnings:s1-echarge"] == ("2002105104", "energy_charge")
     assert rmap["p:bunnings:s2-tspend"] == ("0000005438UN02B", "total_spend")
+
+
+def test_build_pivot_long_to_wide():
+    rmap = {
+        "p:bunnings:s1-peak": ("2002105104", "peak_usage"),
+        "p:bunnings:s1-tspend": ("2002105104", "total_spend"),
+        "p:bunnings:s2-peak": ("0000005438UN02B", "peak_usage"),
+    }
+    rows = [
+        # (sensorid, ts, val, unit)
+        ("p:bunnings:s1-peak", "2025-01-01 00:00:00.000", "100.5", "kwh"),
+        ("p:bunnings:s1-tspend", "2025-01-01 00:00:00.000", "50.25", "aud"),
+        ("p:bunnings:s1-peak", "2025-02-01 00:00:00.000", "110.0", "kwh"),
+        ("p:bunnings:s2-peak", "2025-01-01 00:00:00.000", "9.99", "nzd"),
+    ]
+    pivot = build_pivot(rows, rmap)
+    assert pivot[("2002105104", "2025-01-01")]["peak_usage"] == (100.5, "kwh")
+    assert pivot[("2002105104", "2025-01-01")]["total_spend"] == (50.25, "aud")
+    assert pivot[("2002105104", "2025-02-01")]["peak_usage"] == (110.0, "kwh")
+    assert pivot[("0000005438UN02B", "2025-01-01")]["peak_usage"] == (9.99, "nzd")
+
+
+def test_build_pivot_silently_ignores_unmapped_sensor():
+    rmap = {"p:bunnings:s1": ("NMI1", "peak_usage")}
+    rows = [
+        ("p:bunnings:s1", "2025-01-01 00:00:00.000", "1.0", "kwh"),
+        ("p:bunnings:unknown", "2025-01-01 00:00:00.000", "999.0", "kwh"),
+    ]
+    pivot = build_pivot(rows, rmap)
+    assert len(pivot) == 1
+    assert ("NMI1", "2025-01-01") in pivot
+
+
+def test_build_pivot_preserves_negative_values():
+    rmap = {"p:bunnings:s1": ("NMI1", "energy_charge")}
+    rows = [("p:bunnings:s1", "2025-03-01 00:00:00.000", "-42.50", "aud")]
+    pivot = build_pivot(rows, rmap)
+    assert pivot[("NMI1", "2025-03-01")]["energy_charge"] == (-42.5, "aud")
+
+
+def test_build_pivot_handles_timestamp_without_fractional_seconds():
+    rmap = {"p:bunnings:s1": ("NMI1", "peak_usage")}
+    rows = [("p:bunnings:s1", "2025-04-01 00:00:00", "1.0", "kwh")]
+    pivot = build_pivot(rows, rmap)
+    assert ("NMI1", "2025-04-01") in pivot
