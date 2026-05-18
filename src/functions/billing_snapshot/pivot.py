@@ -50,3 +50,21 @@ def normalise_field(billing_suffix: str) -> str:
     """
     stripped = billing_suffix.removeprefix("billing-")
     return stripped.replace("-", "_")
+
+
+BILLING_DELIMITER = "-billing-"
+
+
+def build_reverse_map(mappings: dict[str, str]) -> dict[str, tuple[str, str]]:
+    """Return `{sensor_id: (nmi, field)}` for every `*-billing-*` key in the input.
+
+    Non-billing keys are silently skipped. Field names are dash-normalised.
+    """
+    result: dict[str, tuple[str, str]] = {}
+    for key, sensor_id in mappings.items():
+        if BILLING_DELIMITER not in key:
+            continue
+        nmi, _, suffix = key.partition(BILLING_DELIMITER)
+        field = normalise_field(f"billing-{suffix}")
+        result[sensor_id] = (nmi, field)
+    return result

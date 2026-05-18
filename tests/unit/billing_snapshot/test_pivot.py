@@ -1,6 +1,9 @@
 """Tests for billing_snapshot.pivot pure functions."""
 
-from pivot import COLUMNS, METRIC_COLUMNS, normalise_field
+import json
+from pathlib import Path
+
+from pivot import COLUMNS, METRIC_COLUMNS, build_reverse_map, normalise_field
 
 
 def test_columns_count_and_order():
@@ -50,3 +53,27 @@ def test_normalise_field_dash_to_underscore():
 
 def test_normalise_field_strips_billing_prefix():
     assert normalise_field("billing-other-charge") == "other_charge"
+
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def _load_mappings():
+    return json.loads((FIXTURES_DIR / "mappings_truncated.json").read_text())
+
+
+def test_build_reverse_map_returns_only_billing_keys():
+    data = _load_mappings()
+    rmap = build_reverse_map(data)
+    # 7 billing keys in fixture; non-billing entries (QB05747155-EK, JDZH0007) excluded
+    assert len(rmap) == 7
+    assert "p:bunnings:not-billing" not in rmap
+    assert "p:amp_sites:r:269ff25a-543a0702" not in rmap
+
+
+def test_build_reverse_map_decodes_nmi_and_field():
+    rmap = build_reverse_map(_load_mappings())
+    assert rmap["p:bunnings:s1-peak"] == ("2002105104", "peak_usage")
+    assert rmap["p:bunnings:s1-offpeak"] == ("2002105104", "off_peak_usage")
+    assert rmap["p:bunnings:s1-echarge"] == ("2002105104", "energy_charge")
+    assert rmap["p:bunnings:s2-tspend"] == ("0000005438UN02B", "total_spend")

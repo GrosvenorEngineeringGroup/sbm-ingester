@@ -1,0 +1,11 @@
+{
+  "2002105104-billing-peak-usage": "p:bunnings:s1-peak",
+  "2002105104-billing-off-peak-usage": "p:bunnings:s1-offpeak",
+  "2002105104-billing-energy-charge": "p:bunnings:s1-echarge",
+  "2002105104-billing-total-spend": "p:bunnings:s1-tspend",
+  "0000005438UN02B-billing-peak-usage": "p:bunnings:s2-peak",
+  "0000005438UN02B-billing-total-spend": "p:bunnings:s2-tspend",
+  "0000005438UN02B-billing-energy-charge": "p:bunnings:s2-echarge",
+  "QB05747155-EK": "p:bunnings:not-billing",
+  "JDZH0007": "p:amp_sites:r:269ff25a-543a0702"
+}
