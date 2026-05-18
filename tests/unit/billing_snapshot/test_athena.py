@@ -39,6 +39,21 @@ def test_chunk_sensor_ids_chunk_count_one_returns_single_list():
     assert chunks == [["a", "b", "c"]]
 
 
+def test_chunk_sensor_ids_empty_input_returns_empty_list():
+    # Empty input must not produce empty IN-list SQL — Athena rejects WHERE
+    # sensorid IN () as a syntax error. Returning [] lets the caller short-
+    # circuit before submitting any query.
+    assert chunk_sensor_ids([], chunk_count=8) == []
+
+
+def test_chunk_sensor_ids_fewer_ids_than_chunks_clamps_chunk_count():
+    # 3 ids with chunk_count=8 must produce 3 non-empty chunks, NOT 5 empty
+    # ones plus one of-3 (the original off-by-one bug).
+    chunks = chunk_sensor_ids(["a", "b", "c"], chunk_count=8)
+    assert [len(c) for c in chunks] == [1, 1, 1]
+    assert all(c for c in chunks)
+
+
 def test_build_chunk_sql_contains_all_ids_and_filter():
     ids = ["p:bunnings:x1", "p:bunnings:x2"]
     sql = build_chunk_sql(ids, table="sensordata_default", start_date="2025-01-01")
@@ -187,3 +202,54 @@ def test_run_chunks_parallel_raises_on_first_chunk_failure():
             poll_timeout=10,
             results_reader=lambda _s3, _uri: [],
         )
+
+
+def test_run_chunks_parallel_logger_chunk_id_does_not_leak_across_workers(monkeypatch):
+    """Spec invariant: parallel chunks pass chunk_id via extra={} kwarg per call.
+
+    If a future regression replaces extra={} with logger.append_keys(chunk_id=...),
+    the thread-local state will leak between worker threads and chunk_ids will
+    overlap. This test captures every logger.info call's chunk_id and asserts
+    each chunk's submitted/succeeded log pair carries its OWN chunk_id only.
+    """
+    import threading
+
+    import athena as athena_mod
+
+    captured: list[tuple[int, dict]] = []
+    lock = threading.Lock()
+
+    def capture(_event: str, extra: dict | None = None, **_kw: object) -> None:
+        with lock:
+            captured.append((extra.get("chunk_id") if extra else None, dict(extra or {})))
+
+    monkeypatch.setattr(athena_mod.logger, "info", capture)
+
+    fake_athena = MagicMock()
+    fake_athena.start_query_execution.side_effect = [{"QueryExecutionId": f"q{i}"} for i in range(3)]
+    fake_athena.get_query_execution.return_value = {
+        "QueryExecution": {
+            "Status": {"State": "SUCCEEDED"},
+            "ResultConfiguration": {"OutputLocation": "s3://b/k.csv"},
+        }
+    }
+
+    athena_mod.run_chunks_parallel(
+        athena_client=fake_athena,
+        s3_client=MagicMock(),
+        chunks=[["a"], ["b"], ["c"]],
+        workgroup="wg",
+        database="default",
+        table="t",
+        start_date="2025-01-01",
+        max_workers=3,
+        poll_interval=0,
+        poll_timeout=10,
+        results_reader=lambda _s3, _uri: [],
+    )
+
+    # Each chunk emits 2 log lines (submitted + succeeded). 3 chunks → 6 lines.
+    chunk_ids = [c for c, _ in captured]
+    assert sorted(chunk_ids) == [0, 0, 1, 1, 2, 2], (
+        f"chunk_id leak detected — expected each of 0,1,2 twice but got {chunk_ids}"
+    )

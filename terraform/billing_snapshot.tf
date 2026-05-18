@@ -75,15 +75,11 @@ resource "aws_iam_role_policy" "billing_snapshot_inline" {
     Version = "2012-10-17"
     Statement = [
       {
+        # s3:GetObject also authorises HEAD requests against the same key —
+        # no separate s3:HeadObject action exists in IAM.
         Sid      = "ReadMappingsJson"
         Effect   = "Allow"
         Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::sbm-file-ingester/nem12_mappings.json"
-      },
-      {
-        Sid      = "HeadMappingsJson"
-        Effect   = "Allow"
-        Action   = ["s3:HeadObject"]
         Resource = "arn:aws:s3:::sbm-file-ingester/nem12_mappings.json"
       },
       {

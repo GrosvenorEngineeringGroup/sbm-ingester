@@ -34,7 +34,11 @@ def load_mappings(s3_client: Any, *, bucket: str, key: str) -> tuple[dict[str, s
     age = (datetime.now(UTC) - last_modified).total_seconds() / 3600.0
 
     obj = s3_client.get_object(Bucket=bucket, Key=key)
-    mappings = json.loads(obj["Body"].read().decode("utf-8"))
+    body_stream = obj["Body"]
+    try:
+        mappings = json.loads(body_stream.read().decode("utf-8"))
+    finally:
+        body_stream.close()
     return mappings, age
 
 
@@ -62,6 +66,16 @@ def lambda_handler(event: dict, context: Any) -> dict[str, Any]:
         "mappings_loaded",
         extra={"billing_sensors": len(sensor_ids), "mapping_age_hours": age_hours},
     )
+
+    # Spec invariant: if mapping JSON is missing/empty/has zero billing keys,
+    # raise loudly without overwriting `billing-latest.csv`. Without this guard
+    # we'd submit empty `WHERE sensorid IN ()` SQL, which Athena rejects as a
+    # syntax error and surfaces as `AthenaQueryFailed` instead of the intended
+    # `EmptyPivotError`.
+    if not sensor_ids:
+        raise pivot.EmptyPivotError(
+            "nem12_mappings.json has zero billing keys; refusing to query Athena and overwrite billing-latest.csv"
+        )
 
     chunks = athena.chunk_sensor_ids(sensor_ids, chunk_count=cfg.CHUNK_COUNT)
     rows = athena.run_chunks_parallel(

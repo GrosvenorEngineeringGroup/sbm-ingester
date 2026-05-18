@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 # Add optima_exporter to path for Lambda-style imports (shared, nem12_exporter, billing_exporter)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src" / "functions" / "optima_exporter"))
 
-# Add billing_snapshot to path for Lambda-style imports
+# Add billing_snapshot to path for Lambda-style imports (config, app, athena, pivot)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src" / "functions" / "billing_snapshot"))
 
 # Now import everything else

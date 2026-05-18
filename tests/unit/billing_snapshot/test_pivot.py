@@ -252,3 +252,33 @@ def test_write_csv_raises_on_empty_pivot():
     buf = io.StringIO()
     with pytest.raises(EmptyPivotError):
         write_csv(buf, {}, {})
+
+
+def test_write_csv_actual_zero_round_trips_as_two_decimals():
+    """Spec invariant: actual=0 must write '0.00' (NOT empty string).
+
+    The pivot value 0.0 is semantically "BidEnergy reported $0 / 0 kWh for this
+    field this month" — distinct from "no data". Only ``None`` (missing field)
+    becomes empty. This guards against an accidental ``if not val:`` regression
+    in the writer. Mirrors the real current-month scenario from sample data:
+    actual=0 + estimated>0.
+    """
+    pivot = {
+        ("NMI1", "2026-05-01"): {
+            "total_usage": (0.0, "kwh"),
+            "total_estimated_usage": (50570.92, "kwh"),
+            "total_spend": (0.0, "aud"),
+            "total_estimated_spend": (11858.12, "aud"),
+        }
+    }
+    currencies = {"NMI1": "AUD"}
+    buf = io.StringIO()
+    write_csv(buf, pivot, currencies)
+    line = buf.getvalue().splitlines()[1]
+    cells = line.split(",")
+    # total_usage at index 3, total_estimated_usage at index 4
+    assert cells[3] == "0.00"
+    assert cells[4] == "50570.92"
+    # total_spend at index 24, total_estimated_spend at index 25
+    assert cells[24] == "0.00"
+    assert cells[25] == "11858.12"

@@ -293,7 +293,8 @@ jobs:
             --function-name sbm-bunnings-billing-snapshot \
             --s3-bucket gega-code-deployment-bucket \
             --s3-key sbm-files-ingester/billing_snapshot.zip \
-            --region ap-southeast-2
+            --region ap-southeast-2 \
+            --publish
 
       # --------------------
       # Build & Deploy CIM Exporter (Docker container image)

@@ -23,7 +23,16 @@ def chunk_sensor_ids(ids: list[str], chunk_count: int) -> list[list[str]]:
     The last chunk absorbs any remainder. Chunk sizes are kept below the
     Athena 256 KB SQL string limit — for ~11K Bunnings sensor IDs the
     spec's default ``chunk_count=8`` yields ~85 KB per chunk SQL.
+
+    Edge cases:
+    - ``ids=[]`` returns ``[]`` (no chunks). Callers must handle this — submitting
+      an empty IN-list to Athena (``WHERE sensorid IN ()``) is invalid SQL.
+    - ``len(ids) < chunk_count`` clamps ``chunk_count`` to ``len(ids)`` so every
+      returned chunk has at least one sensor.
     """
+    if not ids:
+        return []
+    chunk_count = min(chunk_count, len(ids))
     base_size = len(ids) // chunk_count
     chunks: list[list[str]] = []
     for i in range(chunk_count - 1):
@@ -96,7 +105,11 @@ def read_results_csv(s3_client: Any, s3_uri: str) -> list[tuple[str, str, str, s
     bucket = parsed.netloc
     key = parsed.path.lstrip("/")
     response = s3_client.get_object(Bucket=bucket, Key=key)
-    body = response["Body"].read().decode("utf-8")
+    body_stream = response["Body"]
+    try:
+        body = body_stream.read().decode("utf-8")
+    finally:
+        body_stream.close()
     reader = csv.reader(io.StringIO(body))
     next(reader)  # discard header
     return [(row[0], row[1], row[2], row[3]) for row in reader]
