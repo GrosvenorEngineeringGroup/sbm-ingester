@@ -107,9 +107,22 @@ resource "aws_iam_role_policy" "billing_snapshot_inline" {
         ]
       },
       {
+        # Athena reads the Hudi data files (Parquet + .hoodie metadata) directly
+        # from this bucket; ListBucket + GetObject are required for table scans.
+        Sid      = "HudiDataBucketRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = [
+          "arn:aws:s3:::318396632821sydneyhudibucketsrc",
+          "arn:aws:s3:::318396632821sydneyhudibucketsrc/*",
+        ]
+      },
+      {
+        # Athena needs GetBucketLocation to verify the workgroup's
+        # output_location bucket; GetBucketAcl + ListBucket for results.
         Sid      = "AthenaResultsBucket"
         Effect   = "Allow"
-        Action   = ["s3:GetBucketAcl", "s3:ListBucket"]
+        Action   = ["s3:GetBucketLocation", "s3:GetBucketAcl", "s3:ListBucket"]
         Resource = "arn:aws:s3:::sbm-file-ingester"
       },
       {
