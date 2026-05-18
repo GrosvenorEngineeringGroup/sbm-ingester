@@ -116,3 +116,74 @@ def test_read_results_csv_strips_header_and_yields_tuples(s3_client):
         ("p:bunnings:s1", "2025-02-01 00:00:00.000", "110.0", "kwh"),
         ("p:bunnings:s2", "2025-01-01 00:00:00.000", "-42.50", "aud"),
     ]
+
+
+def test_run_chunks_parallel_aggregates_all_rows():
+    """All 3 chunks succeed → merged rows returned."""
+    fake_athena = MagicMock()
+    fake_athena.start_query_execution.side_effect = [
+        {"QueryExecutionId": "q1"},
+        {"QueryExecutionId": "q2"},
+        {"QueryExecutionId": "q3"},
+    ]
+    fake_athena.get_query_execution.return_value = {
+        "QueryExecution": {
+            "Status": {"State": "SUCCEEDED"},
+            "ResultConfiguration": {"OutputLocation": "s3://b/k.csv"},
+        }
+    }
+
+    def fake_reader(_s3, uri):
+        return [("sensor-x", "2025-01-01 00:00:00.000", "1.0", "kwh")]
+
+    from athena import run_chunks_parallel
+
+    rows = run_chunks_parallel(
+        athena_client=fake_athena,
+        s3_client=MagicMock(),
+        chunks=[["a"], ["b"], ["c"]],
+        workgroup="wg",
+        database="default",
+        table="t",
+        start_date="2025-01-01",
+        max_workers=3,
+        poll_interval=0,
+        poll_timeout=10,
+        results_reader=fake_reader,
+    )
+    assert len(rows) == 3
+    assert fake_athena.start_query_execution.call_count == 3
+
+
+def test_run_chunks_parallel_raises_on_first_chunk_failure():
+    fake_athena = MagicMock()
+    fake_athena.start_query_execution.side_effect = [
+        {"QueryExecutionId": "q1"},
+        {"QueryExecutionId": "q2"},
+    ]
+    fake_athena.get_query_execution.side_effect = [
+        {"QueryExecution": {"Status": {"State": "FAILED", "StateChangeReason": "boom"}}},
+        {
+            "QueryExecution": {
+                "Status": {"State": "SUCCEEDED"},
+                "ResultConfiguration": {"OutputLocation": "s3://b/k.csv"},
+            }
+        },
+    ]
+
+    from athena import run_chunks_parallel
+
+    with pytest.raises(AthenaQueryFailed):
+        run_chunks_parallel(
+            athena_client=fake_athena,
+            s3_client=MagicMock(),
+            chunks=[["a"], ["b"]],
+            workgroup="wg",
+            database="default",
+            table="t",
+            start_date="2025-01-01",
+            max_workers=2,
+            poll_interval=0,
+            poll_timeout=10,
+            results_reader=lambda _s3, _uri: [],
+        )

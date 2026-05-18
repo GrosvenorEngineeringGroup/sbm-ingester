@@ -5,8 +5,16 @@ from __future__ import annotations
 import csv
 import io
 import time
-from typing import Any
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+
+from aws_lambda_powertools import Logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+logger = Logger(service="billing-snapshot", child=True)
 
 
 def chunk_sensor_ids(ids: list[str], chunk_count: int) -> list[list[str]]:
@@ -92,3 +100,59 @@ def read_results_csv(s3_client: Any, s3_uri: str) -> list[tuple[str, str, str, s
     reader = csv.reader(io.StringIO(body))
     next(reader)  # discard header
     return [(row[0], row[1], row[2], row[3]) for row in reader]
+
+
+def run_chunks_parallel(
+    *,
+    athena_client: Any,
+    s3_client: Any,
+    chunks: list[list[str]],
+    workgroup: str,
+    database: str,
+    table: str,
+    start_date: str,
+    max_workers: int,
+    poll_interval: float,
+    poll_timeout: float,
+    results_reader: Callable[[Any, str], list[tuple[str, str, str, str]]] = read_results_csv,
+) -> list[tuple[str, str, str, str]]:
+    """Submit all chunks in parallel; fail-fast on first chunk error.
+
+    Uses ``concurrent.futures.wait(return_when=FIRST_EXCEPTION)`` to detect
+    failure early. Already-running futures complete in background threads
+    after re-raise; their results are discarded (no ``Future.cancel()`` call).
+    """
+
+    def run_one(chunk_id: int, sensor_ids: list[str]) -> list[tuple[str, str, str, str]]:
+        sql = build_chunk_sql(sensor_ids, table=table, start_date=start_date)
+        qid = submit_query(athena_client, sql, workgroup=workgroup, database=database)
+        logger.info(
+            "athena_chunk_submitted",
+            extra={"chunk_id": chunk_id, "query_execution_id": qid, "sensor_count": len(sensor_ids)},
+        )
+        results_uri = poll_until_complete(athena_client, qid, interval=poll_interval, timeout=poll_timeout)
+        rows = results_reader(s3_client, results_uri)
+        logger.info(
+            "athena_chunk_succeeded",
+            extra={"chunk_id": chunk_id, "row_count": len(rows)},
+        )
+        return rows
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(run_one, i, chunk) for i, chunk in enumerate(chunks)]
+        done, _not_done = wait(futures, return_when=FIRST_EXCEPTION)
+
+        # If any completed future raised, re-raise now. Background futures
+        # may still be running; their results are discarded (no Future.cancel()
+        # call — it's a no-op for already-running futures).
+        for f in done:
+            exc = f.exception()
+            if exc is not None:
+                raise exc
+
+        # No exception fired → FIRST_EXCEPTION blocked until all futures
+        # completed. `not_done` is empty; iterate `done` to collect results.
+        merged: list[tuple[str, str, str, str]] = []
+        for f in done:
+            merged.extend(f.result())
+        return merged
