@@ -5,6 +5,9 @@ No AWS dependencies; all functions deterministic and unit-testable.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+
 # Column order per spec — paired actual/estimated within four category blocks.
 # Must stay in lockstep with `tests/unit/billing_snapshot/test_pivot.py::test_columns_count_and_order`.
 COLUMNS: list[str] = [
@@ -96,3 +99,55 @@ def build_pivot(
         val = float(val_str)
         pivot.setdefault((nmi, month_iso), {})[field] = (val, unit)
     return pivot
+
+
+NZ_ICP_PATTERN = re.compile(r"^\d{10}[A-Z0-9]{5}$")
+
+# Field name fragments that indicate a money column. Currency derivation
+# inspects only these (usage fields carry "kwh" units and must be ignored).
+_MONEY_FRAGMENTS = ("charge", "spend")
+
+
+@dataclass(frozen=True)
+class CurrencyStats:
+    conflict: int  # NMIs with multiple distinct money units
+    unknown: int  # NMIs with no money columns (defaulted to AUD)
+    suspect: int  # NZ-ICP-formatted NMIs labelled AUD
+
+
+def derive_currencies(pivot: Pivot) -> tuple[dict[str, str], CurrencyStats]:
+    """Derive an upper-case currency per NMI from money-column unit values.
+
+    Returns ``(nmi_to_currency, stats)``. See spec section "Derive currency per
+    NMI" for the four-case decision table.
+    """
+    by_nmi: dict[str, set[str]] = {}
+    for (nmi, _month), fields in pivot.items():
+        for field, (_val, unit) in fields.items():
+            if not unit:
+                continue
+            if not any(frag in field for frag in _MONEY_FRAGMENTS):
+                continue
+            by_nmi.setdefault(nmi, set()).add(unit.lower())
+
+    all_nmis = {nmi for (nmi, _) in pivot}
+
+    currencies: dict[str, str] = {}
+    conflict = 0
+    unknown = 0
+    suspect = 0
+    for nmi in all_nmis:
+        units = by_nmi.get(nmi, set())
+        if not units:
+            currencies[nmi] = "AUD"
+            unknown += 1
+            continue
+        if len(units) > 1:
+            conflict += 1
+            picked = sorted(units)[0].upper()
+        else:
+            picked = next(iter(units)).upper()
+        currencies[nmi] = picked
+        if picked == "AUD" and NZ_ICP_PATTERN.match(nmi):
+            suspect += 1
+    return currencies, CurrencyStats(conflict=conflict, unknown=unknown, suspect=suspect)

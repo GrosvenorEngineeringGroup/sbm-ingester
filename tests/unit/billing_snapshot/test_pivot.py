@@ -3,7 +3,15 @@
 import json
 from pathlib import Path
 
-from pivot import COLUMNS, METRIC_COLUMNS, build_pivot, build_reverse_map, normalise_field
+from pivot import (
+    COLUMNS,
+    METRIC_COLUMNS,
+    CurrencyStats,
+    build_pivot,
+    build_reverse_map,
+    derive_currencies,
+    normalise_field,
+)
 
 
 def test_columns_count_and_order():
@@ -122,3 +130,72 @@ def test_build_pivot_handles_timestamp_without_fractional_seconds():
     rows = [("p:bunnings:s1", "2025-04-01 00:00:00", "1.0", "kwh")]
     pivot = build_pivot(rows, rmap)
     assert ("NMI1", "2025-04-01") in pivot
+
+
+def test_derive_currencies_unique_aud():
+    pivot = {
+        ("NMI1", "2025-01-01"): {
+            "energy_charge": (10.0, "aud"),
+            "total_spend": (12.0, "aud"),
+            "peak_usage": (100.0, "kwh"),  # usage unit — ignored for currency
+        }
+    }
+    currencies, stats = derive_currencies(pivot)
+    assert currencies["NMI1"] == "AUD"
+    assert stats == CurrencyStats(conflict=0, unknown=0, suspect=0)
+
+
+def test_derive_currencies_unique_nzd():
+    pivot = {
+        ("0000005438UN02B", "2025-01-01"): {
+            "energy_charge": (5.0, "nzd"),
+            "total_spend": (5.0, "nzd"),
+        }
+    }
+    currencies, stats = derive_currencies(pivot)
+    assert currencies["0000005438UN02B"] == "NZD"
+    assert stats == CurrencyStats(conflict=0, unknown=0, suspect=0)
+
+
+def test_derive_currencies_charge_less_nmi_defaults_aud_and_emits_unknown():
+    pivot = {
+        ("NMI1", "2025-01-01"): {
+            "peak_usage": (100.0, "kwh"),
+            "total_greenpower_usage": (0.0, "kwh"),
+        }
+    }
+    currencies, stats = derive_currencies(pivot)
+    assert currencies["NMI1"] == "AUD"
+    assert stats.unknown == 1
+
+
+def test_derive_currencies_conflicting_units_uses_sorted_pick():
+    # In practice impossible but spec requires deterministic handling.
+    pivot = {
+        ("NMI1", "2025-01-01"): {
+            "energy_charge": (10.0, "aud"),
+            "total_spend": (12.0, "nzd"),
+        }
+    }
+    currencies, stats = derive_currencies(pivot)
+    # sorted(["aud", "nzd"])[0] == "aud" → "AUD"
+    assert currencies["NMI1"] == "AUD"
+    assert stats.conflict == 1
+
+
+def test_derive_currencies_nz_format_with_aud_emits_suspect():
+    # 15-char ICP format labelled AUD — likely upstream blank Spend Currency
+    pivot = {
+        ("0000005438UN02B", "2025-01-01"): {
+            "energy_charge": (5.0, "aud"),
+        }
+    }
+    currencies, stats = derive_currencies(pivot)
+    assert currencies["0000005438UN02B"] == "AUD"
+    assert stats.suspect == 1
+
+
+def test_derive_currencies_au_nmi_with_aud_is_not_suspect():
+    pivot = {("2002105104", "2025-01-01"): {"energy_charge": (5.0, "aud")}}
+    _, stats = derive_currencies(pivot)
+    assert stats.suspect == 0
